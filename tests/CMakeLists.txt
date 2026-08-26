@@ -15,6 +15,7 @@ function(krisite_add_test name src)
 endfunction()
 
 krisite_add_test(fixed_int      arith/test_fixed_int.cpp)
+krisite_add_test(predicates     geom/test_predicates.cpp)
 
 # ---- GMP 差分テスト（LGPL、テスト専用）--------------------------------------
 

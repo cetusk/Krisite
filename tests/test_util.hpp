@@ -142,6 +142,54 @@ inline std::string to_hex(const krisite::arith::fixed_int<N>& x) {
     return s;
 }
 
+// ---- 幾何のランダム生成 -----------------------------------------------------
+
+inline krisite::geom::IPoint rand_point(Rng& rng) noexcept {
+    using krisite::kCoordMax;
+    using krisite::kCoordMin;
+    return krisite::geom::IPoint{static_cast<std::int32_t>(rng.range(kCoordMin, kCoordMax)),
+                                 static_cast<std::int32_t>(rng.range(kCoordMin, kCoordMax)),
+                                 static_cast<std::int32_t>(rng.range(kCoordMin, kCoordMax))};
+}
+
+/// 小さめの座標（退化を起こしやすくするため）。
+inline krisite::geom::IPoint rand_small_point(Rng& rng, std::int64_t m = 8) noexcept {
+    return krisite::geom::IPoint{static_cast<std::int32_t>(rng.range(-m, m)),
+                                 static_cast<std::int32_t>(rng.range(-m, m)),
+                                 static_cast<std::int32_t>(rng.range(-m, m))};
+}
+
+/// 格子の端に張り付いた点（SPEC §8.2「格子の端」）。
+inline krisite::geom::IPoint rand_extreme_point(Rng& rng) noexcept {
+    auto pick = [&rng]() -> std::int32_t {
+        switch (rng.below(4)) {
+            case 0:
+                return static_cast<std::int32_t>(krisite::kCoordMin);
+            case 1:
+                return static_cast<std::int32_t>(krisite::kCoordMax);
+            case 2:
+                return 0;
+            default:
+                return static_cast<std::int32_t>(rng.range(krisite::kCoordMin, krisite::kCoordMax));
+        }
+    };
+    return krisite::geom::IPoint{pick(), pick(), pick()};
+}
+
+/// 3 平面が一点で交わるか（w != 0 か）を安全に確かめる。
+inline bool intersects_at_point(const krisite::geom::PlaneD& a, const krisite::geom::PlaneD& b,
+                                const krisite::geom::PlaneD& c) noexcept {
+    using namespace krisite::arith;
+    using namespace krisite::geom;
+    constexpr std::size_t L = max_limbs(limbs::kNormal, limbs::kOffset);
+    const fixed_int<L> m[3][3] = {
+        {widen<L>(a.a), widen<L>(a.b), widen<L>(a.c)},
+        {widen<L>(b.a), widen<L>(b.b), widen<L>(b.c)},
+        {widen<L>(c.a), widen<L>(c.b), widen<L>(c.c)},
+    };
+    return !is_zero(det3(m));
+}
+
 }  // namespace kritest
 
 #endif  // KRISITE_TESTS_TEST_UTIL_HPP
