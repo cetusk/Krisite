@@ -20,6 +20,7 @@
 #include "krisite/csg/boolean.hpp"
 
 #include "corpus.hpp"
+#include "corpus_expect.hpp"
 #include "manifold/manifold.h"
 #include "test_util.hpp"
 
@@ -78,10 +79,10 @@ Topo topo_of(const manifold::Manifold& m) {
     return r;
 }
 
-/// §9.3: 頂点・辺接触の $\cup$ は合否判定から除外します。
+/// §9.3: 孤立した頂点・辺接触は合否判定から除外します。
+/// **定義は `corpus_expect.hpp` の 1 箇所だけです。**
 bool excluded(const std::string& id, BoolOp op) {
-    // 4T′ の A\B も同様（出力に現れる頂点接触）。`test_cp25.cpp` の注記を参照。
-    return (id == "4T" && op == BoolOp::Union) || (id == "4T'" && op == BoolOp::Difference);
+    return kritest::exclusion_of(id, op) != kritest::Exclusion::None;
 }
 
 /// 実際に比較した (ケース, 演算, 深度) の組数。
@@ -139,8 +140,14 @@ int main() {
     KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
     for (const kritest::Case& c : kritest::corpus()) check_case(c);
 
-    // 全ケース × 3 演算 × 深度 4 段から §9.3 の除外 2 組（各 4 深度）を引いた数
-    const std::size_t expect = kritest::corpus().size() * 3 * 4 - 2 * 4;
+    // 全ケース × 3 演算 × 深度 4 段から §9.3 の除外（各 4 深度）を引いた数
+    std::size_t n_excluded = 0;
+    for (const kritest::Case& c : kritest::corpus()) {
+        for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
+            if (excluded(c.id, op)) ++n_excluded;
+        }
+    }
+    const std::size_t expect = kritest::corpus().size() * 3 * 4 - n_excluded * 4;
     std::printf("\n  比較した組数: %zu（期待 %zu）\n", compared, expect);
     KRI_CHECK_MSG(compared == expect, "比較した組数が期待と違う（" + std::to_string(compared) +
                                           " 対 " + std::to_string(expect) +
