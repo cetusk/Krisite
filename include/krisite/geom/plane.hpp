@@ -76,6 +76,36 @@ inline PlaneD plane_from_triangle(const IPoint& p1, const IPoint& p2, const IPoi
     return pl;
 }
 
+/// 軸平行平面 `axis = coord`（SPEC-phase1.md §3.2）。
+///
+/// 法線は +1 の単位ベクトル、d = -coord。平面は `N・x + d = 0` なので
+/// `side(plane, p) > 0` は「coord より大きい側」を意味します。
+///
+/// **セル境界の座標は `IPoint` ではありません。** 深度 k の境界は
+/// `-2^(b-1) + m*2^(b-k)`（m = 0..2^k）で、最大値 `+2^(b-1)` は
+/// `kCoordMax = 2^(b-1)-1` を超えます。だから `std::int64_t` で受けます。
+/// `plane_from_triangle` では作れない平面です。
+///
+/// ビット幅: d が b+1 で kOffset に自明に収まる → widths.hpp bits::kAxisOffset
+inline PlaneD plane_axis_aligned(Axis axis, std::int64_t coord) noexcept {
+    KRISITE_CHECK(coord >= kCoordMin && coord <= -kCoordMin,
+                  "plane_axis_aligned: 座標が [-2^(b-1), 2^(b-1)] の外");
+    PlaneD pl{};
+    const auto one = arith::from_i64<limbs::kNormal>(1);
+    const auto nil = arith::zero<limbs::kNormal>();
+    pl.a = (axis == Axis::X) ? one : nil;
+    pl.b = (axis == Axis::Y) ? one : nil;
+    pl.c = (axis == Axis::Z) ? one : nil;
+    pl.d = arith::from_i64<limbs::kOffset>(-coord);
+    return pl;
+}
+
+/// 4 成分すべてが零か（退化三角形から作られた平面。比例判定で特別扱いが要る）。
+template <std::size_t NB, std::size_t DB>
+inline bool is_null(const Plane<NB, DB>& pl) noexcept {
+    return is_degenerate(pl) && arith::is_zero(pl.d);
+}
+
 /// 3 平面の交点（Cramer）。
 ///
 /// 平面は N・x + d = 0 なので、連立は

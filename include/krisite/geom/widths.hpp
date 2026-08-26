@@ -54,6 +54,45 @@ inline constexpr std::size_t kSide = 9 * b + 20;     ///< side() の被符号値
 inline constexpr std::size_t kOrient3d = 3 * b + 5;  ///< orient3d の行列式（差分形）
 inline constexpr std::size_t kOrient2d = 2 * b + 3;  ///< orient2d の行列式（差分形）
 
+// ---- Phase 1 で追加した量（SPEC-phase1.md §7）--------------------------------
+
+/// 平面の比例判定に使う 2x2 小行列式 p_i*q_j - p_j*q_i（SPEC-phase1 §3.1）。
+///
+/// 係数は法線 a,b,c が 2b+3、オフセット d が 3b+5。最大の積は 法線 x オフセットで
+/// (2b+3)+(3b+5)-1 = 5b+7、差でさらに +1 して 5b+8。仕様の上界 5b+9 を採る。
+inline constexpr std::size_t kPlaneMinor = 5 * b + 9;
+
+/// 平面の全順序に使う交差乗算（SPEC-phase1 §3.1）。
+///
+/// 実際に到達しうる最大は kPlaneMinor と同じ 5b+8 である。先頭非零成分 i は
+/// 法線に限られるため（i が d なら a=b=c=0 で、それは退化三角形の平面）。
+/// 仕様の上界 6b+11 は 24 ビット（b=21）保守的だが、安全側なのでそのまま採る。
+inline constexpr std::size_t kPlaneOrder = 6 * b + 11;
+
+/// 軸平行平面のオフセット d = -coord（SPEC-phase1 §3.2）。
+/// |coord| <= 2^(b-1) なので b+1。kOffset に自明に収まる。
+inline constexpr std::size_t kAxisOffset = b + 1;
+
+/// 三角形 1 枚ぶんの符号付き体積 x6 = det(a, b, c)。
+/// |det| <= 6*2^(3(b-1)) < 2^(3b) なので 3b+1。
+inline constexpr std::size_t kTetraVolume6 = 3 * b + 1;
+
+/// 入力メッシュの三角形数の上限（2 の冪の指数）。符号付き体積の総和幅を決める。
+/// SPEC-phase1 §2.1 は「三角形数 100 未満」を想定しているので 2^16 で十分に余裕がある。
+inline constexpr std::size_t kMaxTrianglesLog2 = 16;
+
+/// 入力メッシュの符号付き体積 x6 = Σ det(v_i, v_j, v_k)（SPEC-phase1 §3.4 の向き検査）。
+///
+/// 1 枚ぶんが kTetraVolume6 = 3b+1 ビット、三角形 2^16 個までの総和で 3b+1+16。
+///
+/// **出力メッシュの体積はこれでは測れません。** 構成点が有理数で共通分母が
+/// 三角形数に比例して伸びるため、GMP が要ります（SPEC-phase1 §10.3）。
+inline constexpr std::size_t kInputVolume6 = kTetraVolume6 + kMaxTrianglesLog2;
+
+// レイキャスト（軸平行レイ）は新しい述語を必要としません。投影後の内外判定は
+// orient2d（2b+3）、前方交差の判定は side(plane, IPoint)（3b+6）と法線成分の符号で
+// 決まります。SPEC-phase1 §6.1。
+
 /// cmp_h() の被符号値 w2*x1 - w1*x2。SPEC §3.1「同次点の比較述語」:
 ///
 ///   w2*x1 : (6b+12) + (7b+14) = 13b + 26
@@ -78,11 +117,24 @@ inline constexpr std::size_t kOrient3d = limbs_for(bits::kOrient3d);
 inline constexpr std::size_t kOrient2d = limbs_for(bits::kOrient2d);
 inline constexpr std::size_t kCmpH = limbs_for(bits::kCmpH);
 
+// Phase 1（SPEC-phase1.md §7）
+inline constexpr std::size_t kPlaneMinor = limbs_for(bits::kPlaneMinor);
+inline constexpr std::size_t kPlaneOrder = limbs_for(bits::kPlaneOrder);
+inline constexpr std::size_t kInputVolume6 = limbs_for(bits::kInputVolume6);
+
 /// Phase 0 の述語が要求する最大リム数（SPEC §3.3 の表の最右列）。
 /// b = 21 → 5、b = 26 → 6。
 inline constexpr std::size_t kMaxPredicate = max_limbs(kSide, kCmpH);
 
 }  // namespace limbs
+
+// 平面係数を共通幅で扱うために kOffset >= kNormal が要る。3b+5 > 2b+3 なので常に成立。
+static_assert(limbs::kOffset >= limbs::kNormal, "kOffset は kNormal 以上のはず");
+static_assert(64 * limbs::kPlaneMinor >= bits::kPlaneMinor, "kPlaneMinor のリム数不足");
+static_assert(64 * limbs::kPlaneOrder >= bits::kPlaneOrder, "kPlaneOrder のリム数不足");
+static_assert(64 * limbs::kInputVolume6 >= bits::kInputVolume6, "kInputVolume6 のリム数不足");
+// 軸平行平面のオフセットは kOffset に収まること
+static_assert(bits::kAxisOffset <= bits::kOffset, "軸平行平面のオフセットが kOffset を超える");
 
 // 実際の計算経路が §3 の上界を下回っていないことをコンパイル時に確かめる。
 static_assert(64 * limbs::kSide >= bits::kSide, "kSide のリム数不足");
