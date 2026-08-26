@@ -7,6 +7,7 @@
 //   - cmp_h が全順序の公理（反対称律・推移律）を満たす
 //   - 同次座標をスカラー倍しても述語の結果が不変
 #include <array>
+#include <utility>  // std::swap
 #include <vector>
 
 #include "test_util.hpp"
