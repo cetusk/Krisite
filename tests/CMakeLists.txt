@@ -31,6 +31,11 @@ krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
 krisite_add_test(depth_monotonic csg/test_depth_monotonic.cpp)
 
+# §12 の呼び出し比率。**この実行ファイルだけ**計数を有効にする
+# （既定ビルドに計数のコストを持ち込まない）。
+krisite_add_test(call_ratio    csg/test_call_ratio.cpp)
+target_compile_definitions(call_ratio PRIVATE KRISITE_COUNT_PREDICATES=1)
+
 # ---- GMP 差分テスト（LGPL、テスト専用）--------------------------------------
 
 if(KRISITE_GMP_FOUND)

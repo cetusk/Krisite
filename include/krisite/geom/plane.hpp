@@ -16,6 +16,7 @@
 
 #include "krisite/arith/fixed_int.hpp"
 #include "krisite/arith/ops.hpp"
+#include "krisite/geom/counters.hpp"
 #include "krisite/geom/point.hpp"
 #include "krisite/geom/widths.hpp"
 
@@ -121,6 +122,7 @@ inline bool is_null(const Plane<NB, DB>& pl) noexcept {
 /// 前提: 3 平面が一点で交わること（呼び出し側が保証）。
 /// w == 0 は契約違反であり、検査ビルドでは停止する。
 inline HPointD intersect3(const PlaneD& p1, const PlaneD& p2, const PlaneD& p3) noexcept {
+    KRISITE_COUNT(intersect3_calls);
     using namespace arith;
     // 列によって幅が違うので、行列式は最大幅にそろえて計算する（正しさ優先。SPEC §0）。
     constexpr std::size_t L = max_limbs(limbs::kNormal, limbs::kOffset);
