@@ -296,6 +296,52 @@ inline int plane_cmp(const PlaneD& p, const PlaneD& q) noexcept {
     return 0;
 }
 
+// ---- 同次点を投影した 2D 向き（SPEC-phase1.md §6.1 のレイキャスト）----------
+
+namespace detail {
+
+/// 同次点の成分（軸別）。
+inline const arith::fixed_int<limbs::kHomoXyz>& hcomp(const HPointD& p, Axis ax) noexcept {
+    return component(p, ax);
+}
+
+/// IPoint の成分（軸別）。
+inline std::int32_t icomp(const IPoint& p, Axis ax) noexcept {
+    return (ax == Axis::X) ? p.x : (ax == Axis::Y) ? p.y : p.z;
+}
+
+}  // namespace detail
+
+/// 軸 `along` に沿って投影した平面での `orient2d(a, b, p)` の被符号値。
+///
+/// 投影後の座標は右手系の巡回順（X を落とす → (y,z)、Y → (z,x)、Z → (x,y)）。
+/// 実座標での向きは `O / p.w` なので、符号は `sign(O) * sign(p.w)` になります。
+///
+/// ビット幅 8b+17 → widths.hpp bits::kOrient2dH
+inline arith::fixed_int<limbs::kOrient2dH> orient2d_h_value(const IPoint& a, const IPoint& b,
+                                                            const HPointD& p, Axis along) noexcept {
+    using namespace arith;
+    // 投影後の 2 軸（巡回順）
+    const Axis u = (along == Axis::X) ? Axis::Y : (along == Axis::Y) ? Axis::Z : Axis::X;
+    const Axis v = (along == Axis::X) ? Axis::Z : (along == Axis::Y) ? Axis::X : Axis::Y;
+
+    // p_c - a_c * p.w
+    auto rel = [&](Axis c) {
+        return sub_mixed(detail::hcomp(p, c),
+                         mul(from_i64<limbs::kCoord>(detail::icomp(a, c)), p.w));
+    };
+    const auto ru = rel(u), rv = rel(v);
+    const auto du = coord_diff(detail::icomp(b, u), detail::icomp(a, u));
+    const auto dv = coord_diff(detail::icomp(b, v), detail::icomp(a, v));
+    return resize<limbs::kOrient2dH>(sub_widen(mul(du, rv), mul(dv, ru)));
+}
+
+/// 軸 `along` に沿って投影した 2D の向き。-1 / 0 / +1。
+inline int orient2d_h(const IPoint& a, const IPoint& b, const HPointD& p, Axis along) noexcept {
+    KRISITE_CHECK(!arith::is_zero(p.w), "orient2d_h: HPoint の w == 0");
+    return arith::sign(orient2d_h_value(a, b, p, along)) * arith::sign(p.w);
+}
+
 // ---- 入力メッシュの向き検査（SPEC-phase1.md §3.4）----------------------------
 
 /// 三角形 (a,b,c) と原点がなす四面体の符号付き体積 x6 = det(a, b, c)。

@@ -8,6 +8,7 @@
 #include "krisite/arith/intrinsics.hpp"
 #include "krisite/arith/ops.hpp"
 #include "krisite/config.hpp"
+#include "krisite/csg/boolean.hpp"
 #include "krisite/csg/faces.hpp"
 #include "krisite/csg/fragment.hpp"
 #include "krisite/csg/plane_table.hpp"
