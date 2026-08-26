@@ -52,9 +52,16 @@ bool excluded_from_verdict(const char* id, BoolOp op) {
     return (s == "4T" && op == BoolOp::Union) || (s == "4T'" && op == BoolOp::Difference);
 }
 
+/// §9.3.1 の番人: 除外した (ケース, 演算, 深度) の件数。
+///
+/// **2〜3 件なら特殊ケース。多くのケースで必要になるなら、§2.1「出力は多様体」
+/// という前提のほうが誤りです。** そのときはケースを除外するのではなく仕様を直します。
+std::size_t excluded_count = 0;
+
 struct Row {
     std::string id;
     unsigned depth;
+    BoolOp op;
     BoolStats st;
     TopologyReport t;
 };
@@ -86,8 +93,24 @@ void run_case(const kritest::Case& c, std::vector<Row>& rows) {
                 st.active_cells, st.total_cells, st.max_planes_at_point,
                 st.max_mesh_planes_at_point, st.merged_by_value, st.constructed_points,
                 st.midpoint_raycasts, st.centroid_raycasts, t.edges_deficient, t.edges_excess);
-            rows.push_back({c.id, d, st, t});
-            if (excluded) continue;
+            rows.push_back({c.id, d, op, st, t});
+            if (excluded) {
+                // §9.3.1 除外の適用条件。**広げすぎないための番人です。**
+                // 頂点多様体**だけ**が落ちていることを確かめ、他は拘束のままにします。
+                const std::string tag = std::string("ケース ") + c.id + " " + op_name(op) +
+                                        "（深度 " + std::to_string(d) + "）";
+                KRI_CHECK_MSG(t.edges_deficient == 0 && t.edges_excess == 0,
+                              tag +
+                                  ": 除外の条件を満たさない（辺の次数が 2 でない。"
+                                  "面の過不足があるならバグです）");
+                KRI_CHECK_MSG(t.oriented, tag + ": 除外の条件を満たさない（向きが整合しない）");
+                KRI_CHECK_MSG(t.no_degenerate,
+                              tag + ": 除外の条件を満たさない（退化三角形がある）");
+                KRI_CHECK_MSG(!t.vertex_manifold,
+                              tag + ": 除外しているのに頂点多様体が通っている（除外が不要）");
+                ++excluded_count;
+                continue;
+            }
 
             const std::string tag = std::string("ケース ") + c.id + " " + op_name(op) + "（深度 " +
                                     std::to_string(d) + "）";
@@ -118,6 +141,39 @@ void run_case(const kritest::Case& c, std::vector<Row>& rows) {
             }
         }
     }
+}
+
+/// §9.3.2: 落ちている頂点のリンク構造を記録する。
+///
+/// **扇の数だけでは「ピンチ点」と「円環」を区別できません。** どちらも曲面上では
+/// 閉路 2 本に見えます。手がかりは連結性で、扇が別々の連結成分に属するなら錐は
+/// 分離しており、$k$ 分裂で $\chi$ が $k-1$ 増えて多様体化できます。
+/// 同一成分なら円環の疑いがあり、**頂点を複製しても円板になりません。**
+void report_link_structure(const std::vector<Row>& rows) {
+    std::printf("\n  §9.3.2 落ちている頂点のリンク構造\n");
+    std::printf("    %-5s %-4s %-3s %-5s %-4s %-5s %-9s %-8s %-9s %s\n", "ケース", "深度", "演算",
+                "χ", "C", "g", "非多様点", "扇の数", "χ分裂後", "扇が同一成分");
+    std::size_t worst_same_component = 0;
+    for (const Row& r : rows) {
+        // 空メッシュはすべてのフラグが false になるので除く（§2.3、空は合法）
+        if (r.t.vertex_manifold || r.t.empty) continue;
+        std::printf("    %-6s %-5u %-4s %-6lld %-5zu %-6lld %-10zu %-9zu %-10lld %zu\n",
+                    r.id.c_str(), r.depth, op_name(r.op), r.t.chi, r.t.components, r.t.genus_total,
+                    r.t.nonmanifold_vertices, r.t.max_vertex_fans, r.t.chi_after_split,
+                    r.t.vertices_fans_in_one_component);
+        worst_same_component = std::max(worst_same_component, r.t.vertices_fans_in_one_component);
+    }
+    std::printf("    → 除外した組数: %zu\n", excluded_count);
+    // **円環が出たら報告対象です**（§9.3.2）。分裂で多様体化できないので、
+    // Phase 2 の選択肢が「分裂させるかどうか」ではなくなります。
+    KRI_CHECK_MSG(worst_same_component == 0,
+                  "扇が同一の連結成分に属する頂点が出ました（円環の疑い）。"
+                  "分裂では多様体化できないので、SPEC §9.3.2 に従って報告してください");
+    // §9.3.1 の番人: 除外が多数に及ぶなら §2.1 の前提を疑う
+    KRI_CHECK_MSG(excluded_count <= 8,
+                  "§9.3 の除外が " + std::to_string(excluded_count) +
+                      " 件に達しました。特殊ケースの域を超えています。"
+                      "ケースを除外するのではなく §2.1 の前提を見直してください");
 }
 
 /// §13: 斜面ケースで 4 枚以上が検出されること。
@@ -192,6 +248,7 @@ int main() {
         if (id != "2T" && id != "4T" && id != "4T'" && id != "5T") continue;
         run_case(c, rows);
     }
+    report_link_structure(rows);
     check_four_planes(rows);
     check_active_cells(rows);
     std::printf("\n");
