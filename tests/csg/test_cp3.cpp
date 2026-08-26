@@ -5,6 +5,7 @@
 // **§9.3 の除外は §9.3.1 の条件を満たすときだけ適用します。** 条件を満たさない
 // なら、それは除外すべき退化ではなくバグです。除外の件数も数えて報告します
 // （多数に及ぶなら §2.1「出力は多様体」という前提のほうが誤り）。
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <string>
@@ -25,6 +26,27 @@ using kritest::Exclusion;
 namespace {
 
 constexpr unsigned kMaxDepth = 3;
+
+/// §5.3 の第2段が効いていること: **出力に値の重複する頂点が無い。**
+///
+/// 第2段は「全構成点を lex_less で整列し、値が厳密に等しいものを併合する」ので、
+/// 併合後に等しい値の頂点が 2 つ以上残ることはありません。
+///
+/// **これは冪等性の比較では検出できません。** 比較側も値で同一視するため、
+/// 第2段を止めても一致してしまいます（`test_idempotence.cpp` の注記）。
+/// ここは値の重複そのものを見るので、第2段を止めれば必ず落ちます。
+std::size_t duplicate_vertex_values(const BoolMesh& m) {
+    std::vector<std::uint32_t> ord(m.vertices.size());
+    for (std::uint32_t i = 0; i < ord.size(); ++i) ord[i] = i;
+    std::sort(ord.begin(), ord.end(), [&](std::uint32_t a, std::uint32_t b) {
+        return krisite::geom::lex_less(m.vertices[a], m.vertices[b]);
+    });
+    std::size_t dup = 0;
+    for (std::size_t i = 1; i < ord.size(); ++i) {
+        if (krisite::geom::h_equal(m.vertices[ord[i - 1]], m.vertices[ord[i]])) ++dup;
+    }
+    return dup;
+}
 
 const char* op_name(BoolOp op) {
     switch (op) {
@@ -84,6 +106,12 @@ void run_case(const kritest::Case& c) {
                                                : "**NG**",
                 st.fragments, st.max_planes_at_point, st.max_mesh_planes_at_point,
                 st.merged_by_value, st.max_merge_span);
+
+            // §5.3: 第2段が効いていること（値の重複した頂点が残っていない）
+            KRI_CHECK_MSG(duplicate_vertex_values(r) == 0,
+                          tag + ": 出力に値の重複する頂点が " +
+                              std::to_string(duplicate_vertex_values(r)) +
+                              " 組ある。§5.3 の第2段が効いていません");
 
             if (ex != Exclusion::None) {
                 std::string why;
