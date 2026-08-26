@@ -49,6 +49,7 @@ int main() {
     // Phase 1（SPEC-phase1.md §7）
     Gauge g_pmin{"平面の小行列式 (5b+9)", bits::kPlaneMinor, 0, 0};
     Gauge g_vol{"四面体の体積x6 (3b+1)", bits::kTetraVolume6, 0, 0};
+    Gauge g_o2dh{"orient2d_h (8b+17)", bits::kOrient2dH, 0, 0};
 
     Rng rng(20260826);
 
@@ -103,10 +104,13 @@ int main() {
             for (int j = i + 1; j < 4; ++j) feed(g_pmin, plane_minor(pl0, pl1, i, j));
         }
         feed(g_vol, tetra_volume6(p[0], p[1], p[2]));
+        // レイキャストの投影向き（同次点版）
+        feed(g_o2dh, orient2d_h_value(p[0], p[1], v, Axis::X));
+        feed(g_o2dh, orient2d_h_value(p[2], p[3], u, Axis::Y));
     }
 
-    Gauge* all[] = {&g_diff,  &g_normal, &g_offset, &g_w,    &g_xyz,  &g_side,
-                    &g_sidei, &g_o3d,    &g_o2d,    &g_cmph, &g_pmin, &g_vol};
+    Gauge* all[] = {&g_diff, &g_normal, &g_offset, &g_w,    &g_xyz, &g_side, &g_sidei,
+                    &g_o3d,  &g_o2d,    &g_cmph,   &g_pmin, &g_vol, &g_o2dh};
 
     std::printf("\n  b = %zu のビット幅実測（SPEC-phase0.md §8.4）\n", b);
     std::printf("  実測値は乱択で到達した下限であり、真の最大値ではない。\n");
