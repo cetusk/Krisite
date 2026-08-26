@@ -111,6 +111,17 @@ Linux(GCC/Clang) / macOS(Apple Silicon) / Windows(MSVC) のマトリクスは
 開発コンテナにこれらのツールチェーンを入れる必要はありません。
 CI は可搬経路（`__int128` / 32bit 筆算）と GMP 差分テストも別ジョブで回します。
 
+## ドキュメント
+
+| ファイル | 内容 |
+|---|---|
+| [`docs/SPEC-phase0.md`](docs/SPEC-phase0.md) | Phase 0 の仕様。ビット幅解析、述語一覧、テスト要件 |
+| [`docs/IMPL-phase0.md`](docs/IMPL-phase0.md) | Phase 0 の実装ノート。**なぜそう作ったか**、検証の設計と検出力、Phase 1 への申し送り |
+| [`docs/BENCH.md`](docs/BENCH.md) | ベンチマークの基準線 |
+| [`docs/STYLE.md`](docs/STYLE.md) | コーディング規約（命名、書式、算術コードの制約） |
+| [`assets/BRAND.md`](assets/BRAND.md) | ロゴとテーマカラーの定義 |
+| [`CLAUDE.md`](CLAUDE.md) | 開発方針。**ライセンス方針を含む** |
+
 ## ライセンス
 
 **MIT。** この制約は他のすべてに優先します。
