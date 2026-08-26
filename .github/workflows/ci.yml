@@ -130,6 +130,87 @@ jobs:
           fi
 
   # ---- ベンチマーク（数値は docs/BENCH.md に手で記録する）--------------------
+  # ---- 変異テスト（SPEC-phase1 §10.5 / §10.6）--------------------------------
+  #
+  # **検査 OFF で回します。** 検査 ON だと変異 3 が KRISITE_CHECK で停止し、
+  # 「テスト体系が検出するか」ではなく「表明が止めるか」を測ってしまいます。
+  #
+  # 期待値（検出する / しない）は tests/CMakeLists.txt に表として書いてあり、
+  # ctest が WILL_FAIL で検証します。**素通りする組合せも固定しています。**
+  mutation:
+    name: 変異テスト (§10.5)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - name: 構成
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKRISITE_CHECKED_ARITH=OFF \
+            -DKRISITE_BUILD_MUTANTS=ON
+      - name: ビルド
+        run: cmake --build build
+      - name: 変異が期待どおり検出されること
+        run: ctest --test-dir build -L mutation --output-on-failure
+      - name: 変異 3 は検査ビルドでは表明が止めること
+        # もう一方の検出経路。位相検査に届く前に fragment_sign の不変条件が落とす。
+        # **同じ誤りを 2 つの独立した機構が捕まえる**ことの確認（§10.5）。
+        run: |
+          cmake -B build-chk -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_CHECKED_ARITH=ON
+          cmake --build build-chk --target cp2
+          g++ -std=c++20 -O1 -Iinclude -Itests \
+            -DKRISITE_COORD_BITS=21 -DKRISITE_CHECKED_ARITH=1 \
+            -DKRISITE_MUTATION_LOCAL_PLANES=1 \
+            tests/csg/test_cp2.cpp -o mut3_checked
+          if ./mut3_checked > out.txt 2>&1; then
+            echo "変異 3 が検査ビルドで素通りしました"; cat out.txt; exit 1
+          fi
+          grep -q "krisite: " out.txt || { echo "表明で止まっていません"; cat out.txt; exit 1; }
+          echo "OK: 表明が停止させました"
+
+  # ---- 外部正解器 Manifold（SPEC-phase1 §10.4 / §10.6）-----------------------
+  #
+  # **開発コンテナでは実施できません**（ネットワーク遮断 + git clone の deny）。
+  # GitHub Actions にはネットワークがあるので、ここで実施します。
+  # deny は緩めていません。
+  manifold:
+    name: Manifold 正解器 (§10.4)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - name: 構成（Manifold を FetchContent で取得）
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKRISITE_BUILD_TESTS_WITH_MANIFOLD=ON
+      - name: 取得したコミットとライセンスを記録
+        # CLAUDE.md「LICENSE ファイルを実際に読んで確認したもの。README の記述を信用しない」。
+        # 構成時にも FATAL_ERROR で検査しているが、根拠を CI ログに残す。
+        run: |
+          SRC=$(find build/_deps -maxdepth 1 -name 'manifold-src' -type d)
+          echo "commit: $(git -C "$SRC" rev-parse HEAD)"
+          echo "--- LICENSE の冒頭 ---"
+          head -5 "$SRC/LICENSE"
+          grep -q "Apache License" "$SRC/LICENSE"
+      - name: ビルド
+        run: cmake --build build
+      - name: 本体に Manifold が入っていないことを確認
+        # krisite はヘッダオンリーの INTERFACE ライブラリなので、成果物に混ざる余地は
+        # 本来ないが、テスト実行ファイル以外がリンクしていないことを機械的に確かめる。
+        run: |
+          for f in $(find build -name 'lib*.a' -o -name 'lib*.so'); do
+            case "$f" in */manifold*|*/_deps/*) continue;; esac
+            if nm -C "$f" 2>/dev/null | grep -q "manifold::"; then
+              echo "本体成果物に Manifold のシンボルが混入: $f"; exit 1
+            fi
+          done
+          echo "OK: 本体に Manifold は入っていません"
+      - name: 突き合わせ
+        run: ctest --test-dir build -R manifold_oracle --output-on-failure
+
   bench:
     name: ベンチマーク（基準線）
     runs-on: ubuntu-24.04
