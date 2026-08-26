@@ -101,6 +101,12 @@ void input_volume6(mpq_ptr out, const TriMesh& m) {
     mpz_clear(z);
 }
 
+/// 軸平行な直方体の体積 x6 を mpz で（int64 では溢れる: 6*(2^21)^3 > 2^63）。
+void box_volume6(mpz_ptr out, const std::int64_t ext[3]) {
+    mpz_set_si(out, 6);
+    for (int t = 0; t < 3; ++t) mpz_mul_si(out, out, static_cast<long>(ext[t]));
+}
+
 std::string to_str(mpq_srcptr q) {
     char* s = mpq_get_str(nullptr, 10, q);
     std::string r(s);
@@ -119,6 +125,37 @@ void check_case(const kritest::Case& c) {
     input_volume6(va, A);
     input_volume6(vb, B);
     std::printf("\n  ケース %-3s %s\n", c.id, c.what);
+
+    // §10.3: 解析的な期待体積との比較。**恒等式だけでは足りません。**
+    // 恒等式は自己整合の検査なので、系統的な誤りが相関して入ると素通りし得ます。
+    mpq_t want_i;
+    mpq_init(want_i);
+    bool has_analytic = false;
+    if (c.box_pair) {
+        const kritest::Aabb64 ba = kritest::aabb_of(A), bb = kritest::aabb_of(B);
+        std::int64_t ea[3], eb[3], eo[3];
+        for (int t = 0; t < 3; ++t) {
+            ea[t] = ba.hi[t] - ba.lo[t];
+            eb[t] = bb.hi[t] - bb.lo[t];
+        }
+        kritest::overlap_extent(ba, bb, eo);
+        mpz_t z;
+        mpz_init(z);
+        box_volume6(z, ea);
+        mpq_set_z(lhs, z);
+        KRI_CHECK_MSG(mpq_equal(lhs, va) != 0,
+                      std::string("ケース ") + c.id + ": |A| が解析値と食い違う");
+        box_volume6(z, eb);
+        mpq_set_z(lhs, z);
+        KRI_CHECK_MSG(mpq_equal(lhs, vb) != 0,
+                      std::string("ケース ") + c.id + ": |B| が解析値と食い違う");
+        box_volume6(z, eo);
+        mpq_set_z(want_i, z);
+        mpz_clear(z);
+        has_analytic = true;
+        std::printf("    解析値: |A|=%s |B|=%s |A∩B|=%s（x6）\n", to_str(va).c_str(),
+                    to_str(vb).c_str(), to_str(want_i).c_str());
+    }
 
     for (unsigned d = 0; d <= 3; ++d) {
         BoolStats st;
@@ -152,6 +189,23 @@ void check_case(const kritest::Case& c) {
         KRI_CHECK_MSG(ok2, std::string("ケース ") + c.id + "（深度 " + std::to_string(d) +
                                "）: |A\\B| != |A| - |A∩B|");
 
+        // 解析値との比較（導出できるケースのみ）
+        if (has_analytic) {
+            KRI_CHECK_MSG(mpq_equal(vi, want_i) != 0,
+                          std::string("ケース ") + c.id + "（深度 " + std::to_string(d) +
+                              "）: |A∩B| が解析値と食い違う（得 " + to_str(vi) + " 期待 " +
+                              to_str(want_i) + "）");
+            mpq_add(rhs, va, vb);
+            mpq_sub(rhs, rhs, want_i);
+            KRI_CHECK_MSG(mpq_equal(vu, rhs) != 0, std::string("ケース ") + c.id + "（深度 " +
+                                                       std::to_string(d) +
+                                                       "）: |A∪B| が解析値と食い違う");
+            mpq_sub(rhs, va, want_i);
+            KRI_CHECK_MSG(mpq_equal(vd, rhs) != 0, std::string("ケース ") + c.id + "（深度 " +
+                                                       std::to_string(d) +
+                                                       "）: |A\\B| が解析値と食い違う");
+        }
+
         // 深度不変性の体積版: 深度によらず同じ値であること（§10.2.1 の補強）
         if (d == 0) {
             mpq_set(vu0, vu);  // 深度 0 の ∪ を基準に取っておく（lhs は毎回上書きされる）
@@ -162,6 +216,7 @@ void check_case(const kritest::Case& c) {
         }
     }
 
+    mpq_clear(want_i);
     for (mpq_ptr p : {va, vb, vu, vi, vd, vu0, lhs, rhs}) mpq_clear(p);
 }
 

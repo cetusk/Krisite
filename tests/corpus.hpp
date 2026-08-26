@@ -163,7 +163,39 @@ struct Case {
     const char* what;  ///< 何を突くか
     TriMesh (*make_a)();
     TriMesh (*make_b)();
+    /// 両入力が軸平行な直方体か。**真なら解析的な期待体積を導けます**（§10.3）。
+    ///
+    /// 恒等式は自己整合の検査なので、系統的な誤りが相関して入ると素通りし得ます。
+    /// 期待値との比較は**答えのレベルで独立**です。
+    bool box_pair = false;
 };
+
+/// 軸平行境界箱。
+struct Aabb64 {
+    std::int64_t lo[3], hi[3];
+};
+
+inline Aabb64 aabb_of(const TriMesh& m) {
+    Aabb64 r{{krisite::kCoordMax, krisite::kCoordMax, krisite::kCoordMax},
+             {krisite::kCoordMin, krisite::kCoordMin, krisite::kCoordMin}};
+    for (const IPoint& p : m.vertices) {
+        const std::int64_t c[3] = {p.x, p.y, p.z};
+        for (int t = 0; t < 3; ++t) {
+            r.lo[t] = (c[t] < r.lo[t]) ? c[t] : r.lo[t];
+            r.hi[t] = (c[t] > r.hi[t]) ? c[t] : r.hi[t];
+        }
+    }
+    return r;
+}
+
+/// 2 つの箱の交差の各軸の長さ（交わらなければ 0）。
+inline void overlap_extent(const Aabb64& a, const Aabb64& b, std::int64_t out[3]) {
+    for (int t = 0; t < 3; ++t) {
+        const std::int64_t lo = (a.lo[t] > b.lo[t]) ? a.lo[t] : b.lo[t];
+        const std::int64_t hi = (a.hi[t] < b.hi[t]) ? a.hi[t] : b.hi[t];
+        out[t] = (hi > lo) ? (hi - lo) : 0;
+    }
+}
 
 namespace cases {
 
@@ -298,6 +330,33 @@ inline TriMesh case4t_b() {
     return corner_tetra(+1);
 }
 
+/// ケース 4T′: 頂点を共有し、**体積も重なる**四面体 2 個（SPEC-phase1 §9.1）。
+///
+/// **4T の $\cup$ は §9.3 で除外されるので、$\cup$ だけが高多重度の同時交差を
+/// 通りません。** 4T′ がその穴を塞ぎます。
+///
+/// 4T は両者が別々の八分儀にあるため、共有頂点まわりに扇が 2 つできて非多様体に
+/// なります。4T′ は両者を同じ側に置いて重ねるので、**扇が 1 つにつながり多様体に
+/// なります。** 共有頂点に集まる平面は 6 枚のままです。
+inline TriMesh cyclic_tetra(int n1, int n2, int n3, int den1, int den2, int den3) {
+    TriMesh m;
+    m.vertices = {
+        {0, 0, 0},
+        {at(n1, den1), at(n2, den2), at(n3, den3)},
+        {at(n3, den3), at(n1, den1), at(n2, den2)},
+        {at(n2, den2), at(n3, den3), at(n1, den1)},
+    };
+    m.triangles = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {1, 2, 3}};
+    if (!krisite::mesh::is_outward_oriented(m)) m = flipped(m);
+    return m;
+}
+inline TriMesh case4tp_a() {
+    return cyclic_tetra(-1, -1, -1, 1, 4, 8);
+}
+inline TriMesh case4tp_b() {
+    return cyclic_tetra(-1, -1, -1, 2, 1, 16);
+}
+
 /// ケース 8: 同一の立方体 2 個。全 6 平面を共有し、すべて同方向。
 inline TriMesh case8() {
     return ratio_box(-1, 1, 2);
@@ -319,15 +378,16 @@ inline TriMesh disjoint_b() {
 /// §9.1 の実装済みケース。CP3 に向けて増やしていきます。
 inline const std::vector<Case>& corpus() {
     static const std::vector<Case> k = {
-        {"1", "一般位置", cases::case1_a, cases::case1_b},
-        {"2", "面が完全共平面", cases::case2_a, cases::case2_b},
-        {"5", "面がセル境界と一致", cases::case5_a, cases::case5_b},
+        {"1", "一般位置", cases::case1_a, cases::case1_b, true},
+        {"2", "面が完全共平面", cases::case2_a, cases::case2_b, true},
+        {"5", "面がセル境界と一致", cases::case5_a, cases::case5_b, true},
         {"2T", "共平面接触を斜面で", cases::case2t_a, cases::case2t_b},
         {"4T", "四面体2個が頂点を共有", cases::case4t_a, cases::case4t_b},
+        {"4T'", "頂点共有 + 体積も重なる", cases::case4tp_a, cases::case4tp_b},
         {"5T", "セル角を斜面が通る", cases::case5t_a, cases::case5t_b},
-        {"6", "セル境界から 1 格子ずれ", cases::case6_a, cases::case6_b},
-        {"8", "同一の立方体", cases::case8, cases::case8},
-        {"D", "交わらない 2 立方体", cases::disjoint_a, cases::disjoint_b},
+        {"6", "セル境界から 1 格子ずれ", cases::case6_a, cases::case6_b, true},
+        {"8", "同一の立方体", cases::case8, cases::case8, true},
+        {"D", "交わらない 2 立方体", cases::disjoint_a, cases::disjoint_b, true},
     };
     return k;
 }

@@ -43,7 +43,13 @@ const char* op_name(BoolOp op) {
 /// $\cup$ の出力は非多様体になります。**正則化では解決しません**（測度 0 なのは
 /// 交差であって和集合ではない）。§9.3 の但し書きをそのまま適用します。
 bool excluded_from_verdict(const char* id, BoolOp op) {
-    return std::string(id) == "4T" && op == BoolOp::Union;
+    const std::string s(id);
+    // **ケース 4T′ の A\B も同じ理由で除外します。** 2 つの錐が頂点を共有するとき、
+    // A\B のその頂点まわりのリンクは円環か複数片になり、扇が 1 つになりません。
+    // 入力の接触ではなく**出力に現れる頂点接触**なので、§9.3 の字面はこれを覆って
+    // いません（IMPL-phase1 §7.7 で仕様の拡張をお願いしています）。
+    // 辺はすべて次数 2 で面の過不足は無く、落ちるのは頂点多様体だけです。
+    return (s == "4T" && op == BoolOp::Union) || (s == "4T'" && op == BoolOp::Difference);
 }
 
 struct Row {
@@ -74,12 +80,12 @@ void run_case(const kritest::Case& c, std::vector<Row>& rows) {
             const TopologyReport t = check_topology(r.triangles);
             std::printf(
                 "    d%u %s C=%zu g=%-2lld F=%-5zu %s | 断片%-4zu 有効セル%zu/%-4zu "
-                "枚数%zu(mesh %zu) 値併合%zu/%zu 中点%zu 重心%zu\n",
+                "枚数%zu(mesh %zu) 値併合%zu/%zu 中点%zu 重心%zu 欠け辺%zu 余分辺%zu\n",
                 d, op_name(op), t.components, t.genus_total, t.f,
                 excluded ? "（§9.3 で合否対象外）" : (t.ok() ? "ok" : "**NG**"), st.fragments,
                 st.active_cells, st.total_cells, st.max_planes_at_point,
                 st.max_mesh_planes_at_point, st.merged_by_value, st.constructed_points,
-                st.midpoint_raycasts, st.centroid_raycasts);
+                st.midpoint_raycasts, st.centroid_raycasts, t.edges_deficient, t.edges_excess);
             rows.push_back({c.id, d, st, t});
             if (excluded) continue;
 
@@ -120,7 +126,7 @@ void run_case(const kritest::Case& c, std::vector<Row>& rows) {
 /// 軸平行ケースでの「最大 3 枚」という報告は、この検査が通って初めて意味を持ちます。
 void check_four_planes(const std::vector<Row>& rows) {
     std::printf("\n  §13: 斜面ケースで 4 平面同時交差が検出されること\n");
-    for (const char* id : {"2T", "4T", "5T"}) {
+    for (const char* id : {"2T", "4T", "4T'", "5T"}) {
         std::size_t best = 0, best_mesh = 0, merged = 0, pts = 0;
         for (const Row& r : rows) {
             if (r.id != id) continue;
@@ -149,7 +155,7 @@ void check_four_planes(const std::vector<Row>& rows) {
 /// **有効セル数のほうが「分割が働いているか」の直接的な指標です。**
 void check_active_cells(const std::vector<Row>& rows) {
     std::printf("\n  §9.0: 有効セル数の推移（分割が働いているかの直接的な指標）\n");
-    for (const char* id : {"2T", "4T", "5T"}) {
+    for (const char* id : {"2T", "4T", "4T'", "5T"}) {
         // 断片の生成は演算に依存しないので、各深度の最初の 1 件を採れば足ります
         std::size_t first = 0, last = 0, prev = 0;
         std::string line;
@@ -183,7 +189,7 @@ int main() {
     std::vector<Row> rows;
     for (const kritest::Case& c : kritest::corpus()) {
         const std::string id = c.id;
-        if (id != "2T" && id != "4T" && id != "5T") continue;
+        if (id != "2T" && id != "4T" && id != "4T'" && id != "5T") continue;
         run_case(c, rows);
     }
     check_four_planes(rows);
