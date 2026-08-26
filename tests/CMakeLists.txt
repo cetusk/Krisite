@@ -28,7 +28,14 @@ krisite_add_test(fragment      csg/test_fragment.cpp)
 krisite_add_test(cp1           csg/test_cp1.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
+krisite_add_test(cp3           csg/test_cp3.cpp)
+krisite_add_test(idempotence   csg/test_idempotence.cpp)
 krisite_add_test(depth_monotonic csg/test_depth_monotonic.cpp)
+
+# §12 の呼び出し比率。**この実行ファイルだけ**計数を有効にする
+# （既定ビルドに計数のコストを持ち込まない）。
+krisite_add_test(call_ratio    csg/test_call_ratio.cpp)
+target_compile_definitions(call_ratio PRIVATE KRISITE_COUNT_PREDICATES=1)
 
 # ---- GMP 差分テスト（LGPL、テスト専用）--------------------------------------
 
@@ -109,16 +116,25 @@ if(KRISITE_BUILD_MUTANTS)
     # **軸平行コーパスでは素通りします。** 値併合が 0 件（第1段が全頂点を捕まえる）
     # なので、第2段を消しても何も変わりません。斜面コーパスが必須です。
     krisite_add_mutant(1 KRISITE_MUTATION_NO_STAGE2=1 cp25 FAIL)
+    krisite_add_mutant(1 KRISITE_MUTATION_NO_STAGE2=1 cp3  FAIL)
     krisite_add_mutant(1 KRISITE_MUTATION_NO_STAGE2=1 cp2  PASS)
+    # **冪等性は 3 変異とも検出しません。** 比較側が頂点を値で同一視するので、
+    # 第2段を止めても一致します（構造的な盲点）。∩ と ∪ を互いに比べる形なので、
+    # 両方に同じ変異がかかると差が出ません。**素通りを固定して記録します。**
+    krisite_add_mutant(1 KRISITE_MUTATION_NO_STAGE2=1 idempotence PASS)
 
     # 変異 2: §4.2 の割り当てを開領域に変える
     krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 cp2             FAIL)
     krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 cp25            FAIL)
+    krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 cp3             FAIL)
     krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 depth_monotonic FAIL)
+    krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 idempotence     PASS)
 
     # 変異 3: §4.3.1 の分割平面を割り当て集合に変える（T 字接合が生じる）
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp1             FAIL)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp2            FAIL)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp25           FAIL)
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp3             FAIL)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 depth_monotonic FAIL)
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 idempotence     PASS)
 endif()

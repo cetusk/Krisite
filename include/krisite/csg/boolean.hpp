@@ -94,8 +94,12 @@ struct BoolStats {
     std::size_t raycasts = 0;                  ///< レイキャスト回数
     std::size_t midpoint_raycasts = 0;         ///< うち中点へのフォールバック（§6.1）
     std::size_t centroid_raycasts = 0;         ///< うち 3 頂点の重心へのフォールバック
-    std::size_t side_calls = 0;                ///< 参考: side の呼び出し数
-    std::size_t intersect3_calls = 0;          ///< 参考: intersect3 の呼び出し数
+    /// `side` と `intersect3` の呼び出し数（SPEC-phase1 §12）。
+    ///
+    /// **`KRISITE_COUNT_PREDICATES` を定義したビルドでのみ埋まります。**
+    /// 既定ビルドでは 0 のままです（計数のコストを本番に持ち込まないため）。
+    std::uint64_t side_calls = 0;
+    std::uint64_t intersect3_calls = 0;
 };
 
 namespace detail {
@@ -156,6 +160,9 @@ inline bool select_fragment(BoolOp op, int owner, FragClass c) noexcept {
 inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolOp op,
                            unsigned depth, BoolStats* stats = nullptr) {
     BoolStats st;
+#if defined(KRISITE_COUNT_PREDICATES)
+    geom::counters::reset();
+#endif
 
     // ---- 1. 平面抽出・ID 付与 ----
     PlaneTable table;
@@ -584,6 +591,10 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         st.max_mesh_planes_at_point = std::max(st.max_mesh_planes_at_point, mcnt);
     }
 
+#if defined(KRISITE_COUNT_PREDICATES)
+    st.side_calls = geom::counters::side_calls;
+    st.intersect3_calls = geom::counters::intersect3_calls;
+#endif
     if (stats) *stats = st;
     return out;
 }

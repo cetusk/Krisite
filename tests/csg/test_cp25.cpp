@@ -15,6 +15,7 @@
 #include "krisite/csg/boolean.hpp"
 
 #include "corpus.hpp"
+#include "corpus_expect.hpp"
 #include "test_util.hpp"
 
 using namespace krisite::csg;
@@ -37,19 +38,10 @@ const char* op_name(BoolOp op) {
     }
 }
 
-/// §9.3 の扱いを受けるか（合否に使わず、結果だけ記録する）。
-///
-/// ケース 4T は四面体 2 個が**頂点だけ**を共有します。ケース 11b と同型なので、
-/// $\cup$ の出力は非多様体になります。**正則化では解決しません**（測度 0 なのは
-/// 交差であって和集合ではない）。§9.3 の但し書きをそのまま適用します。
+/// §9.3 の扱いを受けるか。**定義は `corpus_expect.hpp` の 1 箇所だけです。**
+/// CP2.5 / CP3 / Manifold が別々に判断するとずれます。
 bool excluded_from_verdict(const char* id, BoolOp op) {
-    const std::string s(id);
-    // **ケース 4T′ の A\B も同じ理由で除外します。** 2 つの錐が頂点を共有するとき、
-    // A\B のその頂点まわりのリンクは円環か複数片になり、扇が 1 つになりません。
-    // 入力の接触ではなく**出力に現れる頂点接触**なので、§9.3 の字面はこれを覆って
-    // いません（IMPL-phase1 §7.7 で仕様の拡張をお願いしています）。
-    // 辺はすべて次数 2 で面の過不足は無く、落ちるのは頂点多様体だけです。
-    return (s == "4T" && op == BoolOp::Union) || (s == "4T'" && op == BoolOp::Difference);
+    return kritest::exclusion_of(id, op) != kritest::Exclusion::None;
 }
 
 /// §9.3.1 の番人: 除外した (ケース, 演算, 深度) の件数。
@@ -95,19 +87,14 @@ void run_case(const kritest::Case& c, std::vector<Row>& rows) {
                 st.midpoint_raycasts, st.centroid_raycasts, t.edges_deficient, t.edges_excess);
             rows.push_back({c.id, d, op, st, t});
             if (excluded) {
-                // §9.3.1 除外の適用条件。**広げすぎないための番人です。**
-                // 頂点多様体**だけ**が落ちていることを確かめ、他は拘束のままにします。
+                // §9.3.1 の適用条件。**広げすぎないための番人です。**
                 const std::string tag = std::string("ケース ") + c.id + " " + op_name(op) +
                                         "（深度 " + std::to_string(d) + "）";
-                KRI_CHECK_MSG(t.edges_deficient == 0 && t.edges_excess == 0,
-                              tag +
-                                  ": 除外の条件を満たさない（辺の次数が 2 でない。"
-                                  "面の過不足があるならバグです）");
-                KRI_CHECK_MSG(t.oriented, tag + ": 除外の条件を満たさない（向きが整合しない）");
-                KRI_CHECK_MSG(t.no_degenerate,
-                              tag + ": 除外の条件を満たさない（退化三角形がある）");
-                KRI_CHECK_MSG(!t.vertex_manifold,
-                              tag + ": 除外しているのに頂点多様体が通っている（除外が不要）");
+                std::string why;
+                KRI_CHECK_MSG(
+                    kritest::exclusion_conditions_ok(kritest::exclusion_of(c.id, op), t, &why),
+                    tag + ": §9.3.1 の適用条件を満たさない（" + why +
+                        "）。除外すべき退化ではなくバグです");
                 ++excluded_count;
                 continue;
             }
