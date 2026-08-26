@@ -357,6 +357,127 @@ inline TriMesh case4tp_b() {
     return cyclic_tetra(-1, -1, -1, 2, 1, 16);
 }
 
+/// メッシュを平行移動する。
+inline TriMesh translated(const TriMesh& m, std::int32_t dx, std::int32_t dy, std::int32_t dz) {
+    TriMesh r = m;
+    for (IPoint& p : r.vertices) {
+        p = IPoint{p.x + dx, p.y + dy, p.z + dz};
+    }
+    return r;
+}
+
+/// ケース 3: 立方体 2 個、**辺が一致**（共線）。
+///
+/// $x=-2^{b-1}$, $y=-2^{b-1}$ の稜線を両者が共有し、体積も重なります。
+/// 共線の退化を突きます。
+inline TriMesh case3_a() {
+    return ratio_box(-1, 0, 1);
+}
+inline TriMesh case3_b() {
+    return box(at(-1, 1), at(-1, 1), at(-1, 2), at(1, 2), at(1, 2), at(1, 2));
+}
+
+/// ケース 4: 立方体 2 個、**頂点が一致**（点の一致）。
+///
+/// $(0, 0, -2^{b-1})$ が両者の頂点になります。**軸平行なので 3 枚止まりです**
+/// （§9.1 の注記）。頂点が一致するなら、その 3 平面も一致して併合されるためです。
+inline TriMesh case4_a() {
+    return ratio_box(-1, 0, 1);
+}
+inline TriMesh case4_b() {
+    return box(at(-1, 2), at(-1, 2), at(-1, 1), 0, 0, at(1, 2));
+}
+
+/// ケース 7: 格子に量子化した**回転立方体**。
+///
+/// $M = \begin{pmatrix} 1&2&2 \\ 2&1&-2 \\ -2&2&-1 \end{pmatrix}$ は
+/// $M^{\mathsf T} M = 9I$、$\det M = 27$ の相似変換です。
+///
+/// **整数座標を整数座標に写すので、量子化による退化が入りません。** 丸めると辺が
+/// わずかに非平面になり、面併合（§3.5）の前提が壊れます。この行列ならその心配が
+/// ありません。得られる立方体は一辺 $3L$ で、**面はどれも軸に平行ではありません。**
+///
+/// $\det M > 0$ なので向きは保たれ、`box` の三角形リストをそのまま使えます。
+inline TriMesh rotated_cube(std::int32_t l, std::int32_t ox, std::int32_t oy, std::int32_t oz) {
+    static const std::int64_t kM[3][3] = {{1, 2, 2}, {2, 1, -2}, {-2, 2, -1}};
+    TriMesh m = box(0, 0, 0, l, l, l);
+    for (IPoint& p : m.vertices) {
+        const std::int64_t v[3] = {p.x, p.y, p.z};
+        std::int64_t r[3];
+        for (int i = 0; i < 3; ++i) {
+            r[i] = kM[i][0] * v[0] + kM[i][1] * v[1] + kM[i][2] * v[2];
+        }
+        p = IPoint{static_cast<std::int32_t>(r[0] + ox), static_cast<std::int32_t>(r[1] + oy),
+                   static_cast<std::int32_t>(r[2] + oz)};
+    }
+    return m;
+}
+inline TriMesh case7_a() {
+    // **相手に含まれないようずらすこと。** 含まれてしまうと A\B が空になり、
+    // ケース 10 と同じものを測ることになります。
+    return rotated_cube(at(1, 8), at(1, 8), 0, 0);
+}
+inline TriMesh case7_b() {
+    return ratio_box(-1, 1, 2);
+}
+
+/// ケース 9: 四面体 2 個（一般位置）。鋭角。三角形数が最小。
+///
+/// 頂点も平面も共有しません。**斜面だけで構成されるので、`clip_edges` の
+/// 三角形分岐（2.3.1 で直した経路）を最も濃く踏みます。**
+inline TriMesh case9_a() {
+    return cyclic_tetra(-1, -1, -1, 1, 4, 8);
+}
+inline TriMesh case9_b() {
+    // **平行移動の向きに注意。** 元の四面体は $-2^{b-1}$ に接しているので、
+    // 負方向へずらすと座標範囲を突き抜けます（`coords_in_range` が落ちます）。
+    return translated(cyclic_tetra(-1, -1, -1, 2, 1, 16), at(1, 4), at(1, 8), at(1, 8));
+}
+
+/// ケース 10: 一方が他方を**完全に含む**。
+///
+/// **境界どうしの交差曲線が空**です。$A \setminus B$ は 2 シェル（外殻は外向き、
+/// 内殻は内向き）になり、$\chi = 4$ になる唯一のケースです（§9.2）。
+inline TriMesh case10_a() {
+    return ratio_box(-1, 1, 2);
+}
+inline TriMesh case10_b() {
+    // **B は A の内部に完全に含まれること。** 面を共有すると「完全に含む」ではなく
+    // なり、$A \setminus B$ が 2 シェルにならないので §9.2 の期待値を検査できません。
+    return ratio_box(-1, 1, 4);
+}
+
+/// ケース 11a: **面**接触のみ。
+///
+/// $x = 0$ で接するだけで体積は重なりません。正則化（§2.3）により
+/// $\cap$ は空、$\cup$ は接触面が内部面になって消えます。**逆方向の共平面重複**です。
+inline TriMesh case11a_a() {
+    return ratio_box(-1, 0, 1);
+}
+inline TriMesh case11a_b() {
+    return box(0, at(-1, 2), at(-1, 2), at(1, 2), at(1, 2), at(1, 2));
+}
+
+/// ケース 11b: **辺**接触のみ。
+///
+/// $x=0, y=0$ の稜線だけを共有します。**$\cup$ の出力は非多様体になる**ので
+/// §9.3 で合否から除外します（辺まわりに 4 枚の面が接する）。
+inline TriMesh case11b_a() {
+    return ratio_box(-1, 0, 1);
+}
+inline TriMesh case11b_b() {
+    return box(0, 0, at(-1, 1), at(1, 2), at(1, 2), 0);
+}
+
+/// ケース 12: セル境界を**またぐ大きな立方体**。継ぎ目の本数を増やします。
+inline TriMesh case12_a() {
+    return ratio_box(-3, 3, 4);
+}
+inline TriMesh case12_b() {
+    // A からはみ出させること。含まれるとケース 10 と同じものを測ることになります。
+    return box(at(-1, 4), at(-1, 4), at(-1, 4), at(1, 1) - 1, at(1, 1) - 1, at(1, 1) - 1);
+}
+
 /// ケース 8: 同一の立方体 2 個。全 6 平面を共有し、すべて同方向。
 inline TriMesh case8() {
     return ratio_box(-1, 1, 2);
@@ -380,7 +501,15 @@ inline const std::vector<Case>& corpus() {
     static const std::vector<Case> k = {
         {"1", "一般位置", cases::case1_a, cases::case1_b, true},
         {"2", "面が完全共平面", cases::case2_a, cases::case2_b, true},
+        {"3", "辺が一致（共線）", cases::case3_a, cases::case3_b, true},
+        {"4", "頂点が一致", cases::case4_a, cases::case4_b, true},
         {"5", "面がセル境界と一致", cases::case5_a, cases::case5_b, true},
+        {"7", "量子化した回転立方体", cases::case7_a, cases::case7_b},
+        {"9", "四面体 2 個（一般位置）", cases::case9_a, cases::case9_b},
+        {"10", "一方が他方を完全に含む", cases::case10_a, cases::case10_b, true},
+        {"11a", "面接触のみ", cases::case11a_a, cases::case11a_b, true},
+        {"11b", "辺接触のみ", cases::case11b_a, cases::case11b_b, true},
+        {"12", "セル境界をまたぐ大立方体", cases::case12_a, cases::case12_b, true},
         {"2T", "共平面接触を斜面で", cases::case2t_a, cases::case2t_b},
         {"4T", "四面体2個が頂点を共有", cases::case4t_a, cases::case4t_b},
         {"4T'", "頂点共有 + 体積も重なる", cases::case4tp_a, cases::case4tp_b},
