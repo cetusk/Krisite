@@ -56,6 +56,28 @@ struct TopologyReport {
     std::size_t edges_excess = 0;     ///< 3 面以上に接する辺の数
     std::size_t max_edge_degree = 0;  ///< 辺の次数の最大
 
+    /// **落ちている頂点のリンク構造**（SPEC-phase1 §9.3.2）。
+    ///
+    /// 頂点 $v$ に接する三角形 $(v,a,b)$ はリンク上の有向辺 $a \to b$ を与えます。
+    /// 辺多様体な閉曲面ならリンクは閉路の直和になり、その本数が**扇の数** $k_v$ です。
+    ///
+    ///   $k_v = 1$ … 多様体
+    ///   $k_v \ge 2$ … 錐が $k_v$ 個出会っている
+    ///
+    /// **$k_v$ 分裂すると $\chi$ は $k_v - 1$ 増えます**（頂点が $k_v - 1$ 個増え、
+    /// 辺と面は変わらない）。`chi_after_split` はその予測値です。
+    ///
+    /// **扇の数だけでは「ピンチ点」と「円環」を区別できません。** どちらも曲面上では
+    /// 閉路 2 本に見えます。区別の手がかりは連結性で、扇が別々の連結成分に属するなら
+    /// 錐は分離しており、分裂で多様体化できます。同一成分なら円環の疑いがあり、
+    /// **その場合は頂点を複製しても円板になりません**（§9.3.2）。
+    std::size_t nonmanifold_vertices = 0;  ///< リンクが単一閉路でない頂点の数
+    std::size_t max_vertex_fans = 0;       ///< 頂点まわりの扇の最大数
+    long long extra_fans = 0;              ///< Σ(k_v − 1)。分裂で増える χ
+    long long chi_after_split = 0;         ///< χ + extra_fans（分裂後の予測 χ）
+    /// 扇が**同一の連結成分**に属する頂点の数。**円環の疑いはここに出ます。**
+    std::size_t vertices_fans_in_one_component = 0;
+
     /// SPEC §10.1 のすべてを満たすか。空メッシュは V=E=F=0 だけを見る。
     bool ok() const noexcept {
         if (empty) return v == 0 && e == 0 && f == 0;
@@ -165,25 +187,34 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
     // 頂点 v に接する三角形 (v,a,b) は、リンク上の有向辺 a→b を与える。
     // 単一の扇 ⟺ 各頂点の出次数・入次数が 1 で、全体が 1 本の閉路になる。
     {
-        std::map<VertexId, std::vector<std::pair<VertexId, VertexId>>> link;
-        for (const Tri& t : tris) {
+        // 三角形の添字も持つ。扇がどの連結成分に属するかを見るため（§9.3.2）
+        struct Arc {
+            VertexId from, to;
+            std::size_t tri;
+        };
+        std::map<VertexId, std::vector<Arc>> link;
+        for (std::size_t ti = 0; ti < tris.size(); ++ti) {
+            const Tri& t = tris[ti];
             for (int k = 0; k < 3; ++k) {
                 const VertexId v = t[k], a = t[(k + 1) % 3], bb = t[(k + 2) % 3];
-                link[v].emplace_back(a, bb);
+                link[v].push_back(Arc{a, bb, ti});
             }
         }
         r.vertex_manifold = true;
         for (const auto& kv : link) {
             const auto& arcs = kv.second;
             std::map<VertexId, VertexId> next;
+            std::map<VertexId, std::size_t> arc_tri;
             std::map<VertexId, int> indeg;
             bool ok = true;
-            for (const auto& e : arcs) {
-                if (!next.emplace(e.first, e.second).second) ok = false;  // 出次数 > 1
-                ++indeg[e.second];
+            for (const Arc& e : arcs) {
+                if (!next.emplace(e.from, e.to).second) ok = false;  // 出次数 > 1
+                arc_tri.emplace(e.from, e.tri);
+                ++indeg[e.to];
             }
             if (!ok) {
                 r.vertex_manifold = false;
+                ++r.nonmanifold_vertices;
                 continue;
             }
             for (const auto& d : indeg) {
@@ -191,22 +222,44 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
             }
             if (!ok || next.size() != arcs.size()) {
                 r.vertex_manifold = false;
+                ++r.nonmanifold_vertices;
                 continue;
             }
-            // 単一閉路か（複数の閉路に分かれていないか）
-            const VertexId start = next.begin()->first;
-            VertexId cur = start;
-            std::size_t steps = 0;
-            do {
-                auto it = next.find(cur);
-                if (it == next.end()) {
-                    ok = false;
-                    break;
-                }
-                cur = it->second;
-                ++steps;
-            } while (cur != start && steps <= next.size());
-            if (!ok || cur != start || steps != next.size()) r.vertex_manifold = false;
+            // リンクは閉路の直和になっている。本数（= 扇の数）を数える
+            std::set<VertexId> visited;
+            std::size_t fans = 0;
+            std::set<std::size_t> fan_components;
+            for (const auto& e : next) {
+                if (visited.count(e.first)) continue;
+                ++fans;
+                VertexId cur = e.first;
+                std::size_t steps = 0;
+                do {
+                    visited.insert(cur);
+                    fan_components.insert(ds.find(arc_tri[cur]));
+                    auto it = next.find(cur);
+                    if (it == next.end()) {
+                        ok = false;
+                        break;
+                    }
+                    cur = it->second;
+                    ++steps;
+                } while (cur != e.first && steps <= next.size());
+                if (!ok || cur != e.first) break;
+            }
+            if (!ok || visited.size() != next.size()) {
+                r.vertex_manifold = false;
+                ++r.nonmanifold_vertices;
+                continue;
+            }
+            r.max_vertex_fans = std::max(r.max_vertex_fans, fans);
+            if (fans != 1) {
+                r.vertex_manifold = false;
+                ++r.nonmanifold_vertices;
+                r.extra_fans += static_cast<long long>(fans) - 1;
+                // 扇が 1 つの連結成分に収まっている = 錐が分離していない可能性
+                if (fan_components.size() == 1) ++r.vertices_fans_in_one_component;
+            }
         }
     }
 
@@ -215,6 +268,8 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
     r.chi_even = (r.chi % 2 == 0);
     // χ = 2(C - g_total) → g_total = C - χ/2
     r.genus_total = static_cast<long long>(r.components) - r.chi / 2;
+    // 分裂後の予測 χ（§9.3.2）。k 分裂で頂点が k-1 個増え、辺と面は変わらない
+    r.chi_after_split = r.chi + r.extra_fans;
     return r;
 }
 
