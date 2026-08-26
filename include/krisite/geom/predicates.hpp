@@ -342,6 +342,54 @@ inline int orient2d_h(const IPoint& a, const IPoint& b, const HPointD& p, Axis a
     return arith::sign(orient2d_h_value(a, b, p, along)) * arith::sign(p.w);
 }
 
+// ---- 中点に対する述語（SPEC-phase1.md §6.1 の代表点フォールバック）-----------
+//
+// 中点 m = (X0*W1 + X1*W0 : 2*W0*W1) を**構成せず**に評価します。被符号値 F が
+// 同次座標について線形であることから
+//
+//   F(m) = W1 * F(v0) + W0 * F(v1)
+//
+// が厳密に成り立ちます。m の w = 2*W0*W1 の符号は sign(W0)*sign(W1) なので、
+// 述語の符号は sign(F(m)) * sign(W0) * sign(W1) です。
+//
+// ビット幅の導出は widths.hpp bits::kMidSide / bits::kMidOrient2dH を参照。
+
+/// side(plane, 中点) の被符号値 W1*side_value(v0) + W0*side_value(v1)。
+/// ビット幅 15b+33 → widths.hpp bits::kMidSide
+inline arith::fixed_int<limbs::kMidSide> side_value(const PlaneD& pl,
+                                                    const HMidPointD& m) noexcept {
+    using namespace arith;
+    constexpr std::size_t L = limbs::kMidSide;
+    static_assert(64 * L >= bits::kMidSide, "kMidSide のリム数が上界を下回っている");
+    return add(resize<L>(mul(m.v1.w, side_value(pl, m.v0))),
+               resize<L>(mul(m.v0.w, side_value(pl, m.v1))));
+}
+
+/// 中点の平面に対する側。中点の w = 2*W0*W1 なので符号は sign(W0)*sign(W1)。
+inline int side(const PlaneD& pl, const HMidPointD& m) noexcept {
+    KRISITE_CHECK(!arith::is_zero(m.v0.w) && !arith::is_zero(m.v1.w), "side: 中点の端点の w == 0");
+    return arith::sign(side_value(pl, m)) * arith::sign(m.v0.w) * arith::sign(m.v1.w);
+}
+
+/// orient2d_h(a, b, 中点) の被符号値。ビット幅 14b+30 → widths.hpp bits::kMidOrient2dH
+inline arith::fixed_int<limbs::kMidOrient2dH> orient2d_h_value(const IPoint& a, const IPoint& b,
+                                                               const HMidPointD& m,
+                                                               Axis along) noexcept {
+    using namespace arith;
+    constexpr std::size_t L = limbs::kMidOrient2dH;
+    static_assert(64 * L >= bits::kMidOrient2dH, "kMidOrient2dH のリム数が上界を下回っている");
+    return add(resize<L>(mul(m.v1.w, orient2d_h_value(a, b, m.v0, along))),
+               resize<L>(mul(m.v0.w, orient2d_h_value(a, b, m.v1, along))));
+}
+
+/// 中点を軸 `along` に沿って投影した 2D の向き。
+inline int orient2d_h(const IPoint& a, const IPoint& b, const HMidPointD& m, Axis along) noexcept {
+    KRISITE_CHECK(!arith::is_zero(m.v0.w) && !arith::is_zero(m.v1.w),
+                  "orient2d_h: 中点の端点の w == 0");
+    return arith::sign(orient2d_h_value(a, b, m, along)) * arith::sign(m.v0.w) *
+           arith::sign(m.v1.w);
+}
+
 // ---- 入力メッシュの向き検査（SPEC-phase1.md §3.4）----------------------------
 
 /// 三角形 (a,b,c) と原点がなす四面体の符号付き体積 x6 = det(a, b, c)。
