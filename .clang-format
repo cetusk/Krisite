@@ -1,0 +1,29 @@
+# Krisite — docs/STYLE.md の決定を機械化したもの
+Language: Cpp
+BasedOnStyle: Google
+Standard: c++20
+
+ColumnLimit: 100
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+AccessModifierOffset: -4
+
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: true
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+SortIncludes: CaseSensitive
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<[a-z_]+>$'          # C++ 標準ライブラリ
+    Priority: 1
+  - Regex: '^<.*\.h>$'            # C ヘッダ・外部ライブラリ
+    Priority: 2
+  - Regex: '^"krisite/'           # プロジェクト（公開ヘッダ）
+    Priority: 3
+  - Regex: '.*'                   # その他（テストのローカルヘッダ等）
+    Priority: 4

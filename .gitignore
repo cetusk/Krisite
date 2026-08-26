@@ -1,0 +1,17 @@
+# ビルド成果物
+build/
+build-*/
+cmake-build-*/
+compile_commands.json
+
+# 論文 PDF は Git に含めない（CLAUDE.md「参考文献」）
+docs/papers/
+
+# fix-spec.py が残すバックアップ
+*.bak
+
+# エディタ・OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
