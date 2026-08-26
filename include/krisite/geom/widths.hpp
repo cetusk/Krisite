@@ -89,9 +89,22 @@ inline constexpr std::size_t kMaxTrianglesLog2 = 16;
 /// 三角形数に比例して伸びるため、GMP が要ります（SPEC-phase1 §10.3）。
 inline constexpr std::size_t kInputVolume6 = kTetraVolume6 + kMaxTrianglesLog2;
 
-// レイキャスト（軸平行レイ）は新しい述語を必要としません。投影後の内外判定は
-// orient2d（2b+3）、前方交差の判定は side(plane, IPoint)（3b+6）と法線成分の符号で
-// 決まります。SPEC-phase1 §6.1。
+/// 同次点を投影した 2D 向き（SPEC-phase1 §6.1 のレイキャスト）。
+///
+///   O = (b.y-a.y)*(p.z - a.z*p.w) - (b.z-a.z)*(p.y - a.y*p.w)
+///   実座標での向き = O / p.w なので、符号は sign(O) * sign(p.w)
+///
+///   |p.z| < 2^(7b+13)、|a.z*p.w| < 2^(7b+10) → 差は 7b+15 ビット
+///   |b.y-a.y| は b+1 ビット → 積が 8b+15、差でさらに +1 して 8b+16
+///   安全側に +1 して 8b+17（b=21 で 185 ビット / 3 リム、b=26 で 225 / 4）
+///
+/// **キャスト元が入力頂点（IPoint）なら既存の orient2d（2b+3）で済みます。**
+/// 同次点にフォールバックしたときだけこの幅が要ります。
+inline constexpr std::size_t kOrient2dH = 8 * b + 17;
+
+// レイの前方交差の判定は side(plane, ·) と法線成分の符号で決まるので、
+// 新しい述語は要りません。キャスト元は ∂B 上に無いことを保証するので
+// N・p + d != 0 が保証され、この判定は退化しません（SPEC-phase1 §6.1）。
 
 /// cmp_h() の被符号値 w2*x1 - w1*x2。SPEC §3.1「同次点の比較述語」:
 ///
@@ -121,6 +134,7 @@ inline constexpr std::size_t kCmpH = limbs_for(bits::kCmpH);
 inline constexpr std::size_t kPlaneMinor = limbs_for(bits::kPlaneMinor);
 inline constexpr std::size_t kPlaneOrder = limbs_for(bits::kPlaneOrder);
 inline constexpr std::size_t kInputVolume6 = limbs_for(bits::kInputVolume6);
+inline constexpr std::size_t kOrient2dH = limbs_for(bits::kOrient2dH);
 
 /// Phase 0 の述語が要求する最大リム数（SPEC §3.3 の表の最右列）。
 /// b = 21 → 5、b = 26 → 6。
@@ -133,6 +147,7 @@ static_assert(limbs::kOffset >= limbs::kNormal, "kOffset は kNormal 以上の�
 static_assert(64 * limbs::kPlaneMinor >= bits::kPlaneMinor, "kPlaneMinor のリム数不足");
 static_assert(64 * limbs::kPlaneOrder >= bits::kPlaneOrder, "kPlaneOrder のリム数不足");
 static_assert(64 * limbs::kInputVolume6 >= bits::kInputVolume6, "kInputVolume6 のリム数不足");
+static_assert(64 * limbs::kOrient2dH >= bits::kOrient2dH, "kOrient2dH のリム数不足");
 // 軸平行平面のオフセットは kOffset に収まること
 static_assert(bits::kAxisOffset <= bits::kOffset, "軸平行平面のオフセットが kOffset を超える");
 

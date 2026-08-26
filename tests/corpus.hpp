@@ -46,6 +46,18 @@ inline TriMesh cube(std::int32_t ox, std::int32_t oy, std::int32_t oz, std::int3
     return box(ox, oy, oz, ox + s, oy + s, oz + s);
 }
 
+/// 八分木は**座標範囲全体**を分割します（SPEC-phase1 §3.2）。
+///
+/// したがって入力が座標範囲の隅に小さく置かれていると、深度を上げてもセル境界が
+/// 幾何をまたがず、**深度が効きません。** 実データでは量子化がモデルのバウンディング
+/// ボックスを格子全体に写すので、テストの入力も座標範囲に見合った大きさにします。
+///
+/// b = 21 のとき深度 2 の内部境界は -2^19, 0, +2^19。
+inline TriMesh grid_scale_box(std::int64_t lo, std::int64_t hi) {
+    const auto c = [](std::int64_t v) { return static_cast<std::int32_t>(v); };
+    return box(c(lo), c(lo), c(lo), c(hi), c(hi), c(hi));
+}
+
 /// 三角形の向きを全部裏返す（内向き法線のシェルを作る）。
 inline TriMesh flipped(const TriMesh& m) {
     TriMesh r = m;
