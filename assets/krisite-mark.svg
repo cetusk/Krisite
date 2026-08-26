@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="Krisite">
+  <title>Krisite</title>
+  <g>
+    <g stroke="#161A1F" stroke-width="1.3" stroke-linejoin="round">
+    <polygon points="116.4,29.7 170.8,83.2 144.0,54.0" fill="#242A31"/>
+    <polygon points="56.0,146.0 126.9,129.2 154.4,153.5 83.6,170.3" fill="#1E2329"/>
+    <polygon points="29.2,116.8 45.6,46.5 72.4,75.7 56.0,146.0" fill="#2DD4BF"/>
+    <polygon points="126.9,129.2 154.4,153.5 170.8,83.2" fill="#1E2329"/>
+    <polygon points="126.9,129.2 170.8,83.2 116.4,29.7 72.4,75.7" fill="#39424C"/>
+    <polygon points="56.0,146.0 72.4,75.7 126.9,129.2" fill="#2E353D"/>
+      <!-- 貼り付け先の開口部：まだ面が置かれていない -->
+      <polygon points="72.4,75.7 45.6,46.5 116.4,29.7" fill="#12161A" stroke="#2DD4BF"
+               stroke-width="1.3" stroke-dasharray="3.5 3" opacity="0.9"/>
+    </g>
+    <line x1="66.0" y1="61.2" x2="72.4" y2="75.7" stroke="#2DD4BF" stroke-width="1.3" stroke-dasharray="2.5 3.5" opacity="0.55"/>
+    <line x1="39.2" y1="32.0" x2="45.6" y2="46.5" stroke="#2DD4BF" stroke-width="1.3" stroke-dasharray="2.5 3.5" opacity="0.55"/>
+    <line x1="110.0" y1="15.2" x2="116.4" y2="29.7" stroke="#2DD4BF" stroke-width="1.3" stroke-dasharray="2.5 3.5" opacity="0.55"/>
+    <!-- 貼り付け中の面：鉋で削り出された一枚 -->
+    <polygon points="66.0,61.2 39.2,32.0 110.0,15.2" fill="#2DD4BF" stroke="#5EEAD4"
+             stroke-width="1.4" stroke-linejoin="round"/>
+    <polygon points="66.0,61.2 39.2,32.0 110.0,15.2" fill="#5EEAD4" opacity="0.28"/>
+  </g>
+</svg>

@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 711 200" width="711" height="200" role="img" aria-label="Krisite">
+  <title>Krisite</title>
+  <style>
+    .w { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 62px; font-weight: 700; }
+  </style>
+
+  <clipPath id="k-clip">
+    <text class="w" x="205" y="100.0">K</text>
+  </clipPath>
+  <!-- 縦画の帯だけを通す。腕の付け根へのはみ出しをここで断つ -->
+  <clipPath id="stem-clip">
+    <rect x="201.0" y="0" width="17.5" height="200"/>
+  </clipPath>
+
+  <g>
+    <g stroke="#161A1F" stroke-width="1.3" stroke-linejoin="round">
+    <polygon points="116.4,29.7 170.8,83.2 144.0,54.0" fill="#242A31"/>
+    <polygon points="56.0,146.0 126.9,129.2 154.4,153.5 83.6,170.3" fill="#1E2329"/>
+    <polygon points="29.2,116.8 45.6,46.5 72.4,75.7 56.0,146.0" fill="#2DD4BF"/>
+    <polygon points="126.9,129.2 154.4,153.5 170.8,83.2" fill="#1E2329"/>
+    <polygon points="126.9,129.2 170.8,83.2 116.4,29.7 72.4,75.7" fill="#39424C"/>
+    <polygon points="56.0,146.0 72.4,75.7 126.9,129.2" fill="#2E353D"/>
+      <!-- 貼り付け先の開口部：まだ面が置かれていない -->
+      <polygon points="72.4,75.7 45.6,46.5 116.4,29.7" fill="#12161A" stroke="#2DD4BF"
+               stroke-width="1.3" stroke-dasharray="3.5 3" opacity="0.9"/>
+    </g>
+    <line x1="66.0" y1="61.2" x2="72.4" y2="75.7" stroke="#2DD4BF" stroke-width="1.3" stroke-dasharray="2.5 3.5" opacity="0.55"/>
+    <line x1="39.2" y1="32.0" x2="45.6" y2="46.5" stroke="#2DD4BF" stroke-width="1.3" stroke-dasharray="2.5 3.5" opacity="0.55"/>
+    <line x1="110.0" y1="15.2" x2="116.4" y2="29.7" stroke="#2DD4BF" stroke-width="1.3" stroke-dasharray="2.5 3.5" opacity="0.55"/>
+    <!-- 貼り付け中の面：鉋で削り出された一枚 -->
+    <polygon points="66.0,61.2 39.2,32.0 110.0,15.2" fill="#2DD4BF" stroke="#5EEAD4"
+             stroke-width="1.4" stroke-linejoin="round"/>
+    <polygon points="66.0,61.2 39.2,32.0 110.0,15.2" fill="#5EEAD4" opacity="0.28"/>
+  </g>
+
+  <text class="w" fill="#2E3741" x="205 252.8 279.9 300.1 337.6 357.8 381.5" y="100.0">Krısıte</text>
+
+  <!-- K の左上先端：縦画の幅ちょうどに収めた3段の断片。境界は腕の「/」と平行 -->
+  <g clip-path="url(#k-clip)">
+    <g clip-path="url(#stem-clip)">
+      <polygon points="207.7,67.9 220.5,55.7 220.5,27.7 207.7,39.9" fill="#5EEAD4"/>
+      <polygon points="207.7,76.9 220.5,64.7 220.5,55.7 207.7,67.9"   fill="#2DD4BF"/>
+      <polygon points="207.7,85.9 220.5,73.7 220.5,64.7 207.7,76.9"   fill="#0D9488"/>
+    </g>
+  </g>
+
+  <polygon points="283.5,62.5 283.5,52.5 293.5,62.5" fill="#2DD4BF"/>
+  <polygon points="341.2,62.5 341.2,52.5 351.2,62.5" fill="#2DD4BF"/>
+
+  <text fill="#6E7A87" x="208" y="128"
+        font-family="'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="15.5" letter-spacing="1.5">exact, plane-based geometry for point clouds and meshes</text>
+</svg>
