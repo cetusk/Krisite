@@ -8,6 +8,10 @@
 #include "krisite/arith/intrinsics.hpp"
 #include "krisite/arith/ops.hpp"
 #include "krisite/config.hpp"
+#include "krisite/geom/plane.hpp"
+#include "krisite/geom/point.hpp"
+#include "krisite/geom/predicates.hpp"
+#include "krisite/geom/widths.hpp"
 
 namespace kri = krisite;
 
