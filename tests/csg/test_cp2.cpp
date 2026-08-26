@@ -44,9 +44,9 @@ TopologyReport run(const TriMesh& a, const TriMesh& b, BoolOp op, unsigned depth
 }
 
 /// 位相が閉じた向き付き多様体で、(C, g) が期待どおりか。
-void expect(const char* what, const TopologyReport& t, std::size_t comps, long long genus,
+void expect(const std::string& what, const TopologyReport& t, std::size_t comps, long long genus,
             unsigned d) {
-    const std::string tag = std::string(what) + "（深度 " + std::to_string(d) + "）";
+    const std::string tag = what + "（深度 " + std::to_string(d) + "）";
     KRI_CHECK_MSG(t.edge_manifold, tag + ": 辺多様体でない");
     KRI_CHECK_MSG(t.vertex_manifold, tag + ": 頂点多様体でない");
     KRI_CHECK_MSG(t.oriented, tag + ": 向きが整合しない");
@@ -140,26 +140,32 @@ void test_case2_coplanar() {
 
 void test_cp2_case5() {
     const TriMesh a = kritest::cases::case5_a(), b = kritest::cases::case5_b();
-    std::printf("\n  CP2: ケース 5（面がセル境界と完全一致）× union\n");
+    // **3 演算すべてを回します**（第7版 §11）。第6版までは union のみでしたが、
+    // それが選択規則と向き付けのバグ 2 件を隠していました。
+    std::printf("\n  CP2: ケース 5（面がセル境界と完全一致）× 3 演算\n");
 
-    TopologyReport ref;
-    bool first = true;
-    for (unsigned d : {0u, 1u, 2u, 3u}) {
-        BoolStats st;
-        const TopologyReport t = run(a, b, BoolOp::Union, d, st);
-        std::printf("    深度%u  V=%-5zu E=%-5zu F=%-5zu C=%zu g=%lld  断片=%-5zu 重複=%zu\n", d,
-                    t.v, t.e, t.f, t.components, t.genus_total, st.fragments,
-                    st.duplicate_fragments);
-        KRI_CHECK_MSG(t.f > 0, "ケース5 ∪ の出力が空");
-        expect("ケース5 ∪", t, 1, 0, d);
+    for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
+        TopologyReport ref;
+        bool first = true;
+        for (unsigned d : {0u, 1u, 2u, 3u}) {
+            BoolStats st;
+            const TopologyReport t = run(a, b, op, d, st);
+            std::printf(
+                "    深度%u %s V=%-5zu E=%-5zu F=%-5zu C=%zu g=%lld  断片=%-5zu "
+                "重複=%-4zu 有効セル=%zu/%zu\n",
+                d, op_name(op), t.v, t.e, t.f, t.components, t.genus_total, st.fragments,
+                st.duplicate_fragments, st.active_cells, st.total_cells);
+            KRI_CHECK_MSG(t.f > 0, std::string("ケース5 ") + op_name(op) + " の出力が空");
+            expect(std::string("ケース5 ") + op_name(op), t, 1, 0, d);
 
-        // §10.2.1 深度不変性
-        if (first) {
-            ref = t;
-            first = false;
-        } else {
-            KRI_CHECK_MSG(t.components == ref.components, "深度不変性: C が深度で変わった");
-            KRI_CHECK_MSG(t.genus_total == ref.genus_total, "深度不変性: g が深度で変わった");
+            // §10.2.1 深度不変性
+            if (first) {
+                ref = t;
+                first = false;
+            } else {
+                KRI_CHECK_MSG(t.components == ref.components, "深度不変性: C が深度で変わった");
+                KRI_CHECK_MSG(t.genus_total == ref.genus_total, "深度不変性: g が深度で変わった");
+            }
         }
     }
 }
@@ -178,59 +184,21 @@ void test_case6_contrast() {
     }
 }
 
-// ---- ケース 5T: §5.4 の計測が 4 枚以上を検出できることの証拠 ★ ---------------
-//
-// **軸平行な立方体だけでは 1 点に集まる平面が 3 枚を超えられません。**
-// 1 軸につき点を通る平面は高々 1 枚（平行な 2 平面は交わらない）で、軸は 3 本だけ
-// だからです。セル面が立方体の面と一致しても、同一の幾何平面なので `PlaneTable` で
-// 同じ ID になり、枚数は増えません。
-//
-// したがって「ケース 5 で最大 3 枚だった」という報告は、それだけでは
-// **計測器が壊れていても同じ結果になります。** 4 枚を実際に作って検出を確かめます。
-//
-// **位相は合否に使いません**（§9.3 のケース 11b と同じ扱い）。斜面を持つ入力では
-// 現状の実装が非多様体を出しますが、これは CP2 の問いではなく CP3（ケース 7 / 9）の
-// 問題であり、**この改訂の前から同じです**（旧実装は同じ入力で停止します）。
-void test_case5t_detects_four_planes() {
-    const TriMesh a = kritest::cases::case5t_a(), b = kritest::cases::case5t_b();
-    std::printf("\n  ケース 5T（セル角を斜面が通る）— 計測の検出力の確認\n");
-    std::size_t best_mesh = 0, best_all = 0, merged = 0;
-    for (unsigned d : {0u, 1u, 2u, 3u}) {
-        BoolStats st;
-        const TopologyReport t = run(a, b, BoolOp::Union, d, st);
-        std::printf(
-            "    深度%u  最大枚数=%zu（mesh のみ %zu / 平面総数 %zu）値併合=%zu "
-            "中点=%zu  ★位相 C=%zu g=%lld ok=%d（合否に使わない）\n",
-            d, st.max_planes_at_point, st.max_mesh_planes_at_point, st.planes_total,
-            st.merged_by_value, st.midpoint_raycasts, t.components, t.genus_total,
-            static_cast<int>(t.ok()));
-        best_mesh = std::max(best_mesh, st.max_mesh_planes_at_point);
-        best_all = std::max(best_all, st.max_planes_at_point);
-        merged = std::max(merged, st.merged_by_value);
-    }
-    KRI_CHECK_MSG(best_mesh >= 4,
-                  "§5.4 の計測が 4 平面同時交差を検出できていない（意図的に作ったのに 3 枚以下）");
-    KRI_CHECK_MSG(best_all >= best_mesh, "セル面込みの枚数が mesh のみを下回っている");
-    KRI_CHECK_MSG(merged > 0,
-                  "第2段（値ベースの併合）が発火していない。4 平面同時交差があれば "
-                  "平面3つ組が相異なるのに同じ点になる頂点が出るはず（§5.3）");
-}
-
 // ---- §5.4 の数値 -----------------------------------------------------------
 
 void report_54() {
     std::printf("\n  §5.4 の実測（ケース別・深度別）\n");
-    std::printf("    %-3s %-3s %-8s %-8s %-8s %-8s %-6s %-6s %-6s\n", "#", "深度", "断片",
-                "重複断片", "構成点", "併合後", "値併合", "最大枚数", "うちmesh");
+    std::printf("    %-3s %-3s %-8s %-8s %-8s %-8s %-6s %-6s %-8s %s\n", "#", "深度", "断片",
+                "重複断片", "構成点", "併合後", "値併合", "最大枚数", "うちmesh", "有効セル");
     for (const kritest::Case& c : kritest::corpus()) {
         const TriMesh a = c.make_a(), b = c.make_b();
         for (unsigned d : {0u, 1u, 2u, 3u}) {
             BoolStats st;
             boolean_op(a, b, BoolOp::Union, d, &st);
-            std::printf("    %-3s %-4u %-8zu %-8zu %-8zu %-8zu %-8zu %-8zu %-6zu\n", c.id, d,
-                        st.fragments, st.duplicate_fragments, st.constructed_points,
+            std::printf("    %-3s %-4u %-8zu %-8zu %-8zu %-8zu %-8zu %-8zu %-8zu %zu/%zu\n", c.id,
+                        d, st.fragments, st.duplicate_fragments, st.constructed_points,
                         st.merged_points, st.merged_by_value, st.max_planes_at_point,
-                        st.max_mesh_planes_at_point);
+                        st.max_mesh_planes_at_point, st.active_cells, st.total_cells);
             // 理論上界の見張り: 1 点に集まる平面は総平面数を超えない
             KRI_CHECK(st.max_planes_at_point <= st.planes_total);
         }
@@ -245,7 +213,6 @@ int main() {
     test_case2_coplanar();
     test_cp2_case5();
     test_case6_contrast();
-    test_case5t_detects_four_planes();
     report_54();
     std::printf("\n");
     return kritest::finish("csg/cp2");

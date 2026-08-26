@@ -238,6 +238,66 @@ inline TriMesh case5t_b() {
     return m;
 }
 
+/// 平面 $x+y+z=0$ 上に底面を持ち、負側に頂点がある四面体。
+///
+/// 底面の 3 点は成分和が 0 なのでこの平面上にあります。`(dx,dy,dz)` の和も 0 に
+/// すること（平行移動しても底面が同じ平面に載るように）。
+inline TriMesh slanted_tetra(std::int32_t dx, std::int32_t dy, std::int32_t dz) {
+    TriMesh m;
+    m.vertices = {
+        {at(1, 2) + dx, at(-1, 2) + dy, 0 + dz},
+        {0 + dx, at(1, 2) + dy, at(-1, 2) + dz},
+        {at(-1, 2) + dx, 0 + dy, at(1, 2) + dz},
+        {at(-1, 2) + dx, at(-1, 2) + dy, at(-1, 2) + dz},
+    };
+    m.triangles = {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}};
+    if (!krisite::mesh::is_outward_oriented(m)) m = flipped(m);
+    return m;
+}
+
+/// ケース 2T: 共平面接触を**斜面**で（SPEC-phase1 §9.1）。
+///
+/// ケース 2 の斜面版です。2 つの四面体が平面 $x+y+z=0$ を共有し、底面が部分的に
+/// 重なります。どちらの本体も同じ側にあるので**同方向**の共平面重複になります。
+/// 平行移動は $(1,-1,0)\cdot 2^{b-3}$ で、成分和が 0 なので底面は同じ平面に留まります。
+inline TriMesh case2t_a() {
+    return slanted_tetra(0, 0, 0);
+}
+inline TriMesh case2t_b() {
+    return slanted_tetra(at(1, 4), at(-1, 4), 0);
+}
+
+/// ケース 4T: 四面体 2 個が**頂点だけ**を共有（SPEC-phase1 §9.1）。**頂点に 6 平面**。
+///
+/// 原点に集まる面は各四面体につき 3 枚。**軸平行にしてはいけません。**
+/// 軸平行だと 3 枚が $x{=}0, y{=}0, z{=}0$ になり、両者が `PlaneTable` で併合されて
+/// 3 枚に潰れます（ケース 4 が 3 枚止まりなのと同じ理由）。そこで斜めに置きます。
+///
+/// **和集合は非多様体です**（ケース 11b と同型。§9.3）。合否には使いません。
+inline TriMesh corner_tetra(int sgn) {
+    const auto s = [sgn](int num, int den) {
+        const std::int32_t v = at(num, den);
+        // 正側は kCoordMax = 2^(b-1)-1 を超えないよう 1 だけ内側に寄せる
+        return static_cast<std::int32_t>(sgn > 0 ? v - 1 : -v);
+    };
+    TriMesh m;
+    m.vertices = {
+        {0, 0, 0},
+        {s(1, 1), s(1, 4), s(1, 8)},
+        {s(1, 8), s(1, 1), s(1, 4)},
+        {s(1, 4), s(1, 8), s(1, 1)},
+    };
+    m.triangles = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {1, 2, 3}};
+    if (!krisite::mesh::is_outward_oriented(m)) m = flipped(m);
+    return m;
+}
+inline TriMesh case4t_a() {
+    return corner_tetra(-1);
+}
+inline TriMesh case4t_b() {
+    return corner_tetra(+1);
+}
+
 /// ケース 8: 同一の立方体 2 個。全 6 平面を共有し、すべて同方向。
 inline TriMesh case8() {
     return ratio_box(-1, 1, 2);
@@ -262,6 +322,8 @@ inline const std::vector<Case>& corpus() {
         {"1", "一般位置", cases::case1_a, cases::case1_b},
         {"2", "面が完全共平面", cases::case2_a, cases::case2_b},
         {"5", "面がセル境界と一致", cases::case5_a, cases::case5_b},
+        {"2T", "共平面接触を斜面で", cases::case2t_a, cases::case2t_b},
+        {"4T", "四面体2個が頂点を共有", cases::case4t_a, cases::case4t_b},
         {"5T", "セル角を斜面が通る", cases::case5t_a, cases::case5t_b},
         {"6", "セル境界から 1 格子ずれ", cases::case6_a, cases::case6_b},
         {"8", "同一の立方体", cases::case8, cases::case8},

@@ -27,6 +27,7 @@ krisite_add_test(faces         csg/test_faces.cpp)
 krisite_add_test(fragment      csg/test_fragment.cpp)
 krisite_add_test(cp1           csg/test_cp1.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
+krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(depth_monotonic csg/test_depth_monotonic.cpp)
 
 # ---- GMP 差分テスト（LGPL、テスト専用）--------------------------------------
@@ -41,6 +42,10 @@ if(KRISITE_GMP_FOUND)
 
     krisite_add_test(plane_order_gmp geom/test_plane_order_gmp.cpp 300000)
     target_link_libraries(plane_order_gmp PRIVATE krisite_gmp)
+
+    # §10.3 体積の恒等式。出力の頂点は有理数なので GMP が要る
+    krisite_add_test(volume_gmp     csg/test_volume_gmp.cpp)
+    target_link_libraries(volume_gmp PRIVATE krisite_gmp)
 
     # 開発中に素早く回すための短縮版
     add_test(NAME fixed_int_gmp_quick COMMAND fixed_int_gmp 40000)
