@@ -12,6 +12,8 @@
 #include "krisite/geom/point.hpp"
 #include "krisite/geom/predicates.hpp"
 #include "krisite/geom/widths.hpp"
+#include "krisite/mesh/topology.hpp"
+#include "krisite/mesh/tri_mesh.hpp"
 
 namespace kri = krisite;
 
