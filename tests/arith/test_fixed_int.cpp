@@ -2,41 +2,20 @@
 //
 // SPEC-phase0.md §8.3 に相当する算術側の不変条件。
 // GMP を必要としないので既定のビルドで常に実行される。
+//
+// 128bit の正解器は tests/int128_oracle.hpp の I128 を使う。`unsigned __int128` を
+// 直接使うと MSVC で落ちるため（SPEC §5.3）。
 #include <cstdint>
 
+#include "int128_oracle.hpp"
 #include "test_util.hpp"
 
 using namespace krisite::arith;
+using kritest::I128;
+using kritest::i128_str;
 using kritest::Rng;
 
 namespace {
-
-using i128 = __int128;
-using u128 = unsigned __int128;
-
-fixed_int<2> from_i128(i128 v) noexcept {
-    fixed_int<2> r{};
-    const u128 u = static_cast<u128>(v);
-    r.limb[0] = static_cast<std::uint64_t>(u);
-    r.limb[1] = static_cast<std::uint64_t>(u >> 64);
-    return r;
-}
-
-i128 to_i128(const fixed_int<2>& x) noexcept {
-    return static_cast<i128>((static_cast<u128>(x.limb[1]) << 64) | x.limb[0]);
-}
-
-std::string i128_str(i128 v) {
-    if (v == 0) return "0";
-    const bool neg = v < 0;
-    u128 u = neg ? (~static_cast<u128>(v) + 1) : static_cast<u128>(v);
-    std::string s;
-    while (u != 0) {
-        s.insert(s.begin(), static_cast<char>('0' + static_cast<int>(u % 10)));
-        u /= 10;
-    }
-    return neg ? "-" + s : s;
-}
 
 // ---- 基本 -------------------------------------------------------------------
 
@@ -68,28 +47,29 @@ void test_basics() {
     }
 }
 
-// ---- __int128 との突き合わせ ------------------------------------------------
+// ---- 128bit 正解器との突き合わせ ------------------------------------------------
 
 void test_against_int128() {
+    using namespace kritest;
     Rng rng(20240826);
     for (int iter = 0; iter < 200000; ++iter) {
         const fixed_int<2> a = kritest::rand_biased<2>(rng);
         const fixed_int<2> b = kritest::rand_biased<2>(rng);
-        const i128 ia = to_i128(a), ib = to_i128(b);
+        const I128 ia = i128_of(a), ib = i128_of(b);
 
         // cmp
-        const int want_cmp = (ia < ib) ? -1 : (ia > ib) ? 1 : 0;
-        KRI_CHECK_MSG(cmp(a, b) == want_cmp, i128_str(ia) + " vs " + i128_str(ib));
+        KRI_CHECK_MSG(cmp(a, b) == i128_cmp(ia, ib), i128_str(ia) + " vs " + i128_str(ib));
 
         // sign
-        const int want_sign = (ia < 0) ? -1 : (ia > 0) ? 1 : 0;
-        KRI_CHECK(sign(a) == want_sign);
+        KRI_CHECK(sign(a) == i128_sign(ia));
 
         // add / sub は 3 リムに広げれば必ず収まる
-        const i128 hi_a = ia >> 1, hi_b = ib >> 1;  // オーバーフローしない範囲に落とす
-        const fixed_int<2> ha = from_i128(hi_a), hb = from_i128(hi_b);
-        KRI_CHECK_MSG(to_i128(add(ha, hb)) == hi_a + hi_b, i128_str(hi_a) + " + " + i128_str(hi_b));
-        KRI_CHECK_MSG(to_i128(sub(ha, hb)) == hi_a - hi_b, i128_str(hi_a) + " - " + i128_str(hi_b));
+        const I128 hi_a = i128_sar(ia, 1), hi_b = i128_sar(ib, 1);  // 溢れない範囲に落とす
+        const fixed_int<2> ha = fixed_of(hi_a), hb = fixed_of(hi_b);
+        KRI_CHECK_MSG(i128_eq(i128_of(add(ha, hb)), i128_add(hi_a, hi_b)),
+                      i128_str(hi_a) + " + " + i128_str(hi_b));
+        KRI_CHECK_MSG(i128_eq(i128_of(sub(ha, hb)), i128_sub(hi_a, hi_b)),
+                      i128_str(hi_a) + " - " + i128_str(hi_b));
 
         // add_widen / sub_widen は入力の全域でオーバーフローしない
         KRI_CHECK(cmp(sub_mixed(add_widen(a, b), b), a) == 0);
@@ -97,25 +77,26 @@ void test_against_int128() {
 
         // シフト
         const std::size_t s = static_cast<std::size_t>(rng.below(128));
-        KRI_CHECK_MSG(to_i128(shl_bits(a, s)) == static_cast<i128>(static_cast<u128>(ia) << s),
+        KRI_CHECK_MSG(i128_eq(i128_of(shl_bits(a, s)), i128_shl(ia, s)),
                       i128_str(ia) + " << " + std::to_string(s));
-        KRI_CHECK_MSG(to_i128(shr_bits(a, s)) == (ia >> s),
+        KRI_CHECK_MSG(i128_eq(i128_of(shr_bits(a, s)), i128_sar(ia, s)),
                       i128_str(ia) + " >> " + std::to_string(s));
     }
 }
 
 void test_mul_against_int128() {
+    using namespace kritest;
     Rng rng(7);
     for (int iter = 0; iter < 200000; ++iter) {
         const fixed_int<1> a = kritest::rand_biased<1>(rng);
         const fixed_int<1> b = kritest::rand_biased<1>(rng);
         const auto ia = static_cast<std::int64_t>(a.limb[0]);
         const auto ib = static_cast<std::int64_t>(b.limb[0]);
-        const i128 want = static_cast<i128>(ia) * static_cast<i128>(ib);
+        const I128 want = i128_mul_i64(ia, ib);
         const fixed_int<2> got = mul(a, b);
-        KRI_CHECK_MSG(to_i128(got) == want, std::to_string(ia) + " * " + std::to_string(ib) +
-                                                " -> " + i128_str(to_i128(got)) + " 期待 " +
-                                                i128_str(want));
+        KRI_CHECK_MSG(i128_eq(i128_of(got), want), std::to_string(ia) + " * " + std::to_string(ib) +
+                                                       " -> " + i128_str(i128_of(got)) + " 期待 " +
+                                                       i128_str(want));
     }
 
     // 最小値 x 最小値 が N+M リムにちょうど収まること（SPEC §5.2 の最悪ケース）
@@ -215,6 +196,7 @@ void test_determinants() {
 }  // namespace
 
 int main() {
+    kritest::i128_selfcheck();  // 正解器そのものを __int128 と突き合わせる
     test_basics();
     test_against_int128();
     test_mul_against_int128();

@@ -7,6 +7,7 @@
 // 「過大でない」の基準は SPEC に無いので、**リム数が理論値と一致すること**を条件とする。
 // すなわち実測値が上界より小さくても、必要リム数が変わらなければ設計上は問題ない。
 #include <cstdio>
+#include <initializer_list>
 
 #include "test_util.hpp"
 

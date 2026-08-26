@@ -28,7 +28,10 @@ target_compile_definitions(krisite INTERFACE
     $<$<OR:$<BOOL:${KRISITE_CHECKED_ARITH}>,$<CONFIG:Debug>>:KRISITE_CHECKED_ARITH=1>)
 
 if(MSVC)
-    target_compile_options(krisite INTERFACE /W4 /permissive-)
+    # /utf-8: ソースも実行文字集合も UTF-8。日本語のコメントと文字列リテラルが
+    #         ランナーのコードページに引きずられて化けるのを防ぐ（C4819 も消える）。
+    # /Zc:__cplusplus: __cplusplus を実際の規格値にする。
+    target_compile_options(krisite INTERFACE /W4 /permissive- /utf-8 /Zc:__cplusplus)
 else()
     target_compile_options(krisite INTERFACE -Wall -Wextra)
 endif()
