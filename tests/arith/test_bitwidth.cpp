@@ -50,6 +50,10 @@ int main() {
     Gauge g_pmin{"平面の小行列式 (5b+9)", bits::kPlaneMinor, 0, 0};
     Gauge g_vol{"四面体の体積x6 (3b+1)", bits::kTetraVolume6, 0, 0};
     Gauge g_o2dh{"orient2d_h (8b+17)", bits::kOrient2dH, 0, 0};
+    Gauge g_msid{"side(plane,中点) (15b+33)", bits::kMidSide, 0, 0};
+    Gauge g_mo2dh{"orient2d_h(中点) (14b+30)", bits::kMidOrient2dH, 0, 0};
+    Gauge g_tsid{"side(plane,重心) (21b+46)", bits::kTriSide, 0, 0};
+    Gauge g_to2dh{"orient2d_h(重心) (20b+43)", bits::kTriOrient2dH, 0, 0};
 
     Rng rng(20260826);
 
@@ -107,10 +111,21 @@ int main() {
         // レイキャストの投影向き（同次点版）
         feed(g_o2dh, orient2d_h_value(p[0], p[1], v, Axis::X));
         feed(g_o2dh, orient2d_h_value(p[2], p[3], u, Axis::Y));
+        // §6.1 の代表点フォールバック（2 構成点の中点）
+        const HMidPointD mid{v, u};
+        feed(g_msid, side_value(probe, mid));
+        feed(g_mo2dh, orient2d_h_value(p[0], p[1], mid, Axis::X));
+        // 3 頂点の重心（三角形の断片用のフォールバック）
+        const PlaneD pl4 = plane_from_triangle(p[2], p[5], p[8]);
+        if (!kritest::intersects_at_point(pl0, pl2, pl4)) continue;
+        const HTriPointD tri3{v, u, intersect3(pl0, pl2, pl4)};
+        feed(g_tsid, side_value(probe, tri3));
+        feed(g_to2dh, orient2d_h_value(p[0], p[1], tri3, Axis::X));
     }
 
-    Gauge* all[] = {&g_diff, &g_normal, &g_offset, &g_w,    &g_xyz, &g_side, &g_sidei,
-                    &g_o3d,  &g_o2d,    &g_cmph,   &g_pmin, &g_vol, &g_o2dh};
+    Gauge* all[] = {&g_diff,  &g_normal, &g_offset, &g_w,    &g_xyz,  &g_side,
+                    &g_sidei, &g_o3d,    &g_o2d,    &g_cmph, &g_pmin, &g_vol,
+                    &g_o2dh,  &g_msid,   &g_mo2dh,  &g_tsid, &g_to2dh};
 
     std::printf("\n  b = %zu のビット幅実測（SPEC-phase0.md §8.4）\n", b);
     std::printf("  実測値は乱択で到達した下限であり、真の最大値ではない。\n");
