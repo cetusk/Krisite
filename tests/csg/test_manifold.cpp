@@ -84,6 +84,13 @@ bool excluded(const std::string& id, BoolOp op) {
     return (id == "4T" && op == BoolOp::Union) || (id == "4T'" && op == BoolOp::Difference);
 }
 
+/// 実際に比較した (ケース, 演算, 深度) の組数。
+///
+/// **「テストが通った」ことと「テストが何かを検証した」ことは別です。**
+/// Manifold ジョブは一度、テストが 1 件も登録されないまま緑になりました。
+/// 件数を数えて下限を assert しておけば、同じ形の空回りは中身でも検出できます。
+std::size_t compared = 0;
+
 void check_case(const kritest::Case& c) {
     const TriMesh A = c.make_a(), B = c.make_b();
     const manifold::Manifold ma = to_manifold(A), mb = to_manifold(B);
@@ -110,6 +117,7 @@ void check_case(const kritest::Case& c) {
                         op_name(op), t.components, t.genus_total, want.components, want.genus_total,
                         skip ? "（§9.3 で合否対象外）" : (agree ? "一致" : "**不一致**"));
             if (skip) continue;
+            ++compared;
             KRI_CHECK_MSG(t.components == want.components,
                           std::string("ケース ") + c.id + " " + op_name(op) + "（深度 " +
                               std::to_string(d) + "）: 連結成分数が Manifold と食い違う（" +
@@ -128,7 +136,14 @@ void check_case(const kritest::Case& c) {
 
 int main() {
     std::printf("\n  §10.4 外部正解器（Manifold）との突き合わせ\n");
+    KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
     for (const kritest::Case& c : kritest::corpus()) check_case(c);
-    std::printf("\n");
+
+    // 全ケース × 3 演算 × 深度 4 段から §9.3 の除外 2 組（各 4 深度）を引いた数
+    const std::size_t expect = kritest::corpus().size() * 3 * 4 - 2 * 4;
+    std::printf("\n  比較した組数: %zu（期待 %zu）\n", compared, expect);
+    KRI_CHECK_MSG(compared == expect, "比較した組数が期待と違う（" + std::to_string(compared) +
+                                          " 対 " + std::to_string(expect) +
+                                          "）。テストが空回りしている疑い");
     return kritest::finish("csg/manifold");
 }

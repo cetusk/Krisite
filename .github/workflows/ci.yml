@@ -116,6 +116,10 @@ jobs:
       - run: cmake --build build
       # SPEC §9: 算術 10^7 件、述語 10^6 件以上
       - run: ctest --test-dir build --no-tests=error --output-on-failure
+      # 条件付きで登録されるテストは、登録されていなくても全体の ctest は緑になる。
+      # 名前を指定して 1 件以上あることを確かめる（§10.3 の体積検査）。
+      - name: §10.3 の体積検査が実際に走ったことを確認
+        run: ctest --test-dir build --no-tests=error -R volume_gmp -V
 
       # SPEC §9: ライブラリ本体のバイナリに GMP がリンクされていないこと
       - name: 本体に GMP が入っていないことを確認
@@ -152,7 +156,13 @@ jobs:
       - name: ビルド
         run: cmake --build build
       - name: 変異が期待どおり検出されること
-        run: ctest --test-dir build --no-tests=error -L mutation --output-on-failure
+        run: |
+          # 期待する変異テストの件数。減っていたら「変異テストがある」だけの状態に
+          # 戻っているので落とす。
+          n=$(ctest --test-dir build -L mutation -N | grep -c "Test #")
+          echo "登録されている変異テスト: $n 件"
+          test "$n" -eq 9 || { echo "変異テストの件数が想定と違います（期待 9）"; exit 1; }
+          ctest --test-dir build --no-tests=error -L mutation --output-on-failure
       - name: 変異 3 は検査ビルドでは表明が止めること
         # もう一方の検出経路。位相検査に届く前に fragment_sign の不変条件が落とす。
         # **同じ誤りを 2 つの独立した機構が捕まえる**ことの確認（§10.5）。
@@ -216,8 +226,11 @@ jobs:
         # いなくても ctest は 0 で終わり、ジョブは緑になります。実際に一度そうなり
         # ました（Manifold のブロックが add_subdirectory(tests) より後ろにあり、
         # KRISITE_MANIFOLD_FOUND が OFF のままテストが登録されていなかった）。
+        #
+        # -V で成功時も出力を残す。**何を比較したかがログに残らないと、
+        # 「緑だった」以上のことが言えません。**
         run: |
-          ctest --test-dir build --no-tests=error -R manifold_oracle --output-on-failure
+          ctest --test-dir build --no-tests=error -R manifold_oracle -V
 
   bench:
     name: ベンチマーク（基準線）
