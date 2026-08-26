@@ -55,6 +55,19 @@ namespace detail {
 ///
 /// 凸多角形なので、保持される辺は巡回的に連続します。その連続区間の末尾に
 /// 切断平面 `q` を 1 枚だけ足せば閉じます。
+///
+/// **開始位置は「境界が切断線から戻ってくる辺」です。**
+///
+/// 以前は「直前が非保持である最初の保持辺」で探していましたが、**全辺が保持される
+/// 場合に開始点が見つからず、その側を丸ごと落としていました。** 三角形を 1 頂点だけ
+/// 外側に切るとこれが起きます。符号が $(+,+,-)$ のとき、3 辺はいずれも
+/// 「端点の少なくとも一方が真に内側」を満たすためです。残るべき四角形が消えます。
+///
+/// **軸平行な立方体を軸平行な平面で切るかぎり断片は常に長方形なので、この配置は
+/// 一度も現れません。** 斜面を持つ入力（四面体、回転立方体）で初めて出ます。
+///
+/// そこで開始位置を、**脱出辺**（内側から切断線へ出る辺。凸多角形では一意）の
+/// 次にある最初の保持辺として求めます。全辺が保持される場合も含めて一様に決まります。
 inline std::vector<PlaneId> clip_edges(const std::vector<PlaneId>& edge, const std::vector<int>& s,
                                        int k, PlaneId q) {
     const std::size_t n = edge.size();
@@ -64,21 +77,34 @@ inline std::vector<PlaneId> clip_edges(const std::vector<PlaneId>& edge, const s
         // 辺の保持部分が正の長さを持つのは、端点の少なくとも一方が真に内側のとき
         keep[i] = (a > 0 || b > 0) ? 1 : 0;
     }
-    std::size_t start = n;
+    // 脱出辺: 始点が真に内側で、終点が内側でない辺。凸多角形では高々 1 本
+    std::size_t exit_edge = n;
     for (std::size_t i = 0; i < n; ++i) {
-        if (keep[i] && !keep[(i + n - 1) % n]) {
+        if (s[i] * k > 0 && s[(i + 1) % n] * k <= 0) {
+            exit_edge = i;
+            break;
+        }
+    }
+    if (exit_edge == n) return {};  // 真に内側の頂点が無い
+
+    // 脱出辺の次から巡回して、最初の保持辺を開始位置にする
+    std::size_t start = n;
+    for (std::size_t j = 1; j <= n; ++j) {
+        const std::size_t i = (exit_edge + j) % n;
+        if (keep[i]) {
             start = i;
             break;
         }
     }
     if (start == n) return {};  // 保持なし（全部落ちた）
+
     std::vector<PlaneId> out;
     for (std::size_t j = 0; j < n; ++j) {
         const std::size_t i = (start + j) % n;
         if (!keep[i]) break;
         out.push_back(edge[i]);
     }
-    out.push_back(q);
+    out.push_back(q);  // 保持区間の末尾（= 脱出辺の直後）で切断平面が閉じる
     return out;
 }
 
