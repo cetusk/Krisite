@@ -118,6 +118,7 @@ CI は可搬経路（`__int128` / 32bit 筆算）と GMP 差分テストも別�
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **現在地とフェーズの全体像。まずここを読む** |
 | [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 の仕様（進行中）。縫合の可否判定、中止条件 |
+| [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) | Phase 1 の実装ノート（**CP1 到達時点**）。判断と根拠、つまずいた点 |
 | [`docs/SPEC-phase0.md`](docs/SPEC-phase0.md) | Phase 0 の仕様。ビット幅解析、述語一覧、テスト要件 |
 | [`docs/IMPL-phase0.md`](docs/IMPL-phase0.md) | Phase 0 の実装ノート。**なぜそう作ったか**、検証の設計と検出力、Phase 1 への申し送り |
 | [`docs/BENCH.md`](docs/BENCH.md) | ベンチマークの基準線 |
