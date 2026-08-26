@@ -52,3 +52,73 @@ if(KRISITE_GMP_FOUND)
     add_test(NAME predicates_gmp_quick COMMAND predicates_gmp 5000)
     add_test(NAME plane_order_gmp_quick COMMAND plane_order_gmp 3000)
 endif()
+
+# ---- Manifold 正解器（Apache-2.0、テスト専用）--------------------------------
+#
+# **ライブラリ本体には絶対にリンクしません**（CLAUDE.md）。この実行ファイルだけです。
+
+if(KRISITE_MANIFOLD_FOUND)
+    krisite_add_test(manifold_oracle csg/test_manifold.cpp)
+    target_link_libraries(manifold_oracle PRIVATE manifold::manifold)
+endif()
+
+# ---- 変異テスト（SPEC-phase1.md §10.5）--------------------------------------
+#
+# **「変異テストがある」ことと「変異テストが効いている」ことは別です**（§10.5）。
+# そこで期待値を表として書き下し、ctest に検証させます。
+#
+#   expect = FAIL … その変異をそのテストが検出すること（`WILL_FAIL`）
+#   expect = PASS … **検出しないこと**。これも固定します。素通りする組合せを
+#                   記録しておかないと、後から「変異テストがあるから安心」と
+#                   誤解されます
+#
+# 変異 3 は**2 つの独立した機構**が捕まえます。検査ビルドでは `fragment_sign` の
+# 不変条件が停止させ、検査なしビルドでは §10.1 の位相検査が落とします。
+# ここで測るのは後者です（前者はライブラリ本体の防御であってコーパスの検出力ではない）。
+
+if(KRISITE_BUILD_MUTANTS)
+    # **変異テストは検査 OFF で回してください。**
+    #
+    # 検査 ON だと変異 3 は `KRISITE_CHECK`（`fragment_sign` の不変条件）で abort します。
+    # それも立派な検出ですが、**測っているものが違います。** 変異テストが答えるべきは
+    # 「テスト体系がこの誤りを検出するか」であって「表明が止めるか」ではありません。
+    # 表明はライブラリ本体の防御であり、コーパスの検出力とは独立です。
+    #
+    # 加えて CTest は abort（シグナル終了）を `WILL_FAIL` で拾えません。
+    if(KRISITE_CHECKED_ARITH OR CMAKE_BUILD_TYPE STREQUAL "Debug")
+        message(FATAL_ERROR
+            "KRISITE_BUILD_MUTANTS には KRISITE_CHECKED_ARITH=OFF と非 Debug 構成が要ります。"
+            " 検査 ON では変異 3 が表明で停止し、テスト体系の検出力を測れません"
+            "（SPEC-phase1 §10.5）。")
+    endif()
+
+    function(krisite_add_mutant tag define test expect)
+        set(name "mut_${tag}_${test}")
+        add_executable(${name} csg/test_${test}.cpp)
+        target_link_libraries(${name} PRIVATE krisite krisite_test_util)
+        target_compile_definitions(${name} PRIVATE ${define})
+        add_test(NAME ${name} COMMAND ${name})
+        set_tests_properties(${name} PROPERTIES TIMEOUT 3600 LABELS "mutation")
+        if(expect STREQUAL "FAIL")
+            set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
+        endif()
+    endfunction()
+
+    # 変異 1: §5.3 の第2段（値ベースの併合）を無効化
+    #
+    # **軸平行コーパスでは素通りします。** 値併合が 0 件（第1段が全頂点を捕まえる）
+    # なので、第2段を消しても何も変わりません。斜面コーパスが必須です。
+    krisite_add_mutant(1 KRISITE_MUTATION_NO_STAGE2=1 cp25 FAIL)
+    krisite_add_mutant(1 KRISITE_MUTATION_NO_STAGE2=1 cp2  PASS)
+
+    # 変異 2: §4.2 の割り当てを開領域に変える
+    krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 cp2             FAIL)
+    krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 cp25            FAIL)
+    krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 depth_monotonic FAIL)
+
+    # 変異 3: §4.3.1 の分割平面を割り当て集合に変える（T 字接合が生じる）
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp1             FAIL)
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp2            FAIL)
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp25           FAIL)
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 depth_monotonic FAIL)
+endif()

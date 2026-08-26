@@ -201,6 +201,14 @@ void report_54() {
                         st.max_mesh_planes_at_point, st.active_cells, st.total_cells);
             // 理論上界の見張り: 1 点に集まる平面は総平面数を超えない
             KRI_CHECK(st.max_planes_at_point <= st.planes_total);
+            // §5.4（第8版）: 併合グループは 1 セルとその面・辺・頂点隣接に収まること。
+            // **2 以上が出たら併合の誤り**（本来別の点を同一視した）を疑う。
+            // これが成り立つなら Phase 3 は「セル並列 + 境界併合」で組める。
+            KRI_CHECK_MSG(st.max_merge_span <= 1,
+                          std::string("ケース ") + c.id + "（深度 " + std::to_string(d) +
+                              "）: 併合グループがセル隣接を越えて広がっている（広がり " +
+                              std::to_string(st.max_merge_span) +
+                              "）。Phase 3 の「セル並列 + 境界併合」の前提が崩れます");
         }
     }
 }
