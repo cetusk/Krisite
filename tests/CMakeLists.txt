@@ -14,4 +14,16 @@ function(krisite_add_test name src)
     set_tests_properties(${name} PROPERTIES TIMEOUT 3600)
 endfunction()
 
-krisite_add_test(fixed_int arith/test_fixed_int.cpp)
+krisite_add_test(fixed_int      arith/test_fixed_int.cpp)
+
+# ---- GMP 差分テスト（LGPL、テスト専用）--------------------------------------
+
+if(KRISITE_GMP_FOUND)
+    # SPEC §9: 算術 10^7 件、述語 10^6 件以上
+    krisite_add_test(fixed_int_gmp  arith/test_fixed_int_gmp.cpp 10000000)
+    target_link_libraries(fixed_int_gmp PRIVATE krisite_gmp)
+
+
+    # 開発中に素早く回すための短縮版
+    add_test(NAME fixed_int_gmp_quick COMMAND fixed_int_gmp 40000)
+endif()
