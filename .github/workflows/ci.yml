@@ -60,7 +60,7 @@ jobs:
         run: cmake --build build
 
       - name: テスト（GMP 非依存の分）
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --no-tests=error --output-on-failure
 
   # ---- 検査ビルド（Debug では KRISITE_CHECKED_ARITH が自動で ON）--------------
   debug-checked:
@@ -71,7 +71,7 @@ jobs:
       - uses: seanmiddleditch/gha-setup-ninja@v5
       - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
       - run: cmake --build build
-      - run: ctest --test-dir build --output-on-failure
+      - run: ctest --test-dir build --no-tests=error --output-on-failure
 
   # ---- 可搬フォールバック経路（__int128 / 32bit 筆算）------------------------
   #
@@ -93,7 +93,7 @@ jobs:
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DKRISITE_CHECKED_ARITH=ON -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
       - run: cmake --build build
-      - run: ctest --test-dir build --output-on-failure
+      - run: ctest --test-dir build --no-tests=error --output-on-failure
 
   # ---- GMP 差分テスト（LGPL、テスト専用）------------------------------------
   gmp:
@@ -115,7 +115,7 @@ jobs:
             -DKRISITE_BUILD_TESTS_WITH_GMP=ON
       - run: cmake --build build
       # SPEC §9: 算術 10^7 件、述語 10^6 件以上
-      - run: ctest --test-dir build --output-on-failure
+      - run: ctest --test-dir build --no-tests=error --output-on-failure
 
       # SPEC §9: ライブラリ本体のバイナリに GMP がリンクされていないこと
       - name: 本体に GMP が入っていないことを確認
@@ -152,7 +152,7 @@ jobs:
       - name: ビルド
         run: cmake --build build
       - name: 変異が期待どおり検出されること
-        run: ctest --test-dir build -L mutation --output-on-failure
+        run: ctest --test-dir build --no-tests=error -L mutation --output-on-failure
       - name: 変異 3 は検査ビルドでは表明が止めること
         # もう一方の検出経路。位相検査に届く前に fragment_sign の不変条件が落とす。
         # **同じ誤りを 2 つの独立した機構が捕まえる**ことの確認（§10.5）。
@@ -191,7 +191,10 @@ jobs:
         # 構成時にも FATAL_ERROR で検査しているが、根拠を CI ログに残す。
         run: |
           SRC=$(find build/_deps -maxdepth 1 -name 'manifold-src' -type d)
-          echo "commit: $(git -C "$SRC" rev-parse HEAD)"
+          GOT=$(git -C "$SRC" rev-parse HEAD)
+          WANT=$(grep -oE '[0-9a-f]{40}' CMakeLists.txt | head -1)
+          echo "commit: $GOT (固定値: $WANT)"
+          test "$GOT" = "$WANT" || { echo "固定コミットと違うものを取得しました"; exit 1; }
           echo "--- LICENSE の冒頭 ---"
           head -5 "$SRC/LICENSE"
           grep -q "Apache License" "$SRC/LICENSE"
@@ -209,7 +212,12 @@ jobs:
           done
           echo "OK: 本体に Manifold は入っていません"
       - name: 突き合わせ
-        run: ctest --test-dir build -R manifold_oracle --output-on-failure
+        # **--no-tests=error は必須です。** これが無いと、テストが 1 つも登録されて
+        # いなくても ctest は 0 で終わり、ジョブは緑になります。実際に一度そうなり
+        # ました（Manifold のブロックが add_subdirectory(tests) より後ろにあり、
+        # KRISITE_MANIFOLD_FOUND が OFF のままテストが登録されていなかった）。
+        run: |
+          ctest --test-dir build --no-tests=error -R manifold_oracle --output-on-failure
 
   bench:
     name: ベンチマーク（基準線）
