@@ -137,6 +137,28 @@ inline constexpr std::size_t kCmpH = 13 * b + 27;
 inline constexpr std::size_t kMidSide = kHomoW + kSide + 1;
 inline constexpr std::size_t kMidOrient2dH = kHomoW + kOrient2dH + 1;
 
+/// 断片の 3 頂点の**重心**に対する述語（同上のさらなるフォールバック）。
+///
+/// 中点は対角線を要求するので**三角形の断片では使えません。** 実際に CP2.5 の
+/// ケース 2T で、3 頂点すべてが $\partial B$ 上の三角形断片が出ました。
+///
+/// $v_i = (X_i : W_i)$ の重心は、$W_i > 0$ に正規化したうえで
+/// $$ c = (W_1W_2 X_0 + W_0W_2 X_1 + W_0W_1 X_2 \;:\; 3 W_0W_1W_2). $$
+///
+/// **凸多角形の 3 頂点が張る三角形の内部は、多角形の相対内部に含まれます。**
+/// したがって共線でない 3 頂点を選べば必ず境界から外れます。
+///
+/// ここでも $c$ は構成せず、線形性から
+/// $$ F(c) = W_1W_2 F(v_0) + W_0W_2 F(v_1) + W_0W_1 F(v_2) $$
+/// で評価します。符号は $\mathrm{sign}(W_0)\mathrm{sign}(W_1)\mathrm{sign}(W_2)$ 倍。
+///
+///   side:       $2(6b{+}12) + (9b{+}20) = 21b{+}44$、3 項の和で $21b{+}46$
+///   orient2d_h: $2(6b{+}12) + (8b{+}17) = 20b{+}41$、3 項の和で $20b{+}43$
+///
+/// b = 21 で 487 ビット / 463 ビット（ともに 8 リム）。
+inline constexpr std::size_t kTriSide = 2 * kHomoW + kSide + 2;
+inline constexpr std::size_t kTriOrient2dH = 2 * kHomoW + kOrient2dH + 2;
+
 }  // namespace bits
 
 namespace limbs {
@@ -159,6 +181,8 @@ inline constexpr std::size_t kInputVolume6 = limbs_for(bits::kInputVolume6);
 inline constexpr std::size_t kOrient2dH = limbs_for(bits::kOrient2dH);
 inline constexpr std::size_t kMidSide = limbs_for(bits::kMidSide);
 inline constexpr std::size_t kMidOrient2dH = limbs_for(bits::kMidOrient2dH);
+inline constexpr std::size_t kTriSide = limbs_for(bits::kTriSide);
+inline constexpr std::size_t kTriOrient2dH = limbs_for(bits::kTriOrient2dH);
 
 /// Phase 0 の述語が要求する最大リム数（SPEC §3.3 の表の最右列）。
 /// b = 21 → 5、b = 26 → 6。
@@ -174,6 +198,8 @@ static_assert(64 * limbs::kInputVolume6 >= bits::kInputVolume6, "kInputVolume6 �
 static_assert(64 * limbs::kOrient2dH >= bits::kOrient2dH, "kOrient2dH のリム数不足");
 static_assert(64 * limbs::kMidSide >= bits::kMidSide, "kMidSide のリム数不足");
 static_assert(64 * limbs::kMidOrient2dH >= bits::kMidOrient2dH, "kMidOrient2dH のリム数不足");
+static_assert(64 * limbs::kTriSide >= bits::kTriSide, "kTriSide のリム数不足");
+static_assert(64 * limbs::kTriOrient2dH >= bits::kTriOrient2dH, "kTriOrient2dH のリム数不足");
 // 軸平行平面のオフセットは kOffset に収まること
 static_assert(bits::kAxisOffset <= bits::kOffset, "軸平行平面のオフセットが kOffset を超える");
 

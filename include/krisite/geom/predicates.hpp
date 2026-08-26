@@ -390,6 +390,54 @@ inline int orient2d_h(const IPoint& a, const IPoint& b, const HMidPointD& m, Axi
            arith::sign(m.v1.w);
 }
 
+// ---- 3 頂点の重心に対する述語（三角形の断片用）------------------------------
+//
+// 中点は対角線を要求するので三角形では使えません。重心も同じ線形性で評価します。
+//
+//   F(c) = W1*W2*F(v0) + W0*W2*F(v1) + W0*W1*F(v2)
+//   c の w = 3*W0*W1*W2 なので符号は sign(W0)*sign(W1)*sign(W2)
+
+/// side(plane, 重心) の被符号値。ビット幅 21b+46 → widths.hpp bits::kTriSide
+inline arith::fixed_int<limbs::kTriSide> side_value(const PlaneD& pl,
+                                                    const HTriPointD& c) noexcept {
+    using namespace arith;
+    constexpr std::size_t L = limbs::kTriSide;
+    static_assert(64 * L >= bits::kTriSide, "kTriSide のリム数が上界を下回っている");
+    auto acc = resize<L>(mul(mul(c.v1.w, c.v2.w), side_value(pl, c.v0)));
+    acc = add(acc, resize<L>(mul(mul(c.v0.w, c.v2.w), side_value(pl, c.v1))));
+    acc = add(acc, resize<L>(mul(mul(c.v0.w, c.v1.w), side_value(pl, c.v2))));
+    return acc;
+}
+
+/// 重心の平面に対する側。
+inline int side(const PlaneD& pl, const HTriPointD& c) noexcept {
+    KRISITE_CHECK(!arith::is_zero(c.v0.w) && !arith::is_zero(c.v1.w) && !arith::is_zero(c.v2.w),
+                  "side: 重心の頂点の w == 0");
+    return arith::sign(side_value(pl, c)) * arith::sign(c.v0.w) * arith::sign(c.v1.w) *
+           arith::sign(c.v2.w);
+}
+
+/// orient2d_h(a, b, 重心) の被符号値。ビット幅 20b+43 → widths.hpp bits::kTriOrient2dH
+inline arith::fixed_int<limbs::kTriOrient2dH> orient2d_h_value(const IPoint& a, const IPoint& b,
+                                                               const HTriPointD& c,
+                                                               Axis along) noexcept {
+    using namespace arith;
+    constexpr std::size_t L = limbs::kTriOrient2dH;
+    static_assert(64 * L >= bits::kTriOrient2dH, "kTriOrient2dH のリム数が上界を下回っている");
+    auto acc = resize<L>(mul(mul(c.v1.w, c.v2.w), orient2d_h_value(a, b, c.v0, along)));
+    acc = add(acc, resize<L>(mul(mul(c.v0.w, c.v2.w), orient2d_h_value(a, b, c.v1, along))));
+    acc = add(acc, resize<L>(mul(mul(c.v0.w, c.v1.w), orient2d_h_value(a, b, c.v2, along))));
+    return acc;
+}
+
+/// 重心を軸 `along` に沿って投影した 2D の向き。
+inline int orient2d_h(const IPoint& a, const IPoint& b, const HTriPointD& c, Axis along) noexcept {
+    KRISITE_CHECK(!arith::is_zero(c.v0.w) && !arith::is_zero(c.v1.w) && !arith::is_zero(c.v2.w),
+                  "orient2d_h: 重心の頂点の w == 0");
+    return arith::sign(orient2d_h_value(a, b, c, along)) * arith::sign(c.v0.w) *
+           arith::sign(c.v1.w) * arith::sign(c.v2.w);
+}
+
 // ---- 入力メッシュの向き検査（SPEC-phase1.md §3.4）----------------------------
 
 /// 三角形 (a,b,c) と原点がなす四面体の符号付き体積 x6 = det(a, b, c)。

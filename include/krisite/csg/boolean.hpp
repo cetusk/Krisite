@@ -63,8 +63,12 @@ enum class FragClass {
 
 /// SPEC-phase1 §4.3.3 と §5.4 が要求する計数。
 struct BoolStats {
-    std::size_t fragments = 0;                 ///< 正準化後の断片数（§4.3.3）
-    std::size_t raw_fragments = 0;             ///< 正準化前（重複を含む）
+    std::size_t fragments = 0;      ///< 正準化後の断片数（§4.3.3）
+    std::size_t raw_fragments = 0;  ///< 正準化前（重複を含む）
+    /// 幾何を含むセルの数（§9.0）。**分割が働いているかの直接的な指標**です。
+    /// 断片数は間接的で、ケース 5 のように面がセル境界に乗ると動きません。
+    std::size_t active_cells = 0;
+    std::size_t total_cells = 0;               ///< 8^depth
     std::size_t duplicate_fragments = 0;       ///< 重複割り当てが生んだ重複断片（§5.4）
     std::size_t coplanar_same = 0;             ///< 共平面重複のうち向きが同じ対の数
     std::size_t coplanar_opposite = 0;         ///< 向きが逆の対の数
@@ -78,6 +82,7 @@ struct BoolStats {
     std::size_t regions = 0;                   ///< 相異なる符号ベクトルの数（§6.1）
     std::size_t raycasts = 0;                  ///< レイキャスト回数
     std::size_t midpoint_raycasts = 0;         ///< うち中点へのフォールバック（§6.1）
+    std::size_t centroid_raycasts = 0;         ///< うち 3 頂点の重心へのフォールバック
     std::size_t side_calls = 0;                ///< 参考: side の呼び出し数
     std::size_t intersect3_calls = 0;          ///< 参考: intersect3 の呼び出し数
 };
@@ -179,6 +184,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         for (std::uint32_t cj = 0; cj < n; ++cj) {
             for (std::uint32_t ck = 0; ck < n; ++ck) {
                 const octree::CellIndex cell{ci, cj, ck};
+                const std::size_t frags_before = frags.size();
                 // セル面の平面 ID（保持側つき）: lo 面は +、hi 面は -
                 struct CellPlane {
                     PlaneId id;
@@ -233,10 +239,12 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                         for (Fragment& p : pieces) frags.push_back(std::move(p));
                     }
                 }
+                if (frags.size() != frags_before) ++st.active_cells;
             }
         }
     }
     st.raw_fragments = frags.size();
+    st.total_cells = grid.cell_count();
 
     // ---- 4. 縫合（§5）----
     //
@@ -415,6 +423,21 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                         ++st.midpoint_raycasts;
                     }
                 }
+                // **三角形の断片には対角線がありません。** 3 頂点の重心に落とします。
+                // 凸多角形の 3 頂点が張る三角形の内部は多角形の相対内部に含まれるので、
+                // 共線でない 3 つ組を選べば必ず境界から外れます。全 3 つ組を試します。
+                for (std::size_t i = 0; i < nv && !decided; ++i) {
+                    for (std::size_t j = i + 1; j < nv && !decided; ++j) {
+                        for (std::size_t k = j + 1; k < nv && !decided; ++k) {
+                            const geom::HTriPointD c{vs[i], vs[j], vs[k]};
+                            if (point_on_boundary(other, c)) continue;
+                            inside = point_inside(other, c);
+                            decided = true;
+                            ++st.raycasts;
+                            ++st.centroid_raycasts;
+                        }
+                    }
+                }
 #if defined(KRISITE_DEBUG_REPRESENTATIVE)
                 // 代表点が見つからないときに配置を吐く。CP2 で実際に必要になりました。
                 // ライブラリ本体の既定ビルドには入りません。
@@ -437,7 +460,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
 #endif
                 KRISITE_CHECK(
                     decided,
-                    "boolean_op: 領域の代表点が見つからない（全頂点と全対角線中点が相手の境界上）");
+                    "boolean_op: "
+                    "領域の代表点が見つからない（全頂点・全対角線中点・全重心が相手の境界上）");
                 it = region_inside.emplace(key, inside).first;
                 ++st.regions;
             }
