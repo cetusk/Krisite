@@ -14,6 +14,7 @@
 #include "krisite/geom/widths.hpp"
 #include "krisite/mesh/topology.hpp"
 #include "krisite/mesh/tri_mesh.hpp"
+#include "krisite/octree/uniform_grid.hpp"
 
 namespace kri = krisite;
 
