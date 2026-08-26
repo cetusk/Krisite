@@ -21,6 +21,7 @@ krisite_add_test(bitwidth       arith/test_bitwidth.cpp)
 krisite_add_test(predicates     geom/test_predicates.cpp)
 krisite_add_test(degenerate     geom/test_degenerate.cpp)
 krisite_add_test(plane_order    geom/test_plane_order.cpp)
+krisite_add_test(topology      mesh/test_topology.cpp)
 
 # ---- GMP 差分テスト（LGPL、テスト専用）--------------------------------------
 
