@@ -51,6 +51,17 @@ struct HMidPointD {
     HPointD v0, v1;
 };
 
+/// 3 つの構成点の**重心**。中点と同じく座標を保持しません（SPEC-phase1 §6.1）。
+///
+///   c = (W1*W2*X0 + W0*W2*X1 + W0*W1*X2 : 3*W0*W1*W2)
+///
+/// 三角形の断片には対角線が無いので、中点では相対内部の点が作れません。
+/// 凸多角形の 3 頂点が張る三角形の内部は多角形の相対内部に含まれるので、
+/// 共線でない 3 頂点を選べば必ず境界から外れます。
+struct HTriPointD {
+    HPointD v0, v1, v2;
+};
+
 /// 入力点を同次点として見る（w = 1）。
 inline HPointD to_homogeneous(const IPoint& p) noexcept {
     HPointD h{};
