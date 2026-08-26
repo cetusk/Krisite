@@ -209,6 +209,161 @@ inline bool h_equal(const HPointD& h1, const HPointD& h2) noexcept {
     return cmp_h_lex(h1, h2) == 0;
 }
 
+// ---- 平面の同一判定と全順序（SPEC-phase1.md §3.1）----------------------------
+//
+// GCD による正準化は行いません。除算・剰余・GCD は arith/ に無く、Phase 1 のために
+// 算術基盤へ足すのは割に合わないためです（SPEC-phase1 §12 の非目標）。
+// 代わりに比例判定と交差乗算で ID を割り当てます。
+
+namespace detail {
+
+/// 平面係数を共通幅で取り出す（0=a, 1=b, 2=c, 3=d）。
+/// 法線は kNormal、オフセットは kOffset なので kOffset にそろえる。
+inline arith::fixed_int<limbs::kOffset> plane_coeff(const PlaneD& pl, int i) noexcept {
+    switch (i) {
+        case 0:
+            return arith::widen<limbs::kOffset>(pl.a);
+        case 1:
+            return arith::widen<limbs::kOffset>(pl.b);
+        case 2:
+            return arith::widen<limbs::kOffset>(pl.c);
+        default:
+            return pl.d;
+    }
+}
+
+/// 最初の非零成分の添字。全零なら 4。
+inline int plane_lead(const PlaneD& pl) noexcept {
+    for (int i = 0; i < 4; ++i) {
+        if (!arith::is_zero(plane_coeff(pl, i))) return i;
+    }
+    return 4;
+}
+
+}  // namespace detail
+
+/// 2 平面の 2x2 小行列式 `p_i*q_j - p_j*q_i`。
+/// ビット幅 5b+9 → widths.hpp bits::kPlaneMinor
+inline arith::fixed_int<limbs::kPlaneMinor> plane_minor(const PlaneD& p, const PlaneD& q, int i,
+                                                        int j) noexcept {
+    const auto pi = detail::plane_coeff(p, i), pj = detail::plane_coeff(p, j);
+    const auto qi = detail::plane_coeff(q, i), qj = detail::plane_coeff(q, j);
+    return arith::resize<limbs::kPlaneMinor>(
+        arith::sub_widen(arith::mul(pi, qj), arith::mul(pj, qi)));
+}
+
+/// 同一の幾何平面か（**向きは問いません**）。SPEC-phase1 §3.1 の比例判定。
+///
+/// $[a,b,c,d]$ と $[a',b',c',d']$ が比例 ⟺ 2x2 小行列式 6 本がすべて 0。
+///
+/// 退化平面（4 成分すべて零）は零ベクトルなので形式的にはあらゆる平面と「比例」します。
+/// それでは全順序と食い違うので、**両方が退化のときだけ同一**とします。
+inline bool plane_same(const PlaneD& p, const PlaneD& q) noexcept {
+    const bool pz = is_null(p), qz = is_null(q);
+    if (pz || qz) return pz && qz;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = i + 1; j < 4; ++j) {
+            if (!arith::is_zero(plane_minor(p, q, i, j))) return false;
+        }
+    }
+    return true;
+}
+
+/// 平面の全順序。-1 / 0 / +1。`PlaneId` 付与のための整列に使います。
+///
+/// 符号を正規化した（最初の非零成分を正にした）うえで、
+///   1. 最初の非零成分の位置で比較
+///   2. 同じなら比 `p_j / p_lead` を交差乗算で比較
+/// 比は符号正規化で不変なので、係数を書き換える必要はありません。
+///
+///   sign(p_j/p_i - q_j/q_i) = -sign(p_i*q_j - p_j*q_i) * sign(p_i) * sign(q_i)
+///
+/// ビット幅 6b+11 → widths.hpp bits::kPlaneOrder（実際に到達するのは 5b+8）
+///
+/// `plane_cmp(p, q) == 0` と `plane_same(p, q)` は同値です。
+/// 別々の式から導いてあるので、テストで突き合わせています。
+inline int plane_cmp(const PlaneD& p, const PlaneD& q) noexcept {
+    const int ip = detail::plane_lead(p), iq = detail::plane_lead(q);
+    if (ip != iq) return (ip < iq) ? -1 : 1;
+    if (ip == 4) return 0;  // 両方とも退化平面
+
+    const int sp = arith::sign(detail::plane_coeff(p, ip));
+    const int sq = arith::sign(detail::plane_coeff(q, iq));
+    for (int j = ip + 1; j < 4; ++j) {
+        const int m = arith::sign(plane_minor(p, q, ip, j));
+        if (m != 0) return -m * sp * sq;
+    }
+    return 0;
+}
+
+// ---- 同次点を投影した 2D 向き（SPEC-phase1.md §6.1 のレイキャスト）----------
+
+namespace detail {
+
+/// 同次点の成分（軸別）。
+inline const arith::fixed_int<limbs::kHomoXyz>& hcomp(const HPointD& p, Axis ax) noexcept {
+    return component(p, ax);
+}
+
+/// IPoint の成分（軸別）。
+inline std::int32_t icomp(const IPoint& p, Axis ax) noexcept {
+    return (ax == Axis::X) ? p.x : (ax == Axis::Y) ? p.y : p.z;
+}
+
+}  // namespace detail
+
+/// 軸 `along` に沿って投影した平面での `orient2d(a, b, p)` の被符号値。
+///
+/// 投影後の座標は右手系の巡回順（X を落とす → (y,z)、Y → (z,x)、Z → (x,y)）。
+/// 実座標での向きは `O / p.w` なので、符号は `sign(O) * sign(p.w)` になります。
+///
+/// ビット幅 8b+17 → widths.hpp bits::kOrient2dH
+inline arith::fixed_int<limbs::kOrient2dH> orient2d_h_value(const IPoint& a, const IPoint& b,
+                                                            const HPointD& p, Axis along) noexcept {
+    using namespace arith;
+    // 投影後の 2 軸（巡回順）
+    const Axis u = (along == Axis::X) ? Axis::Y : (along == Axis::Y) ? Axis::Z : Axis::X;
+    const Axis v = (along == Axis::X) ? Axis::Z : (along == Axis::Y) ? Axis::X : Axis::Y;
+
+    // p_c - a_c * p.w
+    auto rel = [&](Axis c) {
+        return sub_mixed(detail::hcomp(p, c),
+                         mul(from_i64<limbs::kCoord>(detail::icomp(a, c)), p.w));
+    };
+    const auto ru = rel(u), rv = rel(v);
+    const auto du = coord_diff(detail::icomp(b, u), detail::icomp(a, u));
+    const auto dv = coord_diff(detail::icomp(b, v), detail::icomp(a, v));
+    return resize<limbs::kOrient2dH>(sub_widen(mul(du, rv), mul(dv, ru)));
+}
+
+/// 軸 `along` に沿って投影した 2D の向き。-1 / 0 / +1。
+inline int orient2d_h(const IPoint& a, const IPoint& b, const HPointD& p, Axis along) noexcept {
+    KRISITE_CHECK(!arith::is_zero(p.w), "orient2d_h: HPoint の w == 0");
+    return arith::sign(orient2d_h_value(a, b, p, along)) * arith::sign(p.w);
+}
+
+// ---- 入力メッシュの向き検査（SPEC-phase1.md §3.4）----------------------------
+
+/// 三角形 (a,b,c) と原点がなす四面体の符号付き体積 x6 = det(a, b, c)。
+///
+/// 閉曲面上の全三角形について総和すると、囲む立体の体積 x6 になります。
+/// 外向き法線（外から見て CCW）なら正。
+///
+/// ビット幅: 3b+1 → widths.hpp bits::kInputVolume6（総和ぶんの余裕込み）
+inline arith::fixed_int<3 * limbs::kCoord + 1> tetra_volume6(const IPoint& a, const IPoint& b,
+                                                             const IPoint& c) noexcept {
+    using arith::fixed_int;
+    const fixed_int<limbs::kCoord> m[3][3] = {
+        {arith::from_i64<limbs::kCoord>(a.x), arith::from_i64<limbs::kCoord>(a.y),
+         arith::from_i64<limbs::kCoord>(a.z)},
+        {arith::from_i64<limbs::kCoord>(b.x), arith::from_i64<limbs::kCoord>(b.y),
+         arith::from_i64<limbs::kCoord>(b.z)},
+        {arith::from_i64<limbs::kCoord>(c.x), arith::from_i64<limbs::kCoord>(c.y),
+         arith::from_i64<limbs::kCoord>(c.z)},
+    };
+    return arith::det3(m);
+}
+
 }  // namespace krisite::geom
 
 #endif  // KRISITE_GEOM_PREDICATES_HPP
