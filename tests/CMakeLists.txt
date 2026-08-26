@@ -24,6 +24,7 @@ krisite_add_test(plane_order    geom/test_plane_order.cpp)
 krisite_add_test(topology      mesh/test_topology.cpp)
 krisite_add_test(uniform_grid  octree/test_uniform_grid.cpp)
 krisite_add_test(faces         csg/test_faces.cpp)
+krisite_add_test(fragment      csg/test_fragment.cpp)
 
 # ---- GMP 差分テスト（LGPL、テスト専用）--------------------------------------
 
