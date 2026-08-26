@@ -44,6 +44,18 @@ struct TopologyReport {
     long long genus_total = 0;   ///< C - χ/2
     bool chi_even = false;       ///< χ が偶数（そうでなければ g が半整数になり異常）
 
+    /// **非多様体辺の次数**（SPEC-phase1 §10.1 の恒久的診断）。
+    ///
+    /// $\chi$ は「面が余分」なのか「面が欠けている」のかを区別しません。次数は区別します。
+    ///
+    ///   次数 1 … その辺の片側に面が無い → **面が欠けている**
+    ///   次数 3 以上 … 同じ辺に面が集まりすぎ → **面が余分**、または非多様体な接触
+    ///
+    /// 落ちたときはこの 2 つを必ず記録してください。デバッグの初手が変わります。
+    std::size_t edges_deficient = 0;  ///< 1 面にしか接しない辺の数
+    std::size_t edges_excess = 0;     ///< 3 面以上に接する辺の数
+    std::size_t max_edge_degree = 0;  ///< 辺の次数の最大
+
     /// SPEC §10.1 のすべてを満たすか。空メッシュは V=E=F=0 だけを見る。
     bool ok() const noexcept {
         if (empty) return v == 0 && e == 0 && f == 0;
@@ -132,6 +144,9 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
     for (const auto& kv : edges) {
         const EdgeInfo& ei = kv.second;
         if (ei.count != 2) r.edge_manifold = false;
+        if (ei.count == 1) ++r.edges_deficient;
+        if (ei.count >= 3) ++r.edges_excess;
+        r.max_edge_degree = std::max(r.max_edge_degree, static_cast<std::size_t>(ei.count));
         // 向きが整合していれば、共有辺は一方が (u,v)、他方が (v,u)
         if (!(ei.fwd == 1 && ei.bwd == 1)) r.oriented = false;
     }
