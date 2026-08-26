@@ -26,6 +26,8 @@ krisite_add_test(uniform_grid  octree/test_uniform_grid.cpp)
 krisite_add_test(faces         csg/test_faces.cpp)
 krisite_add_test(fragment      csg/test_fragment.cpp)
 krisite_add_test(cp1           csg/test_cp1.cpp)
+krisite_add_test(cp2           csg/test_cp2.cpp)
+krisite_add_test(depth_monotonic csg/test_depth_monotonic.cpp)
 
 # ---- GMP 差分テスト（LGPL、テスト専用）--------------------------------------
 

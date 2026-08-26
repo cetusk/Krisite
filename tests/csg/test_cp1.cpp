@@ -37,11 +37,11 @@ void report(const char* what, const TopologyReport& t, const BoolStats& st, unsi
 void test_cp1_union_general_position() {
     // ケース 1: 立方体 2 個、一般位置（重なるが面・辺・頂点は一致しない）
     //
-    // **座標範囲に見合った大きさにすること。** 八分木は座標範囲全体を分割するので、
-    // 隅に小さく置くと深度を上げてもセル境界が幾何をまたがない。
-    // b=21 の深度 2 の内部境界は -2^19, 0, +2^19 で、下の 2 つはそれを実際にまたぐ。
-    const TriMesh a = kritest::grid_scale_box(-600000, 200000);
-    const TriMesh b = kritest::grid_scale_box(-100000, 700000);
+    // 配置は `corpus.hpp` の表から取ります。**絶対座標で書かないこと**（§9.0）。
+    // b は CMake オプションで変わり、CI は b=21 と b=26 を回すので、絶対座標だと
+    // b=26 側で入力が座標範囲の 1/32 になり、深度掃引が空回りします。
+    const TriMesh a = kritest::cases::case1_a();
+    const TriMesh b = kritest::cases::case1_b();
 
     KRI_CHECK(check_topology(a).ok() && check_topology(b).ok());
     KRI_CHECK(krisite::mesh::is_outward_oriented(a));
@@ -81,8 +81,8 @@ void test_cp1_union_general_position() {
 
 /// 分割が実際に効いていること（深度 2 では断片が増える）。
 void test_depth_actually_splits() {
-    const TriMesh a = kritest::grid_scale_box(-600000, 200000);
-    const TriMesh b = kritest::grid_scale_box(-100000, 700000);
+    const TriMesh a = kritest::cases::case1_a();
+    const TriMesh b = kritest::cases::case1_b();
     BoolStats s0, s2;
     boolean_op(a, b, BoolOp::Union, 0, &s0);
     boolean_op(a, b, BoolOp::Union, 2, &s2);
@@ -98,8 +98,8 @@ void test_depth_actually_splits() {
 
 /// 離れた 2 立方体の union は 2 シェルになる（分類が効いていることの確認）。
 void test_disjoint_union() {
-    const TriMesh a = kritest::grid_scale_box(-900000, -600000);
-    const TriMesh b = kritest::grid_scale_box(600000, 900000);
+    const TriMesh a = kritest::cases::disjoint_a();
+    const TriMesh b = kritest::cases::disjoint_b();
     for (unsigned d : {0u, 2u}) {
         BoolStats st;
         const TopologyReport t = run(a, b, BoolOp::Union, d, st);

@@ -58,6 +58,31 @@ inline TriMesh grid_scale_box(std::int64_t lo, std::int64_t hi) {
     return box(c(lo), c(lo), c(lo), c(hi), c(hi), c(hi));
 }
 
+/// **座標を絶対値で書かないこと**（SPEC-phase1 §9.0）。
+///
+/// `b` は CMake オプションで変わり、CI は b=21 と b=26 の両方を回します。絶対値で
+/// 書くと b=26 側で入力が座標範囲の 1/32 になり、深度掃引が空回りします。
+/// §9.0 の罠が **b 依存で再発する**わけです。
+///
+/// そこで位置は $2^{b-1}$ を 1 とみなした**比**で書きます。分母は 2 の冪に限ること。
+/// そうすれば b が変わっても格子点のまま、セル境界との相対関係も保たれます。
+///
+/// b = 21 なら `at(-1, 1)` = -2^20 = `kCoordMin`、`at(1, 2)` = 2^19。
+constexpr std::int32_t at(int num, int den) noexcept {
+    return static_cast<std::int32_t>((-static_cast<std::int64_t>(krisite::kCoordMin) * num) / den);
+}
+
+/// 深度 `d` のセル境界の間隔。`at()` で書いた値がこの倍数なら境界に乗ります。
+constexpr std::int64_t cell_size_at(unsigned d) noexcept {
+    return std::int64_t{1} << (krisite::kCoordBits - d);
+}
+
+/// 比で指定する立方体。分子 2 つと共通の分母を渡す。
+inline TriMesh ratio_box(int lo_num, int hi_num, int den) {
+    return box(at(lo_num, den), at(lo_num, den), at(lo_num, den), at(hi_num, den), at(hi_num, den),
+               at(hi_num, den));
+}
+
 /// 三角形の向きを全部裏返す（内向き法線のシェルを作る）。
 inline TriMesh flipped(const TriMesh& m) {
     TriMesh r = m;
@@ -125,6 +150,144 @@ inline TriMesh two_cubes_sharing_a_vertex(std::int32_t s) {
         }
     }
     return r;
+}
+
+// ---- SPEC-phase1 §9.1 のケース ---------------------------------------------
+//
+// 追加するたびに `kCorpus` に足してください。§9.0 の番人（断片数の深度単調増加）と
+// CP の掃引はこの表を回ります。**表に載せないケースは自動検査から漏れます。**
+
+/// コーパスの 1 ケース。
+struct Case {
+    const char* id;    ///< §9.1 の番号
+    const char* what;  ///< 何を突くか
+    TriMesh (*make_a)();
+    TriMesh (*make_b)();
+};
+
+namespace cases {
+
+/// ケース 1: 一般位置。どの深度（0〜3）のセル境界にも面が乗らない。
+///
+/// 分子 9, 39, 27, 57（`kCoordMin` からの格子単位／$2^{b-6}$）はいずれも 8 の倍数で
+/// ないので、深度 3 の境界間隔 $2^{b-3}$ = 8 単位に乗りません。
+inline TriMesh case1_a() {
+    return ratio_box(-23, 7, 32);
+}
+inline TriMesh case1_b() {
+    return ratio_box(-5, 25, 32);
+}
+
+/// ケース 2: 面が完全共平面。$z = -2^{b-1}$ の面を共有し、**外向き法線は同じ向き**。
+inline TriMesh case2_a() {
+    return ratio_box(-1, 0, 1);
+}
+inline TriMesh case2_b() {
+    return box(at(-1, 2), at(-1, 2), at(-1, 1), at(1, 2), at(1, 2), at(1, 2));
+}
+
+/// ケース 5: 面がセル境界と完全一致 ★ CP2 の主戦場。
+///
+/// A の面は $\{-2^{b-1}, 0\}$ = 深度 1 以降の境界、B の面は $\pm 2^{b-2}$ = 深度 2 以降の
+/// 境界にちょうど乗ります。§5.2 の 4 平面同時交差と §4.2 の重複割り当てを同時に突きます。
+inline TriMesh case5_a() {
+    return ratio_box(-1, 0, 1);
+}
+inline TriMesh case5_b() {
+    return ratio_box(-1, 1, 2);
+}
+
+/// ケース 6: ケース 5 を 1 格子だけずらした対照。
+///
+/// **ずらしただけで挙動が変わるなら危険**、を検出するための対です。
+inline TriMesh case6_a() {
+    return box(at(-1, 1) + 1, at(-1, 1) + 1, at(-1, 1) + 1, 1, 1, 1);
+}
+inline TriMesh case6_b() {
+    return box(at(-1, 2) + 1, at(-1, 2) + 1, at(-1, 2) + 1, at(1, 2) + 1, at(1, 2) + 1,
+               at(1, 2) + 1);
+}
+
+/// ケース 5T: セル角を**斜めに**通る面を持たせたケース 5 の派生。★
+///
+/// **軸平行な立方体だけのコーパスでは、1 点に集まる平面が 3 枚を超えられません。**
+/// 1 軸あたり平面は高々 1 枚しか点を通れず（平行な 2 平面は交わらない）、
+/// 軸は 3 本しかないためです。セル面が立方体の面と一致しても、両者は同一の幾何平面
+/// なので `PlaneTable` で同じ ID に併合され、枚数は増えません。
+///
+/// つまり §5.2 の 4 平面同時交差は、**斜めの平面がなければ原理的に起きません。**
+/// そこで四面体の斜面 $x+y+z=0$ を原点（深度 1 以降のセル角、かつ A の角）に通します。
+/// 原点を通る平面は $x=0$, $y=0$, $z=0$, $x+y+z=0$ の 4 枚になります。
+///
+/// **この対は §5.4 の計測が 4 枚を検出できることの証拠でもあります。**
+/// 検出できない計測器で「最大 3 枚」と報告しても何も言っていません。
+inline TriMesh case5t_a() {
+    return ratio_box(-1, 0, 1);
+}
+inline TriMesh case5t_b() {
+    TriMesh m;
+    // a, b, c は x+y+z = 0 上。d はその外
+    m.vertices = {
+        {at(1, 2), at(-1, 2), 0},
+        {0, at(1, 2), at(-1, 2)},
+        {at(-1, 2), 0, at(1, 2)},
+        {at(-1, 2), at(-1, 2), at(-1, 2)},
+    };
+    m.triangles = {{0, 2, 1}, {0, 1, 3}, {1, 2, 3}, {2, 0, 3}};
+    if (!krisite::mesh::is_outward_oriented(m)) m = flipped(m);
+    return m;
+}
+
+/// ケース 8: 同一の立方体 2 個。全 6 平面を共有し、すべて同方向。
+inline TriMesh case8() {
+    return ratio_box(-1, 1, 2);
+}
+
+/// 補助: 交わらない 2 立方体（z 方向にだけ離す）。
+///
+/// x と y では原点をまたぐので、深度 1 でも分割が効きます。**両方を原点から離すと
+/// 深度 1 で断片が増えず、§9.0 の番人に落ちます。**
+inline TriMesh disjoint_a() {
+    return box(at(-15, 16), at(-15, 16), at(-15, 16), at(5, 16), at(5, 16), at(-9, 16));
+}
+inline TriMesh disjoint_b() {
+    return box(at(-5, 16), at(-5, 16), at(9, 16), at(15, 16), at(15, 16), at(15, 16));
+}
+
+}  // namespace cases
+
+/// §9.1 の実装済みケース。CP3 に向けて増やしていきます。
+inline const std::vector<Case>& corpus() {
+    static const std::vector<Case> k = {
+        {"1", "一般位置", cases::case1_a, cases::case1_b},
+        {"2", "面が完全共平面", cases::case2_a, cases::case2_b},
+        {"5", "面がセル境界と一致", cases::case5_a, cases::case5_b},
+        {"5T", "セル角を斜面が通る", cases::case5t_a, cases::case5t_b},
+        {"6", "セル境界から 1 格子ずれ", cases::case6_a, cases::case6_b},
+        {"8", "同一の立方体", cases::case8, cases::case8},
+        {"D", "交わらない 2 立方体", cases::disjoint_a, cases::disjoint_b},
+    };
+    return k;
+}
+
+/// §9.0 (1) のサイズ規律: 両入力の AABB の和が各軸で座標範囲の半分以上あるか。
+inline bool size_discipline_ok(const TriMesh& a, const TriMesh& b) {
+    std::int64_t lo[3] = {krisite::kCoordMax, krisite::kCoordMax, krisite::kCoordMax};
+    std::int64_t hi[3] = {krisite::kCoordMin, krisite::kCoordMin, krisite::kCoordMin};
+    for (const TriMesh* m : {&a, &b}) {
+        for (const IPoint& p : m->vertices) {
+            const std::int64_t c[3] = {p.x, p.y, p.z};
+            for (int t = 0; t < 3; ++t) {
+                lo[t] = (c[t] < lo[t]) ? c[t] : lo[t];
+                hi[t] = (c[t] > hi[t]) ? c[t] : hi[t];
+            }
+        }
+    }
+    const std::int64_t need = -static_cast<std::int64_t>(krisite::kCoordMin);  // 2^(b-1)
+    for (int t = 0; t < 3; ++t) {
+        if (hi[t] - lo[t] < need) return false;
+    }
+    return true;
 }
 
 }  // namespace kritest
