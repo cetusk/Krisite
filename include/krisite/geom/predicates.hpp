@@ -8,6 +8,7 @@
 
 #include "krisite/arith/fixed_int.hpp"
 #include "krisite/arith/ops.hpp"
+#include "krisite/geom/counters.hpp"
 #include "krisite/geom/plane.hpp"
 #include "krisite/geom/point.hpp"
 #include "krisite/geom/widths.hpp"
@@ -96,6 +97,7 @@ inline arith::fixed_int<kSideIPointLimbs> side_value(const PlaneD& pl, const IPo
 }
 
 inline int side(const PlaneD& pl, const IPoint& p) noexcept {
+    KRISITE_COUNT(side_calls);
     return arith::sign(side_value(pl, p));
 }
 
@@ -120,6 +122,7 @@ inline arith::fixed_int<limbs::kSide> side_value(const PlaneD& pl, const HPointD
 }
 
 inline int side(const PlaneD& pl, const HPointD& v) noexcept {
+    KRISITE_COUNT(side_calls);
     KRISITE_CHECK(!arith::is_zero(v.w), "side: HPoint の w == 0（不変条件違反）");
     return arith::sign(v.w) * arith::sign(side_value(pl, v));
 }
@@ -367,6 +370,7 @@ inline arith::fixed_int<limbs::kMidSide> side_value(const PlaneD& pl,
 
 /// 中点の平面に対する側。中点の w = 2*W0*W1 なので符号は sign(W0)*sign(W1)。
 inline int side(const PlaneD& pl, const HMidPointD& m) noexcept {
+    KRISITE_COUNT(side_calls);
     KRISITE_CHECK(!arith::is_zero(m.v0.w) && !arith::is_zero(m.v1.w), "side: 中点の端点の w == 0");
     return arith::sign(side_value(pl, m)) * arith::sign(m.v0.w) * arith::sign(m.v1.w);
 }
@@ -411,6 +415,7 @@ inline arith::fixed_int<limbs::kTriSide> side_value(const PlaneD& pl,
 
 /// 重心の平面に対する側。
 inline int side(const PlaneD& pl, const HTriPointD& c) noexcept {
+    KRISITE_COUNT(side_calls);
     KRISITE_CHECK(!arith::is_zero(c.v0.w) && !arith::is_zero(c.v1.w) && !arith::is_zero(c.v2.w),
                   "side: 重心の頂点の w == 0");
     return arith::sign(side_value(pl, c)) * arith::sign(c.v0.w) * arith::sign(c.v1.w) *
