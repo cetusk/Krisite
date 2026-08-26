@@ -68,7 +68,18 @@ struct BoolStats {
     /// 幾何を含むセルの数（§9.0）。**分割が働いているかの直接的な指標**です。
     /// 断片数は間接的で、ケース 5 のように面がセル境界に乗ると動きません。
     std::size_t active_cells = 0;
-    std::size_t total_cells = 0;               ///< 8^depth
+    std::size_t total_cells = 0;  ///< 8^depth
+    /// **併合グループの空間的な広がり**（§5.4、第8版）。
+    ///
+    /// 並列化で問題になるのは頻度ではなく局所性です。値が一致する構成点は幾何的に
+    /// 同一の点なので、同じセルか、その点を共有するセルにしか存在し得ません。
+    /// **すべての併合グループが 1 セルとその面・辺・頂点隣接に収まる**なら、
+    /// Phase 3 は「セル並列 + 境界併合」で組めます。
+    ///
+    /// セル添字の差の最大（軸ごとの最大）。0 は同一セル内、1 は隣接まで。
+    /// **2 以上が出たら併合の誤り**（本来別の点を同一視した）を疑ってください。
+    std::size_t max_merge_span = 0;
+    std::size_t merge_groups = 0;              ///< 2 点以上が併合されたグループの数
     std::size_t duplicate_fragments = 0;       ///< 重複割り当てが生んだ重複断片（§5.4）
     std::size_t coplanar_same = 0;             ///< 共平面重複のうち向きが同じ対の数
     std::size_t coplanar_opposite = 0;         ///< 向きが逆の対の数
@@ -178,6 +189,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     // 共平面重複そのものなので、辺の平面 ID で潰すと区別がつかなくなります（§4.3.2）。
     const octree::UniformGrid grid(depth);
     std::vector<Fragment> frags;
+    // §5.4: 併合の局所性を測るため、断片がどのセルで生まれたかを覚えておく
+    std::vector<octree::CellIndex> frag_cell;
 
     const std::uint32_t n = grid.per_axis();
     for (std::uint32_t ci = 0; ci < n; ++ci) {
@@ -201,13 +214,44 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                     }
                 }
 
+                // §10.5 の変異 3: 分割平面を【割り当て集合】に変える。
+                // 大域集合を使う理由は §4.3.1（継ぎ目の T 字接合）。
+#if defined(KRISITE_MUTATION_LOCAL_PLANES)
+                std::vector<PlaneId> local_planes;
+                if (depth > 0) {
+                    for (int which = 0; which < 2; ++which) {
+                        const mesh::TriMesh& lm = (which == 0) ? A : B;
+                        for (const Face& f : (which == 0) ? faces_a : faces_b) {
+                            if (!octree::assign_to_cell(face_aabb(lm, f), grid, cell)) continue;
+                            if (std::find(local_planes.begin(), local_planes.end(), f.support) ==
+                                local_planes.end()) {
+                                local_planes.push_back(f.support);
+                            }
+                        }
+                    }
+                    std::sort(local_planes.begin(), local_planes.end());
+                }
+                const std::vector<PlaneId>& split_planes = (depth > 0) ? local_planes : mesh_planes;
+#else
+                const std::vector<PlaneId>& split_planes = mesh_planes;
+#endif
+
                 for (int which = 0; which < 2; ++which) {
                     const mesh::TriMesh& m = (which == 0) ? A : B;
                     const std::vector<Face>& fs = (which == 0) ? faces_a : faces_b;
                     for (const Face& f : fs) {
+                        // §10.5 の変異 2: 割り当てを開領域に変える。
+                        // 閉領域で行う理由は §4.2（共有面上の三角形が両側から落ちる）。
+#if defined(KRISITE_MUTATION_OPEN_CELLS)
+                        if (depth > 0 &&
+                            !octree::assign_to_cell_open(face_aabb(m, f), grid, cell)) {
+                            continue;
+                        }
+#else
                         if (depth > 0 && !octree::assign_to_cell(face_aabb(m, f), grid, cell)) {
                             continue;
                         }
+#endif
                         Fragment frag = face_to_fragment(f);
                         // セルの 6 面でクリップ
                         bool alive = true;
@@ -222,7 +266,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
 
                         // 【両メッシュの全平面】で分割（§4.3.1）
                         std::vector<Fragment> pieces{frag};
-                        for (PlaneId q : mesh_planes) {
+                        for (PlaneId q : split_planes) {
                             std::vector<Fragment> next;
                             next.reserve(pieces.size());
                             for (const Fragment& p : pieces) {
@@ -236,7 +280,10 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                             }
                             pieces.swap(next);
                         }
-                        for (Fragment& p : pieces) frags.push_back(std::move(p));
+                        for (Fragment& p : pieces) {
+                            frags.push_back(std::move(p));
+                            frag_cell.push_back(cell);
+                        }
                     }
                 }
                 if (frags.size() != frags_before) ++st.active_cells;
@@ -255,16 +302,30 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     // 頂点 ID を使うためです。
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
     std::vector<geom::HPointD> points;
+    // 構成点ごとの、生成に関わったセル添字の範囲（§5.4 の局所性）
+    struct CellRange {
+        std::uint32_t lo[3], hi[3];
+    };
+    std::vector<CellRange> point_cells;
 
-    auto vertex_id = [&](const Fragment& f, std::size_t i) {
+    auto vertex_id = [&](const Fragment& f, std::size_t i, const octree::CellIndex& c) {
         const auto k = detail::vertex_key(f, i);
+        const std::uint32_t ci[3] = {c.i, c.j, c.k};
         auto it = by_key.find(k);
-        if (it != by_key.end()) return it->second;
+        if (it != by_key.end()) {
+            CellRange& r = point_cells[it->second];
+            for (int t = 0; t < 3; ++t) {
+                r.lo[t] = std::min(r.lo[t], ci[t]);
+                r.hi[t] = std::max(r.hi[t], ci[t]);
+            }
+            return it->second;
+        }
         const auto id = static_cast<std::uint32_t>(points.size());
         const geom::HPointD v = fragment_vertex(table, f, i);
         KRISITE_CHECK(arith::sign(v.w) != 0,
                       "boolean_op: 構成点の w が 0（3 平面が一点で交わっていない）");
         points.push_back(v);
+        point_cells.push_back(CellRange{{ci[0], ci[1], ci[2]}, {ci[0], ci[1], ci[2]}});
         by_key.emplace(k, id);
         return id;
     };
@@ -273,7 +334,9 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
         const Fragment& f = frags[fi];
         raw_polys[fi].reserve(vertex_count(f));
-        for (std::size_t i = 0; i < vertex_count(f); ++i) raw_polys[fi].push_back(vertex_id(f, i));
+        for (std::size_t i = 0; i < vertex_count(f); ++i) {
+            raw_polys[fi].push_back(vertex_id(f, i, frag_cell[fi]));
+        }
     }
     st.constructed_points = points.size();
 
@@ -290,11 +353,26 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         std::size_t j = i;
         const auto id = static_cast<std::uint32_t>(merged.size());
         merged.push_back(points[order[i]]);
+        std::uint32_t lo[3] = {point_cells[order[i]].lo[0], point_cells[order[i]].lo[1],
+                               point_cells[order[i]].lo[2]};
+        std::uint32_t hi[3] = {point_cells[order[i]].hi[0], point_cells[order[i]].hi[1],
+                               point_cells[order[i]].hi[2]};
         while (j < order.size() && geom::h_equal(points[order[i]], points[order[j]])) {
             remap[order[j]] = id;
+            for (int t = 0; t < 3; ++t) {
+                lo[t] = std::min(lo[t], point_cells[order[j]].lo[t]);
+                hi[t] = std::max(hi[t], point_cells[order[j]].hi[t]);
+            }
             ++j;
         }
-        if (j - i > 1) st.merged_by_value += (j - i - 1);
+        if (j - i > 1) {
+            st.merged_by_value += (j - i - 1);
+            ++st.merge_groups;
+        }
+        // §5.4: 併合グループの空間的な広がり。同一セルなら 0、面・辺・頂点隣接なら 1
+        for (int t = 0; t < 3; ++t) {
+            st.max_merge_span = std::max(st.max_merge_span, std::size_t{hi[t] - lo[t]});
+        }
         i = j;
     }
 #else
