@@ -56,6 +56,19 @@ struct TopologyReport {
     std::size_t edges_excess = 0;     ///< 3 面以上に接する辺の数
     std::size_t max_edge_degree = 0;  ///< 辺の次数の最大
 
+    /// **次数 2 の辺だけに限った向きの整合**（SPEC-phase1 §9.3.1）。
+    ///
+    /// `oriented` は「共有辺を一方が $(u,v)$、他方が $(v,u)$ で辿る」ことを見ますが、
+    /// これは**次数 2 を前提にした検査**です。2 つの立体が辺で接すると、その辺には
+    /// 4 枚の面が接するので $(u,v)$ が 2 本・$(v,u)$ が 2 本になり、**向きが正しくても
+    /// `oriented` は必ず false になります。**
+    ///
+    /// 辺接触を除外するときは、こちらと `excess_edges_balanced` を見てください。
+    bool oriented_on_manifold_edges = false;
+    /// 次数 3 以上の辺で、両向きの本数が釣り合っているか。
+    /// 釣り合っていれば、その辺のまわりで各曲面は整合して向き付けられています。
+    bool excess_edges_balanced = false;
+
     /// **落ちている頂点のリンク構造**（SPEC-phase1 §9.3.2）。
     ///
     /// 頂点 $v$ に接する三角形 $(v,a,b)$ はリンク上の有向辺 $a \to b$ を与えます。
@@ -72,9 +85,16 @@ struct TopologyReport {
     /// 錐は分離しており、分裂で多様体化できます。同一成分なら円環の疑いがあり、
     /// **その場合は頂点を複製しても円板になりません**（§9.3.2）。
     std::size_t nonmanifold_vertices = 0;  ///< リンクが単一閉路でない頂点の数
-    std::size_t max_vertex_fans = 0;       ///< 頂点まわりの扇の最大数
-    long long extra_fans = 0;              ///< Σ(k_v − 1)。分裂で増える χ
-    long long chi_after_split = 0;         ///< χ + extra_fans（分裂後の予測 χ）
+    /// 非多様体な頂点のうち、**次数 3 以上の辺に接していない**ものの数。
+    ///
+    /// 2 つの立体が辺で接すると、その辺の上の頂点でも 4 枚の面が出会うので
+    /// リンクが単純閉路の直和になりません。**その頂点は接触辺で説明がつきます。**
+    /// ここが 0 でないなら、辺接触では説明できない非多様体性が別にあります
+    /// （SPEC-phase1 §9.3.1 の適用条件）。
+    std::size_t nonmanifold_vertices_off_excess = 0;
+    std::size_t max_vertex_fans = 0;  ///< 頂点まわりの扇の最大数
+    long long extra_fans = 0;         ///< Σ(k_v − 1)。分裂で増える χ
+    long long chi_after_split = 0;    ///< χ + extra_fans（分裂後の予測 χ）
     /// 扇が**同一の連結成分**に属する頂点の数。**円環の疑いはここに出ます。**
     std::size_t vertices_fans_in_one_component = 0;
 
@@ -162,6 +182,8 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
 
     // ---- 辺多様体と向きの整合 ----
     r.edge_manifold = true;
+    r.oriented_on_manifold_edges = true;
+    r.excess_edges_balanced = true;
     r.oriented = true;
     for (const auto& kv : edges) {
         const EdgeInfo& ei = kv.second;
@@ -171,6 +193,9 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
         r.max_edge_degree = std::max(r.max_edge_degree, static_cast<std::size_t>(ei.count));
         // 向きが整合していれば、共有辺は一方が (u,v)、他方が (v,u)
         if (!(ei.fwd == 1 && ei.bwd == 1)) r.oriented = false;
+        // 次数 2 の辺に限った向き検査（§9.3.1 の辺接触で使う）
+        if (ei.count == 2 && !(ei.fwd == 1 && ei.bwd == 1)) r.oriented_on_manifold_edges = false;
+        if (ei.count >= 3 && ei.fwd != ei.bwd) r.excess_edges_balanced = false;
     }
 
     // ---- 連結成分（辺を共有する面どうしを併合）----
@@ -181,6 +206,15 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
     std::set<std::size_t> roots;
     for (std::size_t i = 0; i < tris.size(); ++i) roots.insert(ds.find(i));
     r.components = roots.size();
+
+    // 次数 3 以上の辺に接する頂点（辺接触の説明範囲。§9.3.1）
+    std::set<VertexId> on_excess_edge;
+    for (const auto& kv : edges) {
+        if (kv.second.count >= 3) {
+            on_excess_edge.insert(kv.first.first);
+            on_excess_edge.insert(kv.first.second);
+        }
+    }
 
     // ---- 頂点多様体（頂点まわりのリンクが単一の閉路）----
     //
@@ -215,6 +249,7 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
             if (!ok) {
                 r.vertex_manifold = false;
                 ++r.nonmanifold_vertices;
+                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_off_excess;
                 continue;
             }
             for (const auto& d : indeg) {
@@ -223,6 +258,7 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
             if (!ok || next.size() != arcs.size()) {
                 r.vertex_manifold = false;
                 ++r.nonmanifold_vertices;
+                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_off_excess;
                 continue;
             }
             // リンクは閉路の直和になっている。本数（= 扇の数）を数える
@@ -250,12 +286,14 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
             if (!ok || visited.size() != next.size()) {
                 r.vertex_manifold = false;
                 ++r.nonmanifold_vertices;
+                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_off_excess;
                 continue;
             }
             r.max_vertex_fans = std::max(r.max_vertex_fans, fans);
             if (fans != 1) {
                 r.vertex_manifold = false;
                 ++r.nonmanifold_vertices;
+                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_off_excess;
                 r.extra_fans += static_cast<long long>(fans) - 1;
                 // 扇が 1 つの連結成分に収まっている = 錐が分離していない可能性
                 if (fan_components.size() == 1) ++r.vertices_fans_in_one_component;
