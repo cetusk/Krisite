@@ -1,0 +1,158 @@
+# Krisite — CI
+#
+# SPEC-phase0.md §9:
+#   「Linux(GCC/Clang) / macOS(Apple Silicon) / Windows(MSVC) でビルドが通る
+#     → 開発コンテナではなく CI（GitHub Actions のマトリクス）で確認すること。」
+#
+# 開発コンテナには GCC も MSVC も入れません。プラットフォーム検証はここが正です。
+
+name: CI
+
+on:
+  push:
+    branches: [main, "phase0/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # ---- プラットフォーム検証（§9 の 2 番目の条件）------------------------------
+  #
+  # GMP はテスト専用かつプラットフォームごとの入手性が違うので、ここでは OFF。
+  # GMP 差分テストは下の gmp ジョブ（Linux）で回す。
+  build:
+    name: ${{ matrix.name }} (b=${{ matrix.coord_bits }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Linux GCC",      os: ubuntu-24.04,  cc: gcc-13,   cxx: g++-13,     coord_bits: 21 }
+          - { name: "Linux GCC",      os: ubuntu-24.04,  cc: gcc-13,   cxx: g++-13,     coord_bits: 26 }
+          - { name: "Linux Clang",    os: ubuntu-24.04,  cc: clang-18, cxx: clang++-18, coord_bits: 21 }
+          - { name: "Linux Clang",    os: ubuntu-24.04,  cc: clang-18, cxx: clang++-18, coord_bits: 26 }
+          - { name: "macOS arm64",    os: macos-14,      cc: clang,    cxx: clang++,    coord_bits: 21 }
+          - { name: "macOS arm64",    os: macos-14,      cc: clang,    cxx: clang++,    coord_bits: 26 }
+          - { name: "Windows MSVC",   os: windows-2022,  cc: "",       cxx: "",         coord_bits: 21 }
+          - { name: "Windows MSVC",   os: windows-2022,  cc: "",       cxx: "",         coord_bits: 26 }
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ninja を用意
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      - name: MSVC 環境を用意
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: 構成
+        shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_COORD_BITS=${{ matrix.coord_bits }} \
+            -DKRISITE_CHECKED_ARITH=ON
+
+      - name: ビルド
+        run: cmake --build build
+
+      - name: テスト（GMP 非依存の分）
+        run: ctest --test-dir build --output-on-failure
+
+  # ---- 検査ビルド（Debug では KRISITE_CHECKED_ARITH が自動で ON）--------------
+  debug-checked:
+    name: Linux Debug (検査自動 ON)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure
+
+  # ---- 可搬フォールバック経路（__int128 / 32bit 筆算）------------------------
+  #
+  # SPEC §5.3 の 3 経路のうち、x86-64 組み込みを使わない 2 つを実際に走らせる。
+  # MSVC ARM64 相当（__int128 も _umul128 も無い）は KRISITE_NO_INT128 で再現する。
+  fallback-paths:
+    name: 可搬経路 (${{ matrix.flags }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        flags:
+          - "-DKRISITE_NO_INTRINSICS"
+          - "-DKRISITE_NO_INTRINSICS -DKRISITE_NO_INT128"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_CHECKED_ARITH=ON -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+      - run: cmake --build build
+      - run: ctest --test-dir build --output-on-failure
+
+  # ---- GMP 差分テスト（LGPL、テスト専用）------------------------------------
+  gmp:
+    name: GMP 差分テスト (b=${{ matrix.coord_bits }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        coord_bits: [21, 26]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - name: GMP を導入
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev
+      - run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_COORD_BITS=${{ matrix.coord_bits }} \
+            -DKRISITE_CHECKED_ARITH=ON \
+            -DKRISITE_BUILD_TESTS_WITH_GMP=ON
+      - run: cmake --build build
+      # SPEC §9: 算術 10^7 件、述語 10^6 件以上
+      - run: ctest --test-dir build --output-on-failure
+
+      # SPEC §9: ライブラリ本体のバイナリに GMP がリンクされていないこと
+      - name: 本体に GMP が入っていないことを確認
+        run: |
+          cmake -B build-nogmp -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DKRISITE_BUILD_TESTS=OFF -DKRISITE_BUILD_BENCH=ON
+          cmake --build build-nogmp
+          ldd build-nogmp/bench/pred_bench
+          if ldd build-nogmp/bench/pred_bench | grep -q gmp; then
+            echo "本体バイナリに GMP がリンクされています（ライセンス違反）" >&2
+            exit 1
+          fi
+
+  # ---- ベンチマーク（数値は docs/BENCH.md に手で記録する）--------------------
+  bench:
+    name: ベンチマーク（基準線）
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - run: |
+          cmake -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DKRISITE_CHECKED_ARITH=OFF -DKRISITE_BUILD_BENCH=ON -DKRISITE_BUILD_TESTS=OFF
+      - run: cmake --build build-rel
+      # CI ランナーの数値は揺れるので合否には使わない。傾向の監視のみ。
+      - run: ./build-rel/bench/pred_bench
+      - run: ./build-rel/bench/arith_bench
+
+  # ---- 書式 -------------------------------------------------------------------
+  format:
+    name: clang-format
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # ランナー既定の clang-format はバージョンが動くので固定する。
+      # 上げるときは同じ版でローカルを整形し直してから CI を上げること。
+      - run: pip install "clang-format==22.1.8"
+      - run: |
+          find include tests bench \( -name '*.hpp' -o -name '*.cpp' \) \
+            | xargs clang-format --dry-run --Werror

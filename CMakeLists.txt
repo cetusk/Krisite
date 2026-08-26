@@ -64,6 +64,12 @@ if(KRISITE_BUILD_TESTS)
     add_subdirectory(tests)
 endif()
 
+# ---- ベンチマーク -----------------------------------------------------------
+
+if(KRISITE_BUILD_BENCH)
+    add_subdirectory(bench)
+endif()
+
 message(STATUS "Krisite: b = ${KRISITE_COORD_BITS}, "
                "checked = ${KRISITE_CHECKED_ARITH} (Debug では常に ON), "
                "gmp = ${KRISITE_GMP_FOUND}")
