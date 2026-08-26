@@ -1,9 +1,11 @@
 <p align="center">
-  <img src="assets/krisite-logo.svg#gh-light-mode-only" alt="Krisite" height="72">
-  <img src="assets/krisite-logo-dark.svg#gh-dark-mode-only" alt="Krisite" height="72">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/krisite-logo-dark.svg">
+    <img src="assets/krisite-logo.svg"
+         alt="Krisite — exact, plane-based geometry for point clouds and meshes"
+         width="711">
+  </picture>
 </p>
-
-<p align="center"><em>Krisite — exact, plane-based geometry for point clouds and meshes</em></p>
 
 ---
 
