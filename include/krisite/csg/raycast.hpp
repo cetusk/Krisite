@@ -42,6 +42,16 @@ inline int proj_orient(const geom::IPoint& a, const geom::IPoint& b,
     return perturbed_orient(geom::orient2d_h(a, b, p, geom::Axis::X), a, b);
 }
 
+inline int proj_orient(const geom::IPoint& a, const geom::IPoint& b,
+                       const geom::HMidPointD& p) noexcept {
+    return perturbed_orient(geom::orient2d_h(a, b, p, geom::Axis::X), a, b);
+}
+
+inline int proj_orient(const geom::IPoint& a, const geom::IPoint& b,
+                       const geom::HTriPointD& p) noexcept {
+    return perturbed_orient(geom::orient2d_h(a, b, p, geom::Axis::X), a, b);
+}
+
 /// レイ（+X）が三角形を前方で横切るか。
 template <class Point>
 bool crosses(const geom::IPoint& a, const geom::IPoint& b, const geom::IPoint& c, const Point& p) {
@@ -65,9 +75,41 @@ bool crosses(const geom::IPoint& a, const geom::IPoint& b, const geom::IPoint& c
 
 }  // namespace detail
 
+/// 点が `m` の**境界上**にあるか（三角形の内部・辺・頂点のいずれか）。
+///
+/// `point_inside` の前提（判定点が境界上に無い）を呼び出し側が確かめるための述語です。
+///
+/// **「相手の平面上に無い」で代用してはいけません。** 平面上にあることと境界上にある
+/// ことは別です。断片の頂点は隣接する切断平面の上に必ず載るので、平面で判定すると
+/// 実際には境界から外れた点まで弾いてしまい、代表点が見つからなくなります
+/// （CP2 のケース 2 で実際に起きました。IMPL-phase1 §6.6）。
+///
+/// 射影軸は**法線成分が非零の軸**を選びます。そうすれば射影した三角形が潰れません。
+template <class Point>
+inline bool point_on_boundary(const mesh::TriMesh& m, const Point& p) {
+    for (const mesh::Tri& t : m.triangles) {
+        const geom::IPoint& a = m.vertices[t[0]];
+        const geom::IPoint& b = m.vertices[t[1]];
+        const geom::IPoint& c = m.vertices[t[2]];
+        const geom::PlaneD pl = geom::plane_from_triangle(a, b, c);
+        if (geom::is_degenerate(pl)) continue;
+        if (geom::side(pl, p) != 0) continue;  // 三角形の平面上にすら無い
+        const geom::Axis ax = (arith::sign(pl.a) != 0)   ? geom::Axis::X
+                              : (arith::sign(pl.b) != 0) ? geom::Axis::Y
+                                                         : geom::Axis::Z;
+        const int o1 = geom::orient2d_h(a, b, p, ax);
+        const int o2 = geom::orient2d_h(b, c, p, ax);
+        const int o3 = geom::orient2d_h(c, a, p, ax);
+        const bool neg = (o1 < 0) || (o2 < 0) || (o3 < 0);
+        const bool pos = (o1 > 0) || (o2 > 0) || (o3 > 0);
+        if (!(neg && pos)) return true;  // 内部・辺・頂点のいずれか
+    }
+    return false;
+}
+
 /// 点が閉じた立体 `m` の内部にあるか。
 ///
-/// **`p` が `m` の境界上に無いことを呼び出し側が保証すること。**
+/// **`p` が `m` の境界上に無いことを呼び出し側が保証すること**（`point_on_boundary`）。
 template <class Point>
 inline bool point_inside(const mesh::TriMesh& m, const Point& p) {
     int hits = 0;
