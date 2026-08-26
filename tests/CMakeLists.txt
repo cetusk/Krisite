@@ -17,6 +17,7 @@ endfunction()
 # ---- GMP を必要としないテスト（既定で常に実行）------------------------------
 
 krisite_add_test(fixed_int      arith/test_fixed_int.cpp)
+krisite_add_test(bitwidth       arith/test_bitwidth.cpp)
 krisite_add_test(predicates     geom/test_predicates.cpp)
 krisite_add_test(degenerate     geom/test_degenerate.cpp)
 
