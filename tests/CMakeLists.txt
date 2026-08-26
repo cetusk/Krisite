@@ -20,6 +20,12 @@ krisite_add_test(fixed_int      arith/test_fixed_int.cpp)
 krisite_add_test(bitwidth       arith/test_bitwidth.cpp)
 krisite_add_test(predicates     geom/test_predicates.cpp)
 krisite_add_test(degenerate     geom/test_degenerate.cpp)
+krisite_add_test(plane_order    geom/test_plane_order.cpp)
+krisite_add_test(topology      mesh/test_topology.cpp)
+krisite_add_test(uniform_grid  octree/test_uniform_grid.cpp)
+krisite_add_test(faces         csg/test_faces.cpp)
+krisite_add_test(fragment      csg/test_fragment.cpp)
+krisite_add_test(cp1           csg/test_cp1.cpp)
 
 # ---- GMP 差分テスト（LGPL、テスト専用）--------------------------------------
 
@@ -31,7 +37,11 @@ if(KRISITE_GMP_FOUND)
     krisite_add_test(predicates_gmp geom/test_predicates_gmp.cpp 1000000)
     target_link_libraries(predicates_gmp PRIVATE krisite_gmp)
 
+    krisite_add_test(plane_order_gmp geom/test_plane_order_gmp.cpp 300000)
+    target_link_libraries(plane_order_gmp PRIVATE krisite_gmp)
+
     # 開発中に素早く回すための短縮版
     add_test(NAME fixed_int_gmp_quick COMMAND fixed_int_gmp 40000)
     add_test(NAME predicates_gmp_quick COMMAND predicates_gmp 5000)
+    add_test(NAME plane_order_gmp_quick COMMAND plane_order_gmp 3000)
 endif()

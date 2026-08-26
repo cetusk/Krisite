@@ -46,6 +46,10 @@ int main() {
     Gauge g_o3d{"orient3d (3b+5)", bits::kOrient3d, 0, 0};
     Gauge g_o2d{"orient2d (2b+3)", bits::kOrient2d, 0, 0};
     Gauge g_cmph{"cmp_h (13b+27)", bits::kCmpH, 0, 0};
+    // Phase 1（SPEC-phase1.md §7）
+    Gauge g_pmin{"平面の小行列式 (5b+9)", bits::kPlaneMinor, 0, 0};
+    Gauge g_vol{"四面体の体積x6 (3b+1)", bits::kTetraVolume6, 0, 0};
+    Gauge g_o2dh{"orient2d_h (8b+17)", bits::kOrient2dH, 0, 0};
 
     Rng rng(20260826);
 
@@ -94,10 +98,19 @@ int main() {
         feed(g_cmph, cmp_h_value(v, u, Axis::X));
         feed(g_cmph, cmp_h_value(v, u, Axis::Y));
         feed(g_cmph, cmp_h_value(v, u, Axis::Z));
+
+        // Phase 1: 平面の小行列式と符号付き体積
+        for (int i = 0; i < 4; ++i) {
+            for (int j = i + 1; j < 4; ++j) feed(g_pmin, plane_minor(pl0, pl1, i, j));
+        }
+        feed(g_vol, tetra_volume6(p[0], p[1], p[2]));
+        // レイキャストの投影向き（同次点版）
+        feed(g_o2dh, orient2d_h_value(p[0], p[1], v, Axis::X));
+        feed(g_o2dh, orient2d_h_value(p[2], p[3], u, Axis::Y));
     }
 
-    Gauge* all[] = {&g_diff, &g_normal, &g_offset, &g_w,   &g_xyz,
-                    &g_side, &g_sidei,  &g_o3d,    &g_o2d, &g_cmph};
+    Gauge* all[] = {&g_diff, &g_normal, &g_offset, &g_w,    &g_xyz, &g_side, &g_sidei,
+                    &g_o3d,  &g_o2d,    &g_cmph,   &g_pmin, &g_vol, &g_o2dh};
 
     std::printf("\n  b = %zu のビット幅実測（SPEC-phase0.md §8.4）\n", b);
     std::printf("  実測値は乱択で到達した下限であり、真の最大値ではない。\n");
@@ -131,6 +144,11 @@ int main() {
             "      届かないので、この列がリム境界を下回っていても型は変更しない。減らす判断は\n"
             "      上界を再導出したときだけ行う。\n");
     }
+    std::printf(
+        "\n  注: 入力メッシュの体積は三角形ごとの総和なので、蓄積後の幅は\n"
+        "      %zu ビット（%zu リム、三角形 2^%zu 枚まで）を確保してある。\n"
+        "      総和の実測はメッシュのテスト側で行う。\n",
+        bits::kInputVolume6, limbs::kInputVolume6, bits::kMaxTrianglesLog2);
     std::printf("\n  Phase 0 の述語が要求する最大リム数（§3.3）: %zu\n", limbs::kMaxPredicate);
     KRI_CHECK(limbs::kMaxPredicate == limbs_for(bits::kCmpH));
     std::printf("\n");

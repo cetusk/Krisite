@@ -8,10 +8,17 @@
 #include "krisite/arith/intrinsics.hpp"
 #include "krisite/arith/ops.hpp"
 #include "krisite/config.hpp"
+#include "krisite/csg/boolean.hpp"
+#include "krisite/csg/faces.hpp"
+#include "krisite/csg/fragment.hpp"
+#include "krisite/csg/plane_table.hpp"
 #include "krisite/geom/plane.hpp"
 #include "krisite/geom/point.hpp"
 #include "krisite/geom/predicates.hpp"
 #include "krisite/geom/widths.hpp"
+#include "krisite/mesh/topology.hpp"
+#include "krisite/mesh/tri_mesh.hpp"
+#include "krisite/octree/uniform_grid.hpp"
 
 namespace kri = krisite;
 
