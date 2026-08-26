@@ -115,6 +115,28 @@ inline constexpr std::size_t kOrient2dH = 8 * b + 17;
 /// すなわち **Phase 0 で最大幅を要求するのは side() ではなく cmp_h()** である（§3.3）。
 inline constexpr std::size_t kCmpH = 13 * b + 27;
 
+/// 断片の 2 頂点の**中点**に対する述語（SPEC-phase1 §6.1 の代表点フォールバック）。
+///
+/// 分類の代表点として頂点を使う設計は、CP2 のケース 2 で破れました。断片の 4 辺の
+/// うち 3 辺が相手の面に載る配置があり、**4 頂点すべてが $\partial B$ 上**になります。
+/// 相対内部の点が要るので、対角線の中点を使います。
+///
+/// $v_i = (X_i : W_i)$ の中点は
+/// $$ m = (X_0 W_1 + X_1 W_0 \;:\; 2 W_0 W_1). $$
+///
+/// **$m$ は構成しません。** `side_value` も `orient2d_h_value` も同次座標について
+/// **線形**なので、被符号値 $F$ について
+/// $$ F(m) = W_1 F(v_0) + W_0 F(v_1) $$
+/// が厳密に成り立ちます。$m$ の $w = 2W_0W_1$ の符号は $\mathrm{sign}(W_0)\mathrm{sign}(W_1)$
+/// です。 これで新しい**点の型**を作らずに済み、`kHomoXyz` / `kHomoW` を広げる必要もありません。
+///
+///   side:       $(6b{+}12) + (9b{+}20) = 15b{+}32$、2 項の和で $15b{+}33$
+///   orient2d_h: $(6b{+}12) + (8b{+}17) = 14b{+}29$、2 項の和で $14b{+}30$
+///
+/// b = 21 で 348 ビット（6 リム）/ 324 ビット（6 リム）。
+inline constexpr std::size_t kMidSide = kHomoW + kSide + 1;
+inline constexpr std::size_t kMidOrient2dH = kHomoW + kOrient2dH + 1;
+
 }  // namespace bits
 
 namespace limbs {
@@ -135,6 +157,8 @@ inline constexpr std::size_t kPlaneMinor = limbs_for(bits::kPlaneMinor);
 inline constexpr std::size_t kPlaneOrder = limbs_for(bits::kPlaneOrder);
 inline constexpr std::size_t kInputVolume6 = limbs_for(bits::kInputVolume6);
 inline constexpr std::size_t kOrient2dH = limbs_for(bits::kOrient2dH);
+inline constexpr std::size_t kMidSide = limbs_for(bits::kMidSide);
+inline constexpr std::size_t kMidOrient2dH = limbs_for(bits::kMidOrient2dH);
 
 /// Phase 0 の述語が要求する最大リム数（SPEC §3.3 の表の最右列）。
 /// b = 21 → 5、b = 26 → 6。
@@ -148,6 +172,8 @@ static_assert(64 * limbs::kPlaneMinor >= bits::kPlaneMinor, "kPlaneMinor のリ�
 static_assert(64 * limbs::kPlaneOrder >= bits::kPlaneOrder, "kPlaneOrder のリム数不足");
 static_assert(64 * limbs::kInputVolume6 >= bits::kInputVolume6, "kInputVolume6 のリム数不足");
 static_assert(64 * limbs::kOrient2dH >= bits::kOrient2dH, "kOrient2dH のリム数不足");
+static_assert(64 * limbs::kMidSide >= bits::kMidSide, "kMidSide のリム数不足");
+static_assert(64 * limbs::kMidOrient2dH >= bits::kMidOrient2dH, "kMidOrient2dH のリム数不足");
 // 軸平行平面のオフセットは kOffset に収まること
 static_assert(bits::kAxisOffset <= bits::kOffset, "軸平行平面のオフセットが kOffset を超える");
 

@@ -40,6 +40,17 @@ struct HPoint {
 /// Phase 0 の既定の構成点型（リム数は §3 から導出）。
 using HPointD = HPoint<limbs::kHomoXyz, limbs::kHomoW>;
 
+/// 2 つの構成点の**中点**。座標は保持せず、両端点のまま持つ（SPEC-phase1 §6.1）。
+///
+///   m = (X0*W1 + X1*W0 : 2*W0*W1)
+///
+/// これを `HPointD` に詰めるには `kHomoXyz` / `kHomoW` を広げる必要があり、
+/// 構成点の表現そのものが太ります。述語の被符号値は同次座標について**線形**なので、
+/// 展開せずに両端の値の重み付き和で評価します（`widths.hpp` bits::kMidSide の導出）。
+struct HMidPointD {
+    HPointD v0, v1;
+};
+
 /// 入力点を同次点として見る（w = 1）。
 inline HPointD to_homogeneous(const IPoint& p) noexcept {
     HPointD h{};
