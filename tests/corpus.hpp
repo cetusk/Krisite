@@ -152,6 +152,27 @@ inline TriMesh two_cubes_sharing_a_vertex(std::int32_t s) {
     return r;
 }
 
+/// 2 つの立方体が 1 **辺**だけを共有する構成（SPEC-phase1 §9.3、接触の次元 1）。
+///
+/// **和集合は非多様体になります。** 共有辺には 4 枚の面が接するので、
+/// `check_topology` の辺多様体検査が落ちます。
+///
+/// **向きの整合は落ちません。** §9.3.0.1 の一般形（各辺で $\#(u,v)=\#(v,u)$）なら
+/// 次数 4 の接触辺でも $2 = 2$ になるためです。
+inline TriMesh two_cubes_sharing_an_edge(std::int32_t s) {
+    const TriMesh a = cube(0, 0, 0, s);  // 頂点 2 = (s,s,0)、頂点 6 = (s,s,s)
+    const TriMesh b = cube(s, s, 0, s);  // 頂点 0 = (s,s,0)、頂点 4 = (s,s,s)
+    TriMesh r = concat(a, b);
+    const auto off = static_cast<std::uint32_t>(a.vertices.size());
+    for (Tri& t : r.triangles) {
+        for (auto& v : t) {
+            if (v == off + 0) v = 2;
+            if (v == off + 4) v = 6;
+        }
+    }
+    return r;
+}
+
 // ---- SPEC-phase1 §9.1 のケース ---------------------------------------------
 //
 // 追加するたびに `kCorpus` に足してください。§9.0 の番人（断片数の深度単調増加）と

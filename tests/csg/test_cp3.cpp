@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "krisite/csg/boolean.hpp"
@@ -59,11 +60,12 @@ const char* op_name(BoolOp op) {
     }
 }
 
-/// §9.3.1 の番人: 除外した **(ケース, 演算)** の組。
+/// §9.3.1 の番人: 除外した **(ケース, 演算, 接触の次元)** の組。
 ///
 /// 深度ごとに数えると 4 倍に見えてしまうので、構成の数で数えます。
+/// **§13 は接触の次元別に記録することを求めています**（第11版）。
 /// **2〜3 件なら特殊ケース。多数に及ぶなら §2.1 の前提を見直します。**
-std::vector<std::string> excluded_configs;
+std::vector<std::pair<std::string, Exclusion>> excluded_configs;
 
 std::size_t checked = 0;
 
@@ -84,7 +86,7 @@ void run_case(const kritest::Case& c) {
         const Exclusion ex = kritest::exclusion_of(c.id, op);
         const kritest::ExpectedTopo want = kritest::expected_topo(c.id, op);
         if (ex != Exclusion::None) {
-            excluded_configs.push_back(std::string(c.id) + " " + op_name(op));
+            excluded_configs.emplace_back(std::string(c.id) + " " + op_name(op), ex);
         }
 
         TopologyReport ref;
@@ -169,8 +171,18 @@ int main() {
     KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
     for (const kritest::Case& c : kritest::corpus()) run_case(c);
 
-    std::printf("\n  §9.3.1 の除外（%zu 構成）\n", excluded_configs.size());
-    for (const std::string& s : excluded_configs) std::printf("    %s\n", s.c_str());
+    // §13: **接触の次元別に**記録する（第11版）
+    std::size_t n_dim0 = 0, n_dim1 = 0;
+    for (const auto& kv : excluded_configs) {
+        if (kv.second == Exclusion::VertexContact) ++n_dim0;
+        if (kv.second == Exclusion::EdgeContact) ++n_dim1;
+    }
+    std::printf("\n  §9.3.1 の除外（%zu 構成 = 次元 0 が %zu、次元 1 が %zu）\n",
+                excluded_configs.size(), n_dim0, n_dim1);
+    for (const auto& kv : excluded_configs) {
+        std::printf("    %-12s 接触の次元 %d\n", kv.first.c_str(),
+                    kv.second == Exclusion::VertexContact ? 0 : 1);
+    }
     std::printf("  合否に使った組数: %zu\n", checked);
 
     // **除外が多数に及ぶなら、ケースを除外するのではなく §2.1 の前提を見直します。**

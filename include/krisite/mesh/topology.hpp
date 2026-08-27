@@ -36,8 +36,15 @@ struct TopologyReport {
 
     bool edge_manifold = false;    ///< すべての無向辺がちょうど 2 面に接する
     bool vertex_manifold = false;  ///< すべての頂点まわりが単一の扇
-    bool oriented = false;         ///< 隣接 2 面が共有辺を逆向きに辿る
-    bool no_degenerate = false;    ///< 同一頂点を 2 度使う三角形が無い
+    /// **向きの整合。判定は「各辺で $\#(u,v) = \#(v,u)$」**（SPEC-phase1 §9.3.0.1）。
+    ///
+    /// 「共有辺を一方が $(u,v)$、他方が $(v,u)$ で辿る」という形は**次数 2 を前提**に
+    /// しており、辺に 4 枚の面が接する接触辺では向きが正しくても必ず false になります。
+    /// 一般形なら多様体辺で $1=1$、次数 4 の接触辺で $2=2$ となり、
+    /// **向きが本当に狂っていれば $\#(u,v)=2,\ \#(v,u)=0$ のように必ず崩れる**ので
+    /// 検出力は落ちません。除外を 1 つ減らせます。
+    bool oriented = false;
+    bool no_degenerate = false;  ///< 同一頂点を 2 度使う三角形が無い
 
     std::size_t components = 0;  ///< 連結成分（シェル）数 C
     long long chi = 0;           ///< V - E + F
@@ -55,19 +62,12 @@ struct TopologyReport {
     std::size_t edges_deficient = 0;  ///< 1 面にしか接しない辺の数
     std::size_t edges_excess = 0;     ///< 3 面以上に接する辺の数
     std::size_t max_edge_degree = 0;  ///< 辺の次数の最大
-
-    /// **次数 2 の辺だけに限った向きの整合**（SPEC-phase1 §9.3.1）。
+    /// **次数が奇数の辺の数**（SPEC-phase1 §9.3.1）。
     ///
-    /// `oriented` は「共有辺を一方が $(u,v)$、他方が $(v,u)$ で辿る」ことを見ますが、
-    /// これは**次数 2 を前提にした検査**です。2 つの立体が辺で接すると、その辺には
-    /// 4 枚の面が接するので $(u,v)$ が 2 本・$(v,u)$ が 2 本になり、**向きが正しくても
-    /// `oriented` は必ず false になります。**
-    ///
-    /// 辺接触を除外するときは、こちらと `excess_edges_balanced` を見てください。
-    bool oriented_on_manifold_edges = false;
-    /// 次数 3 以上の辺で、両向きの本数が釣り合っているか。
-    /// 釣り合っていれば、その辺のまわりで各曲面は整合して向き付けられています。
-    bool excess_edges_balanced = false;
+    /// 奇数次数はその辺で曲面に境界があることを意味し、**面の過不足の直接的な証拠**です。
+    /// 次数 1 はこれに含まれ、さらに次数 3・5 という「接触では説明できない異常」も
+    /// 同時に弾けます。**接触の種類を知らなくても判定できる**のが要点です。
+    std::size_t edges_odd_degree = 0;
 
     /// **落ちている頂点のリンク構造**（SPEC-phase1 §9.3.2）。
     ///
@@ -85,13 +85,17 @@ struct TopologyReport {
     /// 錐は分離しており、分裂で多様体化できます。同一成分なら円環の疑いがあり、
     /// **その場合は頂点を複製しても円板になりません**（§9.3.2）。
     std::size_t nonmanifold_vertices = 0;  ///< リンクが単一閉路でない頂点の数
-    /// 非多様体な頂点のうち、**次数 3 以上の辺に接していない**ものの数。
+    /// 非多様体な頂点のうち、**接触で説明できない**ものの数（SPEC-phase1 §9.3.1）。
     ///
-    /// 2 つの立体が辺で接すると、その辺の上の頂点でも 4 枚の面が出会うので
-    /// リンクが単純閉路の直和になりません。**その頂点は接触辺で説明がつきます。**
-    /// ここが 0 でないなら、辺接触では説明できない非多様体性が別にあります
-    /// （SPEC-phase1 §9.3.1 の適用条件）。
-    std::size_t nonmanifold_vertices_off_excess = 0;
+    /// 説明がつくのは次の 2 つのいずれかです。
+    ///
+    ///   - **次数 3 以上の辺に接している** … 2 つの立体が辺で接すると、その辺の上の
+    ///     頂点でも 4 枚の面が出会うので、リンクが単純閉路の直和になりません
+    ///   - **リンクが $k \ge 2$ 個の扇（単純閉路の直和）である** … 頂点接触。
+    ///     $k$ 分裂で多様体化できます
+    ///
+    /// ここが 0 でないなら、接触では説明できない非多様体性が別にあります。
+    std::size_t nonmanifold_vertices_unexplained = 0;
     std::size_t max_vertex_fans = 0;  ///< 頂点まわりの扇の最大数
     long long extra_fans = 0;         ///< Σ(k_v − 1)。分裂で増える χ
     long long chi_after_split = 0;    ///< χ + extra_fans（分裂後の予測 χ）
@@ -182,20 +186,18 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
 
     // ---- 辺多様体と向きの整合 ----
     r.edge_manifold = true;
-    r.oriented_on_manifold_edges = true;
-    r.excess_edges_balanced = true;
     r.oriented = true;
     for (const auto& kv : edges) {
         const EdgeInfo& ei = kv.second;
         if (ei.count != 2) r.edge_manifold = false;
         if (ei.count == 1) ++r.edges_deficient;
         if (ei.count >= 3) ++r.edges_excess;
+        if (ei.count % 2 != 0) ++r.edges_odd_degree;
         r.max_edge_degree = std::max(r.max_edge_degree, static_cast<std::size_t>(ei.count));
-        // 向きが整合していれば、共有辺は一方が (u,v)、他方が (v,u)
-        if (!(ei.fwd == 1 && ei.bwd == 1)) r.oriented = false;
-        // 次数 2 の辺に限った向き検査（§9.3.1 の辺接触で使う）
-        if (ei.count == 2 && !(ei.fwd == 1 && ei.bwd == 1)) r.oriented_on_manifold_edges = false;
-        if (ei.count >= 3 && ei.fwd != ei.bwd) r.excess_edges_balanced = false;
+        // SPEC-phase1 §9.3.0.1: 向きの整合は「各辺で #(u,v) = #(v,u)」。
+        // 多様体辺なら 1 = 1、次数 4 の接触辺なら 2 = 2。次数 2 を前提にした
+        // 「fwd == 1 && bwd == 1」は接触辺で必ず落ちるので、こちらが正しい一般形です。
+        if (ei.fwd != ei.bwd) r.oriented = false;
     }
 
     // ---- 連結成分（辺を共有する面どうしを併合）----
@@ -249,7 +251,7 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
             if (!ok) {
                 r.vertex_manifold = false;
                 ++r.nonmanifold_vertices;
-                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_off_excess;
+                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_unexplained;
                 continue;
             }
             for (const auto& d : indeg) {
@@ -258,7 +260,7 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
             if (!ok || next.size() != arcs.size()) {
                 r.vertex_manifold = false;
                 ++r.nonmanifold_vertices;
-                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_off_excess;
+                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_unexplained;
                 continue;
             }
             // リンクは閉路の直和になっている。本数（= 扇の数）を数える
@@ -286,14 +288,15 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
             if (!ok || visited.size() != next.size()) {
                 r.vertex_manifold = false;
                 ++r.nonmanifold_vertices;
-                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_off_excess;
+                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_unexplained;
                 continue;
             }
             r.max_vertex_fans = std::max(r.max_vertex_fans, fans);
             if (fans != 1) {
                 r.vertex_manifold = false;
                 ++r.nonmanifold_vertices;
-                if (!on_excess_edge.count(kv.first)) ++r.nonmanifold_vertices_off_excess;
+                // **$k \ge 2$ 個の扇はそれ自体が説明です**（§9.3.1）。接触辺に接して
+                // いなくても $k$ 分裂で多様体化できるので、未説明には数えません。
                 r.extra_fans += static_cast<long long>(fans) - 1;
                 // 扇が 1 つの連結成分に収まっている = 錐が分離していない可能性
                 if (fan_components.size() == 1) ++r.vertices_fans_in_one_component;
