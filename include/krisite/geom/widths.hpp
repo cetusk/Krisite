@@ -73,6 +73,20 @@ inline constexpr std::size_t kPlaneOrder = 6 * b + 11;
 /// |coord| <= 2^(b-1) なので b+1。kOffset に自明に収まる。
 inline constexpr std::size_t kAxisOffset = b + 1;
 
+/// 平面とセルの閉領域の交差判定（SPEC-phase2 §2.3）。
+///
+/// セル $C$ を平面 $P$ で分割するのは $P \cap \overline{C} \neq \emptyset$ のときだけ。
+/// 判定は `N・x + d` の最小値と最大値の符号で行う。$N$ の各成分の符号に応じて
+/// `lo` / `hi` を選べば、8 隅を回らずに 2 回の内積で出る。
+///
+///   セル座標          b+1（上限 2^(b-1) が kCoordMax を超えるため。§3.2）
+///   N_i * x_i         (2b+3) + (b+1) = 3b+4
+///   N・x（3 項の和）   3b+6
+///   N・x + d          **3b+7**
+///
+/// b = 21 で 70 ビット / 2 リム、b = 26 で 85 ビット / 2 リム。
+inline constexpr std::size_t kPlaneAabb = 3 * b + 7;
+
 /// 三角形 1 枚ぶんの符号付き体積 x6 = det(a, b, c)。
 /// |det| <= 6*2^(3(b-1)) < 2^(3b) なので 3b+1。
 inline constexpr std::size_t kTetraVolume6 = 3 * b + 1;
@@ -172,6 +186,8 @@ inline constexpr std::size_t kHomoXyz = limbs_for(bits::kHomoXyz);
 inline constexpr std::size_t kSide = limbs_for(bits::kSide);
 inline constexpr std::size_t kOrient3d = limbs_for(bits::kOrient3d);
 inline constexpr std::size_t kOrient2d = limbs_for(bits::kOrient2d);
+/// セル境界の座標（b+1 ビット）。`IPoint` では表せない上端を含む（§3.2）
+inline constexpr std::size_t kAxisOffset = limbs_for(bits::kAxisOffset);
 inline constexpr std::size_t kCmpH = limbs_for(bits::kCmpH);
 
 // Phase 1（SPEC-phase1.md §7）
@@ -183,6 +199,9 @@ inline constexpr std::size_t kMidSide = limbs_for(bits::kMidSide);
 inline constexpr std::size_t kMidOrient2dH = limbs_for(bits::kMidOrient2dH);
 inline constexpr std::size_t kTriSide = limbs_for(bits::kTriSide);
 inline constexpr std::size_t kTriOrient2dH = limbs_for(bits::kTriOrient2dH);
+
+// Phase 2（SPEC-phase2.md §7）
+inline constexpr std::size_t kPlaneAabb = limbs_for(bits::kPlaneAabb);
 
 /// Phase 0 の述語が要求する最大リム数（SPEC §3.3 の表の最右列）。
 /// b = 21 → 5、b = 26 → 6。
@@ -198,6 +217,7 @@ static_assert(64 * limbs::kInputVolume6 >= bits::kInputVolume6, "kInputVolume6 �
 static_assert(64 * limbs::kOrient2dH >= bits::kOrient2dH, "kOrient2dH のリム数不足");
 static_assert(64 * limbs::kMidSide >= bits::kMidSide, "kMidSide のリム数不足");
 static_assert(64 * limbs::kMidOrient2dH >= bits::kMidOrient2dH, "kMidOrient2dH のリム数不足");
+static_assert(64 * limbs::kPlaneAabb >= bits::kPlaneAabb, "kPlaneAabb のリム数不足");
 static_assert(64 * limbs::kTriSide >= bits::kTriSide, "kTriSide のリム数不足");
 static_assert(64 * limbs::kTriOrient2dH >= bits::kTriOrient2dH, "kTriOrient2dH のリム数不足");
 // 軸平行平面のオフセットは kOffset に収まること

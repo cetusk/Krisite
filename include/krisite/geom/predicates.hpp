@@ -96,6 +96,59 @@ inline arith::fixed_int<kSideIPointLimbs> side_value(const PlaneD& pl, const IPo
     return acc;
 }
 
+// ---- 平面とセルの閉領域の交差（SPEC-phase2.md §2.3）--------------------------
+//
+// **セル $C$ を平面 $P$ で分割するのは $P \cap \overline{C} \neq \emptyset$ のときだけです。**
+//
+// Phase 1 は両メッシュの全平面ですべてのセルを切っていました（§4.3.1）。継ぎ目に
+// T 字接合を出さないためです。絞り込んでも整合するのは、判定を**閉包**で行うからです。
+//
+//   $C_1$ と $C_2$ が面 $F$ を共有するとき、$P$ が $F$ 上に切断点を生むなら
+//   $P$ は $F$ を横切る。$F \subset \overline{C_1} \cap \overline{C_2}$ なので
+//   両方の閉包と交わり、**両セルが同じ $P$ で切る。**
+//
+// **開集合で判定してはいけません。** 面上に載る平面が両側から落ちます
+// （SPEC-phase1 §4.2 の閉領域割り当てと同じ規律）。
+//
+// 「三角形が届くか」で絞ると壊れます。$\mathrm{plane}(T)$ は無限に延びるので、
+// $T$ が届かないセルにも切断点を生みます。**それが Phase 1 の変異 3 です。**
+
+/// `N・x + d` をセルの隅 1 点で評価する。ビット幅 3b+7 → widths.hpp bits::kPlaneAabb。
+///
+/// **`side_value(PlaneD, IPoint)` とは受ける座標の範囲が違います。** セル境界の
+/// 上限 `+2^(b-1)` は `kCoordMax` を超えるので `IPoint` に入りません（§3.2）。
+inline arith::fixed_int<limbs::kPlaneAabb> plane_box_value(const PlaneD& pl,
+                                                           const std::int64_t p[3]) noexcept {
+    using namespace arith;
+    constexpr std::size_t LB = limbs::kPlaneAabb;
+    static_assert(64 * LB >= bits::kPlaneAabb, "kPlaneAabb のリム数が §2.3 の上界を下回っている");
+    auto acc = widen<LB>(mul(pl.a, from_i64<limbs::kAxisOffset>(p[0])));
+    acc = add(acc, widen<LB>(mul(pl.b, from_i64<limbs::kAxisOffset>(p[1]))));
+    acc = add(acc, widen<LB>(mul(pl.c, from_i64<limbs::kAxisOffset>(p[2]))));
+    acc = add(acc, widen<LB>(pl.d));
+    return acc;
+}
+
+/// 平面がセルの**閉領域** `[lo, hi]` と交わるか（SPEC-phase2 §2.3）。
+///
+/// 8 隅を回る必要はありません。`N` の各成分の符号に応じて `lo` / `hi` を選べば、
+/// `N・x + d` の最小値と最大値が**内積 2 回**で出ます。
+/// 最小値 $\le 0 \le$ 最大値なら横切ります。
+///
+/// **成分が 0 の軸はどちらを選んでも同じです**（その軸は寄与しない）。
+inline bool plane_crosses_box(const PlaneD& pl, const std::int64_t lo[3],
+                              const std::int64_t hi[3]) noexcept {
+    const int sa[3] = {arith::sign(pl.a), arith::sign(pl.b), arith::sign(pl.c)};
+    std::int64_t pmin[3], pmax[3];
+    for (int t = 0; t < 3; ++t) {
+        KRISITE_CHECK(lo[t] <= hi[t], "plane_crosses_box: lo > hi");
+        pmin[t] = (sa[t] >= 0) ? lo[t] : hi[t];
+        pmax[t] = (sa[t] >= 0) ? hi[t] : lo[t];
+    }
+    return arith::sign(plane_box_value(pl, pmin)) <= 0 &&
+           arith::sign(plane_box_value(pl, pmax)) >= 0;
+}
+
 inline int side(const PlaneD& pl, const IPoint& p) noexcept {
     KRISITE_COUNT(side_calls);
     return arith::sign(side_value(pl, p));
