@@ -75,7 +75,14 @@ void run_case(const kritest::Case& c, std::vector<Row>& rows) {
         bool first = true;
         for (unsigned d = 0; d <= kMaxDepth; ++d) {
             BoolStats st;
-            const BoolMesh r = boolean_op(a, b, op, d, &st);
+            // **Phase 1 の意味論のまま（分裂 OFF）で見ます**（SPEC-phase2 §5.2）。
+            // 分裂は設計どおり頂点の値を複製するので、§5.3 の第2段を突く
+            // 「値の重複が無いこと」の検査と衝突します。**分裂側は
+            // `tests/csg/test_split_semantics.cpp` が受け持ちます。**
+            BoolOptions opt;
+            opt.depth = d;
+            opt.split_contacts = false;
+            const BoolMesh r = boolean_op(a, b, op, opt, &st);
             const TopologyReport t = check_topology(r.triangles);
             std::printf(
                 "    d%u %s C=%zu g=%-2lld F=%-5zu %s | 断片%-4zu 有効セル%zu/%-4zu "

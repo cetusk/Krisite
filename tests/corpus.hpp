@@ -577,6 +577,48 @@ inline TriMesh case15_b() {
     return concat(r, translated(tetra(at(10, 256)), at(56, 256), at(15, 256), at(15, 256)));
 }
 
+/// 四角柱（断面は任意の凸四角形）。`px`/`py` は $+z$ から見て反時計回りに並べること。
+/// 外から見て CCW（外向き法線）。
+inline TriMesh prism4(const std::int32_t px[4], const std::int32_t py[4], std::int32_t zlo,
+                      std::int32_t zhi) {
+    TriMesh m;
+    for (int i = 0; i < 4; ++i) m.vertices.push_back(IPoint{px[i], py[i], zlo});
+    for (int i = 0; i < 4; ++i) m.vertices.push_back(IPoint{px[i], py[i], zhi});
+    m.triangles.push_back({0, 2, 1});  // 底面（法線 -z）
+    m.triangles.push_back({0, 3, 2});
+    m.triangles.push_back({4, 5, 6});  // 上面（法線 +z）
+    m.triangles.push_back({4, 6, 7});
+    for (std::uint32_t i = 0; i < 4; ++i) {
+        const std::uint32_t j = (i + 1) % 4;
+        m.triangles.push_back({i, j, j + 4});
+        m.triangles.push_back({i, j + 4, i + 4});
+    }
+    return m;
+}
+
+/// ケース 16: **自己接触**（SPEC-phase2 §8）。**§5.1.2 の対応付けの唯一の検証手段。**
+///
+/// 平板 $A$ から菱形プリズム $B$ を抜きます。$B$ の 4 頂点が $A$ の側面の中点に
+/// **ちょうど載る**ので、$A \setminus B$ が 4 隅に分かれ、**隣り合う隅が縦の辺で接します。**
+///
+/// **13 / 14 / 15 は自己接触を作りません。** これらだけでは §5.1.2 の対応付けが
+/// **owner でも連結成分でも同じ結果になり、素通りで通ります**（§8.1）。
+/// $A \setminus B$ の各シートは $A$ の面 1 枚と $B$ の面 1 枚から成るので、
+/// **owner で分けると組がシートをまたぎます。**
+///
+/// 菱形の辺は $x+y=\mathrm{const}$ なので**斜面**を含み、§5.2 も同時に突きます。
+/// 中心を $(7,7)$ に置いてあるのは、深度 0〜3 のセル境界（$H/256$ 単位で $-256+64m$）に
+/// 乗せないためです。
+inline TriMesh case16_a() {
+    return box(at(-121, 256), at(-121, 256), at(-9, 256), at(135, 256), at(135, 256), at(9, 256));
+}
+inline TriMesh case16_b() {
+    // 菱形の頂点は A の側面の中点。$|x-7| + |y-7| = 128$
+    const std::int32_t px[4] = {at(135, 256), at(7, 256), at(-121, 256), at(7, 256)};
+    const std::int32_t py[4] = {at(7, 256), at(135, 256), at(7, 256), at(-121, 256)};
+    return prism4(px, py, at(-130, 256), at(130, 256));
+}
+
 }  // namespace cases
 
 /// §9.1 の実装済みケース。CP3 に向けて増やしていきます。
@@ -605,6 +647,8 @@ inline const std::vector<Case>& corpus() {
         {"13", "密度が偏る対", cases::case13_a, cases::case13_b},
         {"14", "極端に小さく離れている", cases::case14_a, cases::case14_b, true},
         {"15", "細かい構造が斜面を持つ", cases::case15_a, cases::case15_b},
+        // **§5.1.2 の対応付けはこのケースでしか検証できません**（§8.1）
+        {"16", "自己接触（平板 − 菱形プリズム）", cases::case16_a, cases::case16_b},
     };
     return k;
 }

@@ -34,11 +34,18 @@ enum class Exclusion {
 };
 
 /// §9.3 の除外表。**ここだけが定義です。**
-inline Exclusion exclusion_of(const std::string& id, krisite::csg::BoolOp op) {
+///
+/// **接触の分裂（SPEC-phase2 §5）を有効にすると除外は 0 件になります**（§5.3）。
+/// この表は**分裂を無効にしたとき**の Phase 1 の姿です。
+inline Exclusion exclusion_of(const std::string& id, krisite::csg::BoolOp op,
+                              bool split_contacts = false) {
     using krisite::csg::BoolOp;
+    if (split_contacts) return Exclusion::None;  // §5.3: 分裂すれば除外は要らない
     if (id == "4T" && op == BoolOp::Union) return Exclusion::VertexContact;
     if (id == "4T'" && op == BoolOp::Difference) return Exclusion::VertexContact;
     if (id == "11b" && op == BoolOp::Union) return Exclusion::EdgeContact;
+    // ケース 16 の自己接触（§8.2）。**分裂を無効にすると次数 4 の辺が残ります**
+    if (id == "16" && op == BoolOp::Difference) return Exclusion::EdgeContact;
     return Exclusion::None;
 }
 

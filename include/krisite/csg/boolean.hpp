@@ -35,6 +35,7 @@
 #include "krisite/csg/plane_table.hpp"
 #include "krisite/csg/raycast.hpp"
 #include "krisite/csg/tjunction.hpp"
+#include "krisite/mesh/split.hpp"
 #include "krisite/mesh/topology.hpp"
 #include "krisite/mesh/tri_mesh.hpp"
 #include "krisite/octree/adaptive.hpp"
@@ -127,6 +128,9 @@ struct BoolStats {
     std::size_t cache_misses = 0;
     std::size_t cache_entries = 0;
     std::size_t cache_bytes = 0;
+
+    /// §5 の接触の分裂。**予測と実測の突き合わせもここに入ります**（§5.5）。
+    mesh::SplitStats split{};
 
     /// §2.4.3 の T 頂点の解決（SPEC-phase2）。
     ///
@@ -227,6 +231,15 @@ struct BoolOptions {
     bool adaptive = false;
     /// 分割を打ち切る三角形数の閾値（§3.1）。0 なら閾値では打ち切らない
     std::size_t leaf_threshold = 0;
+    /// **接触の分裂**（§5）。**既定で有効です**（§5.2）。
+    ///
+    /// 正則化ブールは一般に多様体出力を保証できません。辺だけ・頂点だけを共有する接触が
+    /// 出力に残るので、分裂させて多様体化します。Phase 5 のメッシュ化と GWN が多様体を
+    /// 前提にできると扱いが楽なため、既定を分裂側にしています。
+    ///
+    /// **無効にしたときは $g$ で比較してはいけません**（§5.4）。非多様体出力では
+    /// $\chi$ が奇数になり得ます。
+    bool split_contacts = true;
     /// **構成点の保持**（§4）。平面3つ組をキーにメモ化する。
     ///
     /// **無効側が Phase 1 の挙動 = §9.1 の正解器です。** キャッシュの有無で出力は
@@ -809,6 +822,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     // **一律に適用します。** 「隣が持っているから入れる」ではなく「線分の内部に載る
     // 大域頂点はすべて入れる」。片側だけに入れると T 字接合を作ってしまいます。
     BoolMesh out;
+    std::vector<int> tri_owner;
     out.vertices = std::move(merged);
     {
         // 出力に残る断片の支持平面だけ索引を張る（平面数 x 頂点数 回の `side`）
@@ -829,7 +843,11 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         if (op == BoolOp::Difference && f.owner == 1) detail::reverse_polygon(poly, edge);
         const TPolygon tp =
             insert_t_vertices(table, out.vertices, vertex_index, f.support, edge, poly, &st.t);
+        const std::size_t before_n = out.triangles.size();
         fan_triangulate(tp, out.triangles, &st.t);
+        // **owner は出力時に直接記録します。** 多角形の頂点数から再構成すると、
+        // T 頂点が入ったときに数が合いません（§9.3 の変異 9 で使う）
+        tri_owner.insert(tri_owner.end(), out.triangles.size() - before_n, f.owner);
     }
 
     // ---- §5.4: 1 点に集まる平面の最大枚数（総当たり）----
@@ -854,6 +872,36 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     st.side_calls = geom::counters::side_calls;
     st.intersect3_calls = geom::counters::intersect3_calls;
 #endif
+    // ---- 8. 接触の分裂（§5）----
+    //
+    // **辺（次数 4）と頂点（k 個の扇）の両方を、頂点まわりの扇で一度に扱います。**
+    // 次数 4 の辺は扇を繋がないので、辺の両端で扇が分かれ、辺そのものが 2 本になります。
+    //
+    // **面は増えません。** 境界の点集合は変わらず、組合せ的な表現だけが変わります（§5.1.3）。
+#if defined(KRISITE_MUTATION_NO_SPLIT)
+    // SPEC-phase2 §9.3 の変異 8: **接触の分裂を無効化**（辺・頂点の両方）。
+    // §9.3 の除外 3 件が再び落ちるはずです。
+    const bool do_split = false;
+    (void)opt;
+#else
+    const bool do_split = opt.split_contacts;
+#endif
+    if (do_split && !out.triangles.empty()) {
+        std::vector<std::uint32_t> origin;
+#if defined(KRISITE_MUTATION_SPLIT_BY_OWNER)
+        // SPEC-phase2 §9.3 の変異 9: §5.1.2 の対応付けを owner に戻す。
+        // **$\chi$ と体積では捕まりません。** §5.5.1 の $C$ 不変性でのみ落ちます。
+        // **ケース 16（自己接触）が無いと素通りします**（§8.1）。
+        const std::vector<int>* owner_ptr = &tri_owner;
+#else
+        const std::vector<int>* owner_ptr = nullptr;
+        (void)tri_owner;
+#endif
+        out.triangles =
+            mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split, owner_ptr);
+        for (std::uint32_t o : origin) out.vertices.push_back(out.vertices[o]);
+    }
+
     st.cache_hits = point_cache.hits();
     st.cache_misses = point_cache.misses();
     st.cache_entries = point_cache.entries();
