@@ -29,6 +29,9 @@ krisite_add_test(fragment      csg/test_fragment.cpp)
 krisite_add_test(cp1           csg/test_cp1.cpp)
 # SPEC-phase2 §9.1 / CP1。絞り込みの有無を同一プロセスで比較する
 krisite_add_test(split_strategy csg/test_split_strategy.cpp)
+# SPEC-phase2 §2.4.4 (3) の【正の対照】。負の対照（固定深度で挿入 0 件）は
+# split_strategy が持つ。**負の対照だけでは何もしないスタブが通る。**
+krisite_add_test(tjunction     csg/test_tjunction.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
@@ -166,4 +169,29 @@ if(KRISITE_BUILD_MUTANTS)
     # **冪等性は変異 4 も検出しません。** 比較の両側に同じ変異がかかるので差が出ない、
     # という Phase 1 と同じ構造的な盲点です。**素通りを固定して記録します。**
     krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 idempotence     PASS)
+
+    # 変異 10: §2.4.3 の T 頂点解決を無効化する（SPEC-phase2 §9.3）。
+    #
+    # **T 解決は継ぎ目の正しさの単一障害点です。** 検出の経路は 2 つあり、
+    # **測っているものが違います。**
+    #
+    #   tjunction      … 正の対照。**幾何で**検出する（効くべき場所で効かない）
+    #   split_strategy … 負の対照の【非空虚の番人】。**計数で**検出する
+    #                    （索引が候補を返しておらず、対照が空虚になっている）
+    #
+    # **固定深度のコーパスは素通りします。** 固定深度では T 解決がそもそも no-op なので、
+    # 無効化しても出力が変わりません。**ケース 13（適応分割）が入るまでの暫定値です。**
+    krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1 tjunction       FAIL)
+    krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1 split_strategy  FAIL)
+    krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1 cp3             PASS)
+    krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1 depth_monotonic PASS)
+
+    # 変異 11: T 頂点を 1 本の辺に 1 個しか入れない（一括でなく）。
+    #
+    # **1 本の辺に T 頂点が 2 個以上載る配置でしか検出できません**（§8 のケース 13 の要件）。
+    # 正の対照はその配置を手で作っているので検出しますが、**固定深度のコーパスは
+    # T 頂点が 0 個なので構造的に素通りします。**
+    krisite_add_mutant(11 KRISITE_MUTATION_TJUNCTION_ONE_AT_A_TIME=1 tjunction      FAIL)
+    krisite_add_mutant(11 KRISITE_MUTATION_TJUNCTION_ONE_AT_A_TIME=1 split_strategy PASS)
+    krisite_add_mutant(11 KRISITE_MUTATION_TJUNCTION_ONE_AT_A_TIME=1 cp3            PASS)
 endif()

@@ -34,6 +34,7 @@
 #include "krisite/csg/fragment.hpp"
 #include "krisite/csg/plane_table.hpp"
 #include "krisite/csg/raycast.hpp"
+#include "krisite/csg/tjunction.hpp"
 #include "krisite/mesh/topology.hpp"
 #include "krisite/mesh/tri_mesh.hpp"
 #include "krisite/octree/uniform_grid.hpp"
@@ -109,7 +110,37 @@ struct BoolStats {
     std::size_t split_plane_slots = 0;
     std::size_t split_planes_used = 0;
     std::size_t max_planes_per_cell = 0;  ///< 1 セルで使った分割平面の最大数
+
+    /// §2.4.3 の T 頂点の解決（SPEC-phase2）。
+    ///
+    /// **固定深度では `t_inserted` が 0 でなければなりません**（§2.4.4 (3) の負の対照）。
+    /// 大域平面集合で切るので、線分の内部に載る頂点はその平面での切断点として既に
+    /// 多角形の角になっているためです。**0 でなければ前提が崩れています。**
+    TJunctionStats t{};
 };
+
+namespace detail {
+
+/// 多角形の頂点順を反転し、辺の対応も付け替える。
+///
+/// `Difference` で採用した B の断片に使います（SPEC-phase1 §3.4）。辺 j は頂点 j と
+/// j+1 を結ぶので、反転すると `edge'[k] = edge[(2n-2-k) mod n]` になります。
+/// **T 頂点を入れる前に反転してください。** 入れた後だと `TPolygon::orig` の
+/// 意味（元の辺の添字）が保てません。
+inline void reverse_polygon(std::vector<std::uint32_t>& poly, std::vector<PlaneId>& edge) {
+    const std::size_t n = poly.size();
+    KRISITE_CHECK(n == edge.size(), "reverse_polygon: 頂点数と辺数が違う");
+    std::vector<std::uint32_t> p(n);
+    std::vector<PlaneId> e(n);
+    for (std::size_t k = 0; k < n; ++k) {
+        p[k] = poly[n - 1 - k];
+        e[k] = edge[(2 * n - 2 - k) % n];
+    }
+    poly.swap(p);
+    edge.swap(e);
+}
+
+}  // namespace detail
 
 namespace detail {
 
@@ -451,6 +482,13 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
 #endif
     st.merged_points = merged.size();
 
+    // §2.4.3 の手順 1: **辺の平面対 → その交線上の大域頂点** の索引。
+    //
+    // 3つ組をそのまま登録すれば 3 つの対が張れます。線上に載ることは 3つ組から構造的に
+    // 決まるので、幾何的な判定は「区間の内部か」だけで済みます。
+    EdgeVertexIndex vertex_index;
+    for (const auto& kv : by_key) vertex_index.add_triple(kv.first, remap[kv.second]);
+
     // 縫合後の多角形（大域 ID）
     std::vector<std::vector<std::uint32_t>> polys(frags.size());
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
@@ -621,18 +659,26 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     //
     // 頂点順は「外から見て CCW」= 所有メッシュの外向き（§3.4）。`Difference` で
     // 採用する B の断片は、A\B の境界としては法線が逆になるので**順序を反転**します。
+    //
+    // **T 頂点の解決は選択のあと、三角形化の直前**（§2.4.4 (1)、`IMPL-phase2.md` §2.6.1）。
+    // 正準化を先にするのは、同一領域が複数セルに重複割り当てされたとき、隣接の細かさが
+    // 違えば入る T 頂点も違い得るためです。先に入れると `region_key` が食い違い、
+    // 重複が併合されずに同じ面を二重に出力します。
+    //
+    // **一律に適用します。** 「隣が持っているから入れる」ではなく「線分の内部に載る
+    // 大域頂点はすべて入れる」。片側だけに入れると T 字接合を作ってしまいます。
     BoolMesh out;
     out.vertices = std::move(merged);
     for (std::size_t ri = 0; ri < reps.size(); ++ri) {
         if (!keep[ri]) continue;
+        const Fragment& f = frags[reps[ri]];
         std::vector<std::uint32_t> poly = polys[reps[ri]];
+        std::vector<PlaneId> edge = f.edge;
         if (poly.size() < 3) continue;
-        if (op == BoolOp::Difference && frags[reps[ri]].owner == 1) {
-            std::reverse(poly.begin(), poly.end());
-        }
-        for (std::size_t i = 1; i + 1 < poly.size(); ++i) {
-            out.triangles.push_back({poly[0], poly[i], poly[i + 1]});
-        }
+        if (op == BoolOp::Difference && f.owner == 1) detail::reverse_polygon(poly, edge);
+        const TPolygon tp =
+            insert_t_vertices(out.vertices, vertex_index, f.support, edge, poly, &st.t);
+        fan_triangulate(tp, out.triangles, &st.t);
     }
 
     // ---- §5.4: 1 点に集まる平面の最大枚数（総当たり）----
