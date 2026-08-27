@@ -1,17 +1,45 @@
-# ビルド成果物
+# ---- ビルド成果物 ----------------------------------------------------------
 build/
 build-*/
 cmake-build-*/
+out/
+install/
 compile_commands.json
+CMakeUserPresets.json
+# FetchContent（Manifold 正解器など）の取得先
+_deps/
+# ctest の作業ディレクトリ
+Testing/
 
-# 論文 PDF は Git に含めない（CLAUDE.md「参考文献」）
-docs/papers/
+# ---- ツールの作業ファイル --------------------------------------------------
+# clangd
+.cache/
+# Python（assets/gen_logo.py 用）
+__pycache__/
+*.pyc
+.venv/
+venv/
 
-# fix-spec.py が残すバックアップ
+# ---- Git / マージの残骸 ----------------------------------------------------
+*.orig
+*.rej
 *.bak
 
-# エディタ・OS
+# ---- エディタ・OS ----------------------------------------------------------
 .vscode/
 .idea/
 *.swp
+*~
 .DS_Store
+Thumbs.db
+
+# ---- ローカル設定 ----------------------------------------------------------
+# .claude/settings.json は追跡する（権限の deny リストは規約の一部）。
+# ローカル上書きだけを外す。
+.claude/settings.local.json
+
+# ---- 論文 PDF は Git に含めない（CLAUDE.md「参考文献」）--------------------
+docs/papers/
+
+# ---- 開発機ごとの起動スクリプト（公開物ではない）--------------------------
+claude_sandbox.bat
