@@ -51,6 +51,10 @@ if(KRISITE_GMP_FOUND)
     krisite_add_test(plane_order_gmp geom/test_plane_order_gmp.cpp 300000)
     target_link_libraries(plane_order_gmp PRIVATE krisite_gmp)
 
+    # SPEC-phase2 §2.3 / §7。正解器は 8 隅すべてを mpz で評価する別経路
+    krisite_add_test(plane_box_gmp  geom/test_plane_box_gmp.cpp 200000)
+    target_link_libraries(plane_box_gmp PRIVATE krisite_gmp)
+
     # §10.3 体積の恒等式。出力の頂点は有理数なので GMP が要る
     krisite_add_test(volume_gmp     csg/test_volume_gmp.cpp)
     target_link_libraries(volume_gmp PRIVATE krisite_gmp)
@@ -59,6 +63,7 @@ if(KRISITE_GMP_FOUND)
     add_test(NAME fixed_int_gmp_quick COMMAND fixed_int_gmp 40000)
     add_test(NAME predicates_gmp_quick COMMAND predicates_gmp 5000)
     add_test(NAME plane_order_gmp_quick COMMAND plane_order_gmp 3000)
+    add_test(NAME plane_box_gmp_quick COMMAND plane_box_gmp 3000)
 endif()
 
 # ---- Manifold 正解器（Apache-2.0、テスト専用）--------------------------------
