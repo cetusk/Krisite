@@ -197,7 +197,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DKRISITE_BUILD_TESTS_WITH_MANIFOLD=ON
       - name: 取得したコミットとライセンスを記録
-        # CLAUDE.md「LICENSE ファイルを実際に読んで確認したもの。README の記述を信用しない」。
+        # LICENSE の実体を読んで確認する（README の記述を信用しない。THIRD_PARTY_LICENSES.md）。
         # 構成時にも FATAL_ERROR で検査しているが、根拠を CI ログに残す。
         run: |
           SRC=$(find build/_deps -maxdepth 1 -name 'manifold-src' -type d)

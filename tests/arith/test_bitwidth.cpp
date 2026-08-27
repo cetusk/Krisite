@@ -141,7 +141,7 @@ int main() {
                     g->theory - g->measured, tl, ml, g->samples,
                     (ml == tl) ? "" : "  ← 乱択が届かず");
 
-        // (1) 理論上界を超えないこと — 超えたら CLAUDE.md「即座に報告」対象
+        // (1) 理論上界を超えないこと — 超えたら設計の誤り。即座に報告する対象
         KRI_CHECK_MSG(g->measured <= g->theory,
                       std::string(g->name) + ": 実測 " + std::to_string(g->measured) +
                           " ビットが理論上界 " + std::to_string(g->theory) + " ビットを超過");

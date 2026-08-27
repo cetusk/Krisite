@@ -62,7 +62,7 @@ endif()
 
 # ---- Manifold 正解器（Apache-2.0、テスト専用）--------------------------------
 #
-# **ライブラリ本体には絶対にリンクしません**（CLAUDE.md）。この実行ファイルだけです。
+# **ライブラリ本体には絶対にリンクしません**（THIRD_PARTY_LICENSES.md）。この実行ファイルだけです。
 
 if(KRISITE_MANIFOLD_FOUND)
     krisite_add_test(manifold_oracle csg/test_manifold.cpp)

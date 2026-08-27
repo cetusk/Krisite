@@ -1,6 +1,6 @@
 // Krisite — テスト用の最小ヘルパ
 //
-// 外部テストフレームワークは使わない（新しい依存を増やさないため。CLAUDE.md ライセンス方針）。
+// 外部テストフレームワークは使わない（新しい依存を増やさないため。THIRD_PARTY_LICENSES.md）。
 // 失敗を数え、main が非零で終了することで ctest に伝える。
 #ifndef KRISITE_TESTS_TEST_UTIL_HPP
 #define KRISITE_TESTS_TEST_UTIL_HPP
