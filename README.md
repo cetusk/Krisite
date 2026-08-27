@@ -1,3 +1,5 @@
+# Krisite — exact, plane-based geometry for point clouds and meshes
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/krisite-logo-dark.svg">
@@ -11,17 +13,18 @@
 
 `Krisite` は 3D データを扱う C++20 ヘッダオンリーライブラリです。
 最終目標は点群圧縮・メッシュ化・厳密ブール演算の統合です。
-**Phase 0（算術基盤）が完了し、現在は Phase 1（出力抽出の最小検証）に着手しています。**
-現在地は [`docs/ROADMAP.md`](docs/ROADMAP.md) が唯一の情報源です。
+**Phase 0（算術基盤）と Phase 1（出力抽出の最小検証）の完了条件を満たしました。**
+現在地は [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
-名前の由来は **kris**（短剣、かつ crystal の語幹 κρύσταλλος）+ **-ite**（鉱物の接尾辞）。
-平面ベース表現を採る本ライブラリにとって、結晶が平面で囲まれた立体であることは
-単なる比喩ではありません。
+## いま提供しているもの
 
-## Phase 0 で提供するもの
+| 層 | 内容 | 仕様 |
+|---|---|---|
+| `arith/` | 固定幅の厳密整数演算（動的確保なし・例外なし・グローバル状態なし） | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
+| `geom/` | 平面ベース幾何述語。**幅を型で表す**ので上界超過がコンパイル時に防がれる | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
+| `mesh/` `octree/` `csg/` | 厳密ブール演算（$\cup$ / $\cap$ / $\setminus$）、位相検査、固定深度の空間分割 | [`SPEC-phase1.md`](docs/SPEC-phase1.md) |
 
-固定幅の厳密整数演算と、それに基づく平面ベース幾何述語。仕様は
-[`docs/SPEC-phase0.md`](docs/SPEC-phase0.md)。
+**浮動小数点も許容誤差も使いません。** 判定はすべて整数の厳密演算です。
 
 ```cpp
 #include <krisite/krisite.hpp>
@@ -40,6 +43,25 @@ int o  = orient3d(a, b, c, d); // 同上
 HPointD v = intersect3(pl, other1, other2);
 int s2 = side(pl, v);          // 除算なしで厳密に判定
 bool lt = lex_less(v, other_v);
+```
+
+ブール演算も同じ厳密性の上に乗っています。
+
+```cpp
+#include <krisite/csg/boolean.hpp>
+
+using namespace krisite;
+
+mesh::TriMesh A = /* 整数座標の閉じた向き付き三角メッシュ */;
+mesh::TriMesh B = /* 同上 */;
+
+csg::BoolStats st;
+// depth は八分木の分割深度（実行時パラメータ）。意味論には影響しない
+csg::BoolMesh r = csg::boolean_op(A, B, csg::BoolOp::Union, /*depth=*/2, &st);
+
+// 出力の頂点は座標を持たない構成点（3 平面の交点）のまま
+auto t = mesh::check_topology(r.triangles);
+assert(t.ok());                  // 辺多様体・頂点多様体・向きの整合・退化なし
 ```
 
 浮動小数点は一切使いません。すべての述語は固定幅整数の符号だけで決まり、
@@ -100,6 +122,8 @@ cmake --build build-rel
 | `KRISITE_CHECKED_ARITH` | Debug で ON | 全演算のオーバーフロー検査 |
 | `KRISITE_BUILD_TESTS` | ON | テストのビルド |
 | `KRISITE_BUILD_TESTS_WITH_GMP` | **OFF** | GMP 差分テスト（LGPL、テスト専用） |
+| `KRISITE_BUILD_TESTS_WITH_MANIFOLD` | **OFF** | Manifold 正解器（Apache-2.0、テスト専用） |
+| `KRISITE_BUILD_MUTANTS` | OFF | 変異テスト（検査 OFF の構成が必要） |
 | `KRISITE_BUILD_BENCH` | OFF | ベンチマークのビルド |
 
 `KRISITE_CHECKED_ARITH` は `NDEBUG` とは独立に効きます。Release ビルドでも
@@ -107,21 +131,31 @@ cmake --build build-rel
 
 ### プラットフォーム検証は CI で行います
 
-Linux(GCC/Clang) / macOS(Apple Silicon) / Windows(MSVC) のマトリクスは
+Linux(GCC/Clang) / macOS(Apple Silicon) / Windows(MSVC) × `b = 21, 26` のマトリクスは
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) が正です（SPEC §9）。
 開発コンテナにこれらのツールチェーンを入れる必要はありません。
-CI は可搬経路（`__int128` / 32bit 筆算）と GMP 差分テストも別ジョブで回します。
+
+CI は他に次のジョブを回します。
+
+| ジョブ | 内容 |
+|---|---|
+| 可搬経路 | `__int128` / 32bit 筆算のフォールバックを明示的に強制 |
+| GMP 差分テスト | 算術 $10^7$ 件・述語 $10^6$ 件の突き合わせ、体積の恒等式 |
+| Manifold 正解器 | ブール出力の連結成分数と種数を独立実装と照合 |
+| **変異テスト** | 意図的に誤りを埋め、**検出されること**と**検出しない組合せ**の両方を固定 |
+| clang-format | 書式 |
 
 ## ドキュメント
 
 | ファイル | 内容 |
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **現在地とフェーズの全体像。まずここを読む** |
-| [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 の仕様（進行中）。縫合の可否判定、中止条件 |
-| [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) | Phase 1 の実装ノート（**CP1 到達時点**）。判断と根拠、つまずいた点 |
+| [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 の仕様。縫合の可否判定、テストコーパス、中止条件 |
+| [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) | Phase 1 の実装ノート（**CP3 到達時点**）。判断と根拠、**つまずいた点と訂正** |
 | [`docs/SPEC-phase0.md`](docs/SPEC-phase0.md) | Phase 0 の仕様。ビット幅解析、述語一覧、テスト要件 |
 | [`docs/IMPL-phase0.md`](docs/IMPL-phase0.md) | Phase 0 の実装ノート。**なぜそう作ったか**、検証の設計と検出力、Phase 1 への申し送り |
-| [`docs/BENCH.md`](docs/BENCH.md) | ベンチマークの基準線 |
+| [`docs/BENCH.md`](docs/BENCH.md) | ベンチマークの基準線と、Phase 1 の計数（ケース別・深度別） |
+| [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | 第三者コンポーネントの扱いと、それを機構で保証する仕組み |
 | [`docs/STYLE.md`](docs/STYLE.md) | コーディング規約（命名、書式、算術コードの制約） |
 | [`assets/BRAND.md`](assets/BRAND.md) | ロゴとテーマカラーの定義 |
 | [`CLAUDE.md`](CLAUDE.md) | 開発方針。**ライセンス方針を含む** |
@@ -143,16 +177,30 @@ Manifold（Apache-2.0）は**テストの正解器としてのみ**使い、既�
 | Phase | 内容 | 状態 |
 |---|---|---|
 | 0 | 固定幅厳密整数 + 平面ベース述語 | 完了（2026-08-26） |
-| **1** | **出力抽出の最小検証**（立方体2個、固定深度分割、単スレッド） | **進行中** |
+| **1** | **出力抽出の最小検証**（固定深度分割、単スレッド） | **完了条件を充足（2026-08-27）** |
 | 2 | 適応的再帰分割 + early-out 判定 | 未着手 |
 | 3 | work-stealing 並列化、継ぎ目の整合性検証 | 未着手 |
 | 4 | Thingi10K 全件検証 | 未着手 |
 | 5+ | 点群コーデック、GWN、メッシュ化 | 未着手 |
 
-**Phase 1 は分岐点です。** EMBER 系を続けるか断念するかをここで決めます。
+**Phase 1 は分岐点です。** この方式を続けるか断念するかをここで決めます。
 断念した場合は `csg/` を Manifold のラッパとして実装し、Phase 2〜4 を飛ばして
 Phase 5 系へ進みます。詳細は [`docs/ROADMAP.md`](docs/ROADMAP.md) と
 [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) §11。
+
+### Phase 1 で得られた数値
+
+判断と、次のフェーズの設計に使うものです。全 18 ケース × 3 演算 × 深度 0〜3 の実測。
+
+| 数値 | 実測 | 意味 |
+|---|---|---|
+| 1 点に集まる平面の最大枚数 | 軸平行 **3** / 斜面あり **9** | **軸平行だけのコーパスでは 3 枚を超えられません** |
+| 値ベース併合の発火率 | 最大 **44%** | 平面3つ組をキーにする第1段だけでは足りない |
+| 併合グループの空間的な広がり | **1 セルとその隣接まで** | 大域整列は不要。並列化はセル単位で閉じる |
+| `side` : `intersect3` の呼び出し比 | **1.26 : 1** | 構成点を作り直しており、保持すれば大きく減る |
+
+詳細は [`docs/BENCH.md`](docs/BENCH.md)、判断の経緯は
+[`docs/IMPL-phase1.md`](docs/IMPL-phase1.md)。
 
 ## 参考文献
 
