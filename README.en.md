@@ -174,7 +174,6 @@ The design documents are written in Japanese.
 | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | Third-party components and the mechanisms that keep them out of the distributable |
 | [`docs/STYLE.md`](docs/STYLE.md) | Coding conventions |
 | [`assets/BRAND.md`](assets/BRAND.md) | Logo and theme colours |
-| [`CLAUDE.md`](CLAUDE.md) | Development policy, **including the licensing policy** |
 
 ## Licence
 

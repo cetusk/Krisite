@@ -160,7 +160,6 @@ CI は他に次のジョブを回します。
 | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | 第三者コンポーネントの扱いと、それを機構で保証する仕組み |
 | [`docs/STYLE.md`](docs/STYLE.md) | コーディング規約（命名、書式、算術コードの制約） |
 | [`assets/BRAND.md`](assets/BRAND.md) | ロゴとテーマカラーの定義 |
-| [`CLAUDE.md`](CLAUDE.md) | 開発方針。**ライセンス方針を含む** |
 
 ## ライセンス
 
@@ -172,7 +171,6 @@ Manifold（Apache-2.0）は**テストの正解器としてのみ**使い、既�
 
 第三者コンポーネントの一覧と、それを機構で保証している仕組みは
 [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) にあります。
-方針の詳細は [`CLAUDE.md`](CLAUDE.md) を参照してください。
 
 ## ロードマップ
 
