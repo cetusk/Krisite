@@ -1,5 +1,7 @@
 # Krisite — exact, plane-based geometry for point clouds and meshes
 
+*[English version here](README.en.md)*
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/krisite-logo-dark.svg">
