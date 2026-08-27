@@ -130,9 +130,13 @@ CI は可搬経路（`__int128` / 32bit 筆算）と GMP 差分テストも別�
 
 **MIT。** この制約は他のすべてに優先します。
 
-ライブラリ本体（`include/krisite/`）は外部依存を一切持ちません。GMP（LGPL）は
-`KRISITE_BUILD_TESTS_WITH_GMP=ON` のときにテストバイナリからのみリンクされ、
-配布物には含まれません。方針の詳細は [`CLAUDE.md`](CLAUDE.md) を参照してください。
+ライブラリ本体（`include/krisite/`）は外部依存を一切持ちません。GMP（LGPL）と
+Manifold（Apache-2.0）は**テストの正解器としてのみ**使い、既定では無効です。
+配布物には含まれません。
+
+第三者コンポーネントの一覧と、それを機構で保証している仕組みは
+[`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) にあります。
+方針の詳細は [`CLAUDE.md`](CLAUDE.md) を参照してください。
 
 ## ロードマップ
 
