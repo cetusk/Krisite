@@ -274,9 +274,31 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                 std::vector<PlaneId> culled;
                 if (cull_planes) {
                     culled.reserve(all_split.size());
+#if defined(KRISITE_MUTATION_REACHING_TRIANGLE)
+                    // SPEC-phase2 §9.3 の変異 4: 判定基準を
+                    // 「**平面が**セルを横切るか」から「**三角形が**セルに届くか」に戻す。
+                    //
+                    // Phase 1 の変異 3 と同型ですが、こちらは絞り込みの**基準**を
+                    // 差し替えます。plane(T) は無限に延びるので、T が届かないセルにも
+                    // 切断点を生みます。落とすと継ぎ目に T 字接合が出るはずです。
+                    (void)clo;
+                    (void)chi;
+                    for (int which = 0; which < 2; ++which) {
+                        const mesh::TriMesh& rm = (which == 0) ? A : B;
+                        for (const Face& f : (which == 0) ? faces_a : faces_b) {
+                            if (!octree::assign_to_cell(face_aabb(rm, f), grid, cell)) continue;
+                            if (std::find(culled.begin(), culled.end(), f.support) ==
+                                culled.end()) {
+                                culled.push_back(f.support);
+                            }
+                        }
+                    }
+                    std::sort(culled.begin(), culled.end());
+#else
                     for (PlaneId q : all_split) {
                         if (geom::plane_crosses_box(table.at(q), clo, chi)) culled.push_back(q);
                     }
+#endif
                 }
                 const std::vector<PlaneId>& split_planes = cull_planes ? culled : all_split;
                 st.split_plane_slots += all_split.size();

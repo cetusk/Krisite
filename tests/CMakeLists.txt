@@ -145,4 +145,25 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp3             FAIL)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 depth_monotonic FAIL)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 idempotence     PASS)
+
+    # ---- Phase 2 ------------------------------------------------------------
+    #
+    # 変異 4: §2.3 の絞り込みの**基準**を「平面がセルを横切るか」から
+    #         「三角形がセルに届くか」に戻す（SPEC-phase2 §9.3）。
+    #
+    # Phase 1 の変異 3 と同型ですが、あちらは大域集合を割り当て集合に**置き換える**
+    # もので、こちらは絞り込みの**判定基準**を差し替えます。plane(T) は無限に延びる
+    # ので、T が届かないセルにも切断点を生みます。
+    #
+    # **split_strategy が最も鋭い検出器です**（118 件）。絞り込み無効の側を
+    # 正解器として直接突き合わせるためです。
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 split_strategy  FAIL)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp1             FAIL)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp2             FAIL)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp25            FAIL)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp3             FAIL)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 depth_monotonic FAIL)
+    # **冪等性は変異 4 も検出しません。** 比較の両側に同じ変異がかかるので差が出ない、
+    # という Phase 1 と同じ構造的な盲点です。**素通りを固定して記録します。**
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 idempotence     PASS)
 endif()
