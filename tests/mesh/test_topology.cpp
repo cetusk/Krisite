@@ -136,6 +136,51 @@ void test_detects_breakage() {
         KRI_CHECK(!r.vertex_manifold);  // **頂点まわりに扇が 2 つできる**
         KRI_CHECK(!r.ok());
     }
+    // ---- SPEC-phase1 §9.3.0.1: `oriented` の一般形 ----
+    //
+    // **一般化して検出力が落ちていないことを、接触辺のまわりで実測します。**
+    // 「一般化しても検出力は落ちない」は仕様の主張であって、測るまでは仮説です。
+    //
+    // 辺だけを共有する 2 立方体（接触の次元 1）。接触辺には 4 枚の面が接します。
+    {
+        const TriMesh m = kritest::two_cubes_sharing_an_edge(50);
+        const TopologyReport r = check_topology(m);
+        KRI_CHECK(!r.edge_manifold);         // 接触辺の次数が 4
+        KRI_CHECK(r.max_edge_degree == 4);   // 5 以上なら別の異常（§9.3.1）
+        KRI_CHECK(r.edges_odd_degree == 0);  // 面の過不足は無い
+        KRI_CHECK(r.edges_deficient == 0);
+        KRI_CHECK(r.edges_excess == 1);
+        // **ここが §9.3.0.1 の要点です。** 次数 2 を前提にした
+        // 「fwd == 1 && bwd == 1」なら、向きが正しくてもここで落ちていました。
+        KRI_CHECK(r.oriented);
+        // 非多様体な頂点はすべて接触辺の上にある（§9.3.1 の 4 つ目の条件）
+        KRI_CHECK(r.nonmanifold_vertices_unexplained == 0);
+        KRI_CHECK(!r.ok());
+    }
+    // 接触辺に接する三角形を 1 枚だけ裏返す → **一般形でも検出できること**
+    {
+        TriMesh m = kritest::two_cubes_sharing_an_edge(50);
+        // 接触辺は頂点 2 と 6（`two_cubes_sharing_an_edge` の同一視先）
+        bool flipped_one = false;
+        for (krisite::mesh::Tri& t : m.triangles) {
+            const bool has2 = (t[0] == 2 || t[1] == 2 || t[2] == 2);
+            const bool has6 = (t[0] == 6 || t[1] == 6 || t[2] == 6);
+            if (has2 && has6) {
+                const auto tmp = t[1];
+                t[1] = t[2];
+                t[2] = tmp;
+                flipped_one = true;
+                break;
+            }
+        }
+        KRI_CHECK(flipped_one);
+        const TopologyReport r = check_topology(m);
+        // 次数は変わらない。**崩れるのは向きの本数だけ**
+        KRI_CHECK(r.max_edge_degree == 4);
+        KRI_CHECK(r.edges_odd_degree == 0);
+        KRI_CHECK(!r.oriented);  // #(u,v) = 1, #(v,u) = 3 のように必ず崩れる
+        KRI_CHECK(!r.ok());
+    }
 }
 
 // ---- T 字接合を検出できること（§10.5 の変異 3 の前提）------------------------

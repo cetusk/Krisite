@@ -15,22 +15,22 @@
 
 namespace kritest {
 
-/// §9.3 の除外の種類。
+/// §9.3 の除外 — **接触の次元**（SPEC-phase1 §9.3.0、第11版）。
 ///
-/// **仕様は「頂点多様体の検査を外す」と書いていますが、それでは足りません**
-/// （`IMPL-phase1.md` §7.9 で仕様の訂正をお願いしています）。
-///
-/// | 接触 | 壊れる検査 | 例 |
+/// | 次元 | 壊れる検査 | 例 |
 /// |---|---|---|
-/// | 頂点接触 | `vertex_manifold`（扇が $k$ 個できる） | 4T の $\cup$、4T′ の $A\setminus B$ |
-/// | **辺接触** | **`edge_manifold`**（辺に 4 面が接する） | **11b の $\cup$** |
+/// | **0（頂点）** | `vertex_manifold`（リンクが $k$ 個の扇） | 4T ∪、4T′ $A\setminus B$ |
+/// | **1（辺）** | `edge_manifold`（辺に 4 枚の面）。深度 ≥1 では `vertex_manifold` も | 11b ∪ |
 ///
-/// §9.3.1 の適用条件は「すべての辺の次数が 2」を課していますが、**辺接触では
-/// その条件自体が成り立ちません。** 条件が想定しているのは頂点接触だけです。
+/// **`oriented` は除外しません**（§9.3.0.1）。検査を「各辺で $\#(u,v)=\#(v,u)$」に
+/// 一般化したので、接触辺でも正しく機能します。
+///
+/// 次元は**§13 の「除外件数を接触の次元別に記録」のためのラベル**です。
+/// 適用条件（`exclusion_conditions_ok`）は次元に依りません。
 enum class Exclusion {
     None,
-    VertexContact,  ///< `vertex_manifold` のみ外す。辺の次数は 2 のままを要求
-    EdgeContact,    ///< `edge_manifold` のみ外す。次数 4 の辺だけを許す
+    VertexContact,  ///< 接触の次元 0
+    EdgeContact,    ///< 接触の次元 1
 };
 
 /// §9.3 の除外表。**ここだけが定義です。**
@@ -44,64 +44,52 @@ inline Exclusion exclusion_of(const std::string& id, krisite::csg::BoolOp op) {
 
 /// §9.3.1 の適用条件を満たすか。**除外を広げすぎないための番人です。**
 ///
-/// 除外するのは 1 つの検査だけで、**他はすべて拘束のまま**であることを確かめます。
-/// 満たさないなら、それは除外すべき退化ではなくバグです。
+/// **接触の種類に依らない形で書きます**（SPEC-phase1 §9.3.1、第11版）。
+/// 「どの辺が接触辺か」を独立に知る手段が無いので、**辺次数の性質だけ**で判定します。
+///
+/// | 条件 | 根拠 |
+/// |---|---|
+/// | すべての辺の次数が偶数 | 奇数次数は曲面に境界がある証拠。**次数 1 を含みます** |
+/// | 次数の最大が 4 以下 | 立体 2 個の辺接触なら 2+2 で 4。**5 以上は別の異常** |
+/// | 各辺で $\#(u,v) = \#(v,u)$ | 一般化した `oriented`（§9.3.0.1）。**除外しません** |
+/// | 非多様体な頂点がすべて説明できる | 次数 3 以上の辺に接するか $k \ge 2$ 個の扇 |
+///
+/// §10.3 の体積検査（恒等式・解析値）も条件のひとつですが、GMP が要るので
+/// `csg/test_volume_gmp.cpp` が別に受け持ちます。**あちらは除外を適用しません。**
 inline bool exclusion_conditions_ok(Exclusion e, const krisite::mesh::TopologyReport& t,
                                     std::string* why) {
+    if (e == Exclusion::None) {
+        *why = "除外していない";
+        return false;
+    }
     if (!t.no_degenerate) {
         *why = "退化三角形がある";
         return false;
     }
-    if (t.edges_deficient != 0) {
-        *why = "面が欠けている辺がある（次数 1）";
+    if (t.edges_odd_degree != 0) {
+        *why = "次数が奇数の辺がある（曲面に境界がある = 面の過不足）";
         return false;
     }
-    if (e == Exclusion::VertexContact) {
-        if (!t.oriented) {
-            *why = "向きが整合しない";
-            return false;
-        }
-        if (t.edges_excess != 0) {
-            *why = "辺の次数が 2 でない（頂点接触なら面の過不足は無いはず）";
-            return false;
-        }
-        if (t.vertex_manifold) {
-            *why = "頂点多様体が通っている（除外が不要）";
-            return false;
-        }
-        return true;
+    if (t.max_edge_degree > 4) {
+        *why = "辺の次数の最大が " + std::to_string(t.max_edge_degree) +
+               "（5 以上は接触では説明できない異常）";
+        return false;
     }
-    if (e == Exclusion::EdgeContact) {
-        // **`oriented` は使えません。** 次数 2 を前提にした検査なので、辺に 4 枚の面が
-        // 接すると向きが正しくても必ず false になります。次数 2 の辺に限った検査と、
-        // 接触辺で両向きの本数が釣り合っていることを見ます。
-        if (!t.oriented_on_manifold_edges) {
-            *why = "次数 2 の辺で向きが整合しない";
-            return false;
-        }
-        if (!t.excess_edges_balanced) {
-            *why = "接触辺で両向きの本数が釣り合わない";
-            return false;
-        }
-        if (t.edges_excess == 0) {
-            *why = "次数 3 以上の辺が無い（除外が不要）";
-            return false;
-        }
-        if (t.max_edge_degree != 4) {
-            *why = "接触辺の次数が 4 でない（2 つの立体の辺接触なら 4 のはず）";
-            return false;
-        }
-        // **頂点多様体は落ちます。** 接触辺の上の頂点では 4 枚の面が出会うので、
-        // リンクが単純閉路の直和になりません。要求すべきなのは
-        // 「非多様体な頂点がすべて接触辺の上にあること」です。
-        if (t.nonmanifold_vertices_off_excess != 0) {
-            *why = "接触辺から離れた場所に非多様体な頂点がある";
-            return false;
-        }
-        return true;
+    if (!t.oriented) {
+        *why = "向きが整合しない（各辺で #(u,v) = #(v,u) が崩れている）";
+        return false;
     }
-    *why = "除外していない";
-    return false;
+    if (t.nonmanifold_vertices_unexplained != 0) {
+        *why = "接触で説明できない非多様体頂点がある";
+        return false;
+    }
+    // **除外が実際に必要であることも確かめます。** 通っているのに除外していたら、
+    // 除外表のほうが古くなっています。
+    if (t.edge_manifold && t.vertex_manifold) {
+        *why = "多様体検査が通っている（除外が不要）";
+        return false;
+    }
+    return true;
 }
 
 /// 期待する連結成分数と種数。分からないケースは `known = false`。
