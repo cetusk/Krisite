@@ -102,9 +102,9 @@ inline Aabb triangle_aabb(const geom::IPoint& a, const geom::IPoint& b,
 
 /// 三角形をセルに割り当てるか。
 ///
-/// **判定は閉領域で行います**（SPEC-phase1 §4.2）。開領域にすると、共有面上で
-/// 接するだけの三角形が片側のセルから漏れ、反対側では別の平面3つ組から頂点が
-/// 生まれて第1段が取りこぼします。§10.5 の変異 2 がこれを突きます。
+/// **判定は半開区間 `[lo, hi)` で行います**（SPEC-phase2 §3.4。`adaptive.hpp` に導出）。
+/// 開領域にすると、境界に載る三角形が**両側から落ちます**。§10.5 の変異 2 がそれを突きます。
+/// 半開はそれとは別で、**境界平面に完全に乗る面を上側のセルだけに入れる**規則です。
 ///
 /// **保守的な判定です。** 三角形の AABB とセルの閉領域が重なるかだけを見るので、
 /// 実際には交わらない三角形も割り当てられます。ただし**取りこぼしはしません**
@@ -114,8 +114,8 @@ inline bool assign_to_cell(const Aabb& tri, const UniformGrid& g, const CellInde
     const std::int64_t clo[3] = {g.lo(c.i), g.lo(c.j), g.lo(c.k)};
     const std::int64_t chi[3] = {g.hi(c.i), g.hi(c.j), g.hi(c.k)};
     for (int t = 0; t < 3; ++t) {
-        if (tri.hi[t] < clo[t]) return false;  // 閉領域なので等号は交差とみなす
-        if (tri.lo[t] > chi[t]) return false;
+        if (tri.hi[t] < clo[t]) return false;
+        if (tri.lo[t] >= chi[t]) return false;  // 半開区間 [lo, hi)（SPEC-phase2 §3.4）
     }
     return true;
 }

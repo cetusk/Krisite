@@ -130,6 +130,23 @@ inline ExpectedTopo expected_topo(const std::string& id, krisite::csg::BoolOp op
         if (op == BoolOp::Difference) return {true, false, 1, 0};
         return {};
     }
+    // SPEC-phase2 §8 の追加ケース。**導けるものは書きます**（§10.3 の但し書きと同じ規律）。
+    //
+    // 13 / 15: B の各部品が A の面をまたぐので、∪ は A に「こぶ」が付いた球、
+    //          ∩ は部品の内側だけが残って部品数ぶんの成分、A∖B は A に「くぼみ」。
+    //          くぼみは空洞ではないので成分は増えません。
+    if (id == "13" || id == "15") {
+        const std::size_t parts = (id == "13") ? 4 : 2;
+        if (op == BoolOp::Union) return {true, false, 1, 0};
+        if (op == BoolOp::Intersection) return {true, false, parts, 0};
+        return {true, false, 1, 0};
+    }
+    // 14: 離れているのでケース D と同じ形
+    if (id == "14") {
+        if (op == BoolOp::Union) return {true, false, 2, 0};
+        if (op == BoolOp::Intersection) return {true, true, 0, 0};
+        return {true, false, 1, 0};
+    }
     // 交わらない 2 立方体
     if (id == "D") {
         if (op == BoolOp::Union) return {true, false, 2, 0};

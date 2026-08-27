@@ -29,6 +29,14 @@ krisite_add_test(fragment      csg/test_fragment.cpp)
 krisite_add_test(cp1           csg/test_cp1.cpp)
 # SPEC-phase2 §9.1 / CP1。絞り込みの有無を同一プロセスで比較する
 krisite_add_test(split_strategy csg/test_split_strategy.cpp)
+# SPEC-phase2 §2.4.4 (3) の【正の対照】。負の対照（固定深度で挿入 0 件）は
+# split_strategy が持つ。**負の対照だけでは何もしないスタブが通る。**
+krisite_add_test(tjunction     csg/test_tjunction.cpp)
+# SPEC-phase2 §3 / §9.1 / CP2。固定深度（Phase 1 の挙動）を正解器に、適応分割と比較する
+krisite_add_test(adaptive      csg/test_adaptive.cpp)
+# SPEC-phase2 §3.2 / §3.3 / CP2。**early-out 無効側が正解器**。省いても答えが
+# 変わらないことを直接検査する
+krisite_add_test(early_out     csg/test_early_out.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
@@ -107,10 +115,15 @@ if(KRISITE_BUILD_MUTANTS)
             "（SPEC-phase1 §10.5）。")
     endif()
 
+    # 5 番目の引数に GMP を渡すと GMP をリンクする（体積検査の変異用）。
+    # **CI の変異ジョブは GMP OFF なので、そちらでは登録されません。**
     function(krisite_add_mutant tag define test expect)
         set(name "mut_${tag}_${test}")
         add_executable(${name} csg/test_${test}.cpp)
         target_link_libraries(${name} PRIVATE krisite krisite_test_util)
+        if("${ARGV4}" STREQUAL "GMP")
+            target_link_libraries(${name} PRIVATE krisite_gmp)
+        endif()
         target_compile_definitions(${name} PRIVATE ${define})
         add_test(NAME ${name} COMMAND ${name})
         set_tests_properties(${name} PROPERTIES TIMEOUT 3600 LABELS "mutation")
@@ -119,7 +132,14 @@ if(KRISITE_BUILD_MUTANTS)
         endif()
     endfunction()
 
+    # **主検出器も固定します**（SPEC-phase2 §9.3.1）。
+    #
+    # 「素通りする組合せを固定する」の自然な拡張です。**通ることだけでなく、どれが
+    # 捕まえているかを固定します。** 検出器が黙って移動したら、この表が落ちて可視化されます。
+    # 実際、案 D の導入で変異 3 / 4 の主検出器が位相検査から §9.1 に移動しました（§2.4.6）。
+
     # 変異 1: §5.3 の第2段（値ベースの併合）を無効化
+    #   **主検出器: 位相検査（cp25 / cp3）**
     #
     # **軸平行コーパスでは素通りします。** 値併合が 0 件（第1段が全頂点を捕まえる）
     # なので、第2段を消しても何も変わりません。斜面コーパスが必須です。
@@ -132,6 +152,7 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(1 KRISITE_MUTATION_NO_STAGE2=1 idempotence PASS)
 
     # 変異 2: §4.2 の割り当てを開領域に変える
+    #   **主検出器: 位相検査（cp2 / cp25 / cp3）**
     krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 cp2             FAIL)
     krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 cp25            FAIL)
     krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 cp3             FAIL)
@@ -139,31 +160,106 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(2 KRISITE_MUTATION_OPEN_CELLS=1 idempotence     PASS)
 
     # 変異 3: §4.3.1 の分割平面を割り当て集合に変える（T 字接合が生じる）
-    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp1             FAIL)
-    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp2            FAIL)
-    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp25           FAIL)
-    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp3             FAIL)
+    # 変異 4: §2.3 の絞り込みの基準を「三角形がセルに届くか」に戻す
+    #
+    #   **主検出器: split_strategy（§9.1 の分割戦略不変性）** ★ 位相検査から移動しました
+    #
+    # **案 D（T 頂点の解決）が、この 2 つが作る T 字接合を埋めてしまいます**（§2.4.6）。
+    # Phase 1 では位相検査が主検出器でしたが、いまは素通りします。
+    #
+    # **原因は「T 解決が覆い隠している」ことで確定しています**（§9.3.2 の一度きりの診断）。
+    # 変異 10（T 解決の無効化）と組み合わせると cp3 が 218/2085 件で落ちます。
+    # **コーパスは突く能力を保持しています。**
+    #
+    # **`adaptive` も素通りします。** §9.1 を $(C,\chi)$ で比べる側は、
+    # 「同じ立体が別の三角形分割で出る」ことを許すためです。**検出するのは
+    # $(V,E,F)$ の完全一致を要求する `split_strategy` の側だけです。**
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 split_strategy  FAIL)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 depth_monotonic FAIL)
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 adaptive        PASS)
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp1             PASS)
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp2             PASS)
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp25            PASS)
+    krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp3             PASS)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 idempotence     PASS)
 
-    # ---- Phase 2 ------------------------------------------------------------
-    #
-    # 変異 4: §2.3 の絞り込みの**基準**を「平面がセルを横切るか」から
-    #         「三角形がセルに届くか」に戻す（SPEC-phase2 §9.3）。
-    #
-    # Phase 1 の変異 3 と同型ですが、あちらは大域集合を割り当て集合に**置き換える**
-    # もので、こちらは絞り込みの**判定基準**を差し替えます。plane(T) は無限に延びる
-    # ので、T が届かないセルにも切断点を生みます。
-    #
-    # **split_strategy が最も鋭い検出器です**（118 件）。絞り込み無効の側を
-    # 正解器として直接突き合わせるためです。
     krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 split_strategy  FAIL)
-    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp1             FAIL)
-    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp2             FAIL)
-    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp25            FAIL)
-    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp3             FAIL)
     krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 depth_monotonic FAIL)
-    # **冪等性は変異 4 も検出しません。** 比較の両側に同じ変異がかかるので差が出ない、
-    # という Phase 1 と同じ構造的な盲点です。**素通りを固定して記録します。**
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 adaptive        PASS)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp1             PASS)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp2             PASS)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp25            PASS)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp3             PASS)
     krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 idempotence     PASS)
+
+    # 変異 6: §3.2 の early-out の判定を緩め、**相手が居るセルでも省く**。
+    #   **主検出器: early_out（early-out 有無の比較）**
+    #
+    # **検出器は 2 つあり、役割が違います**（SPEC-phase1 §10.2 の但し書き）。
+    #
+    #   early_out   … 位相。省いたことで答えが変わっていないか（268 件）
+    #   volume_gmp  … **体積。断片の選択の誤り**（35 件）。位相は「割れているか」しか見ない
+    #
+    # **early_out 無効のテストは素通りします。** 変異が発火しないので当然です。
+    krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 early_out       FAIL)
+    krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 adaptive        PASS)
+    krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 cp3             PASS)
+    krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 depth_monotonic PASS)
+    if(KRISITE_GMP_FOUND)
+        krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 volume_gmp FAIL GMP)
+    endif()
+
+    # 変異 10: §2.4.3 の T 頂点解決を無効化する（SPEC-phase2 §9.3）。
+    #   **主検出器: 位相検査（adaptive。辺の次数 1）**
+    #
+    # **T 解決は継ぎ目の正しさの単一障害点です。** 検出の経路は 3 つあり、
+    # **測っているものが違います。**
+    #
+    #   adaptive       … 位相で検出（186 件）。**T 字接合がそのまま残る**
+    #   tjunction      … 正の対照。幾何で検出（効くべき場所で効かない）
+    #   split_strategy … 負の対照の【非空虚の番人】。計数で検出（索引が候補を返さない）
+    #
+    # **固定深度のコーパス（cp3 / depth_monotonic）は素通りします。** 固定深度では
+    # T 解決がそもそも no-op なので、無効化しても出力が変わりません。
+    krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1 adaptive        FAIL)
+    krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1 tjunction       FAIL)
+    krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1 split_strategy  FAIL)
+    krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1 cp3             PASS)
+    krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1 depth_monotonic PASS)
+
+    # 変異 11: T 頂点を 1 本の辺に 1 個しか入れない（一括でなく）。
+    #   **主検出器: 位相検査（adaptive。辺の次数 1）**
+    #
+    # **1 本の辺に T 頂点が 2 個以上載る配置でしか検出できません**（§8 のケース 13 の要件）。
+    # 適応分割でケース 13 がその配置を作るので、位相で検出されます（35 件）。
+    # **固定深度は T 頂点が 0 個なので構造的に素通りします。**
+    krisite_add_mutant(11 KRISITE_MUTATION_TJUNCTION_ONE_AT_A_TIME=1 adaptive       FAIL)
+    krisite_add_mutant(11 KRISITE_MUTATION_TJUNCTION_ONE_AT_A_TIME=1 tjunction      FAIL)
+    krisite_add_mutant(11 KRISITE_MUTATION_TJUNCTION_ONE_AT_A_TIME=1 split_strategy PASS)
+    krisite_add_mutant(11 KRISITE_MUTATION_TJUNCTION_ONE_AT_A_TIME=1 cp3            PASS)
+
+    # 変異 12: §3.4 の割り当てを閉領域に戻す。
+    #   **主検出器: 位相検査（adaptive。C の破裂）**
+    #
+    # **適応分割 × 面がセル境界に乗るケースでしか検出できません。** 粗い側の 1 枚と
+    # 細かい側の 4 枚が入れ子になり、併合されずに同じ面積が二重に出力されて C が破裂します。
+    # **固定深度は素通りします**（両側の断片が一致して `region_key` が併合するため）。
+    #
+    # `depth_monotonic` は別経路で捕まえます。規律違反の配置で**生の断片数が増える**ように
+    # なるためで、§3.4 の「重複が生じなくなった」ことの裏返しです。
+    krisite_add_mutant(12 KRISITE_MUTATION_CLOSED_CELLS=1 adaptive        FAIL)
+    krisite_add_mutant(12 KRISITE_MUTATION_CLOSED_CELLS=1 depth_monotonic FAIL)
+    krisite_add_mutant(12 KRISITE_MUTATION_CLOSED_CELLS=1 split_strategy  PASS)
+    krisite_add_mutant(12 KRISITE_MUTATION_CLOSED_CELLS=1 cp3             PASS)
+
+    # 変異 13: 退化三角形を「作らない」のではなく「捨てる」（§2.4.4 (2)）。
+    #   **主検出器: 位相検査（adaptive。辺の次数 1）**
+    #
+    # **捨てると境界辺がメッシュから消え、次数 1 の辺が残ります。**
+    # **面積は保たれるので体積検査（volume_gmp）では捕まりません。** 位相でしか出ません。
+    # 固定深度は T 頂点が 0 個なので素通りします。
+    krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 adaptive        FAIL)
+    krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 tjunction       FAIL)
+    krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 split_strategy  PASS)
+    krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 cp3             PASS)
 endif()
