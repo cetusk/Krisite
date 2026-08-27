@@ -147,7 +147,7 @@ constexpr fixed_int<M> widen(const fixed_int<N>& x) noexcept {
 /// 幅を狭める（M <= N）。切り捨てられる上位が符号拡張ぶんであることを検査する。
 ///
 /// SPEC §3 のビット幅解析が正しければ必ず成功する。ここで停止したということは
-/// 実測が理論上界を超えたということであり、CLAUDE.md の「即座に報告」対象。
+/// 実測が理論上界を超えたということであり、**設計の誤りです。即座に報告してください。**
 template <std::size_t M, std::size_t N>
 inline fixed_int<M> narrow(const fixed_int<N>& x) noexcept {
     static_assert(M <= N, "narrow は幅を広げられない。widen を使うこと");

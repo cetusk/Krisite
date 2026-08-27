@@ -11,7 +11,7 @@
 // **出力の体積は GMP が要ります。** 構成点は有理数で、共通分母が三角形数に比例して
 // 伸びるためです（`widths.hpp` bits::kInputVolume6 の注記）。入力側は整数座標なので
 // `mesh::signed_volume6` で厳密に出ます。**両者が一致することも検査します**
-// （別経路どうしの突き合わせ。CLAUDE.md「正解器は被検体と別経路で書く」）。
+// （別経路どうしの突き合わせ。`docs/ROADMAP.md`「正解器は被検体と別経路で書く」）。
 //
 // GMP は LGPL。テスト専用（`KRISITE_BUILD_TESTS_WITH_GMP=ON` のときだけビルドされる）。
 #include <cstdio>

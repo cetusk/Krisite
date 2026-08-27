@@ -5,7 +5,7 @@ cmake_minimum_required(VERSION 3.20)
 project(Krisite VERSION 0.0.1 LANGUAGES CXX
         DESCRIPTION "Exact, plane-based geometry for point clouds and meshes")
 
-# ---- オプション（CLAUDE.md「CMake オプション」の表）--------------------------
+# ---- オプション（README.md「CMake オプション」の表）--------------------------
 
 set(KRISITE_COORD_BITS 21 CACHE STRING "入力座標のビット幅 b")
 option(KRISITE_BUILD_TESTS "テストのビルド" ON)
@@ -46,7 +46,7 @@ endif()
 
 # ---- GMP（テスト専用。ライブラリ本体には絶対にリンクしない）------------------
 #
-# CLAUDE.md ライセンス方針 / SPEC §8.1:
+# ライセンス方針（THIRD_PARTY_LICENSES.md）/ SPEC §8.1:
 #   GMP は LGPL。テストコードからのみ参照し、配布物には含めない。
 
 set(KRISITE_GMP_FOUND OFF)
@@ -70,7 +70,7 @@ endif()
 
 # ---- Manifold（テスト専用の正解器。ライブラリ本体には絶対にリンクしない）-----
 #
-#   SPEC-phase1 §10.4 / CLAUDE.md「条件付きで許可」
+#   SPEC-phase1 §10.4 / THIRD_PARTY_LICENSES.md「Manifold」
 #   Manifold は Apache-2.0。**テストの正解器としてのみ**使い、本体から呼ばない。
 #
 #   vendoring しない（自前コードとの境界を曖昧にしないため）。
@@ -98,14 +98,14 @@ if(KRISITE_BUILD_TESTS AND KRISITE_BUILD_TESTS_WITH_MANIFOLD)
     FetchContent_MakeAvailable(manifold)
     set(KRISITE_MANIFOLD_FOUND ON)
     # ライセンスの根拠を機械的に固定する。README ではなく LICENSE を読むこと
-    # （CLAUDE.md「LICENSE ファイルを実際に読んで確認したもの」）。
+    # （根拠は THIRD_PARTY_LICENSES.md）。
     if(EXISTS "${manifold_SOURCE_DIR}/LICENSE")
         file(READ "${manifold_SOURCE_DIR}/LICENSE" _kri_manifold_license)
         string(FIND "${_kri_manifold_license}" "Apache License" _kri_apache)
         if(_kri_apache EQUAL -1)
             message(FATAL_ERROR
                 "Manifold の LICENSE が Apache License ではありません。"
-                " CLAUDE.md のライセンス方針に反するので停止します。")
+                " 本プロジェクトのライセンス方針に反するので停止します。")
         endif()
         message(STATUS "Krisite: Manifold の LICENSE を確認 (Apache License)")
     else()
