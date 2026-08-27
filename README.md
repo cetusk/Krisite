@@ -1,5 +1,3 @@
-# Krisite — exact, plane-based geometry for point clouds and meshes
-
 *[English version here](README.en.md)*
 
 <p align="center">
@@ -11,12 +9,13 @@
   </picture>
 </p>
 
----
+
+# Krisite: Exact, plane-based geometry for point clouds and meshes
 
 `Krisite` は 3D データを扱う C++20 ヘッダオンリーライブラリです。
 最終目標は点群圧縮・メッシュ化・厳密ブール演算の統合です。
-**Phase 0（算術基盤）と Phase 1（出力抽出の最小検証）の完了条件を満たしました。**
-現在地は [`docs/ROADMAP.md`](docs/ROADMAP.md)。
+**Phase 0（算術基盤）と Phase 1（出力抽出の最小検証）は完了し、Phase 1 の判断は「続行」です。**
+現在は **Phase 2（適応分割と構成点の保持）** を進めています。現在地は [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ## いま提供しているもの
 
@@ -152,11 +151,13 @@ CI は他に次のジョブを回します。
 | ファイル | 内容 |
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **現在地とフェーズの全体像。まずここを読む** |
+| [`docs/SPEC-phase2.md`](docs/SPEC-phase2.md) | Phase 2 の仕様。分割平面の絞り込み、適応分割、非多様体出力の意味論 |
+| [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) | Phase 2 の実装ノート（**CP1 到達時点**）。判断と根拠、開発環境のつまずき |
 | [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 の仕様。縫合の可否判定、テストコーパス、中止条件 |
 | [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) | Phase 1 の実装ノート（**CP3 到達時点**）。判断と根拠、**つまずいた点と訂正** |
 | [`docs/SPEC-phase0.md`](docs/SPEC-phase0.md) | Phase 0 の仕様。ビット幅解析、述語一覧、テスト要件 |
 | [`docs/IMPL-phase0.md`](docs/IMPL-phase0.md) | Phase 0 の実装ノート。**なぜそう作ったか**、検証の設計と検出力、Phase 1 への申し送り |
-| [`docs/BENCH.md`](docs/BENCH.md) | ベンチマークの基準線と、Phase 1 の計数（ケース別・深度別） |
+| [`docs/BENCH.md`](docs/BENCH.md) | ベンチマークの基準線と、Phase 1 / Phase 2 の計数 |
 | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | 第三者コンポーネントの扱いと、それを機構で保証する仕組み |
 | [`docs/STYLE.md`](docs/STYLE.md) | コーディング規約（命名、書式、算術コードの制約） |
 | [`assets/BRAND.md`](assets/BRAND.md) | ロゴとテーマカラーの定義 |
@@ -178,15 +179,15 @@ Manifold（Apache-2.0）は**テストの正解器としてのみ**使い、既�
 |---|---|---|
 | 0 | 固定幅厳密整数 + 平面ベース述語 | 完了（2026-08-26） |
 | **1** | **出力抽出の最小検証**（固定深度分割、単スレッド） | **完了条件を充足（2026-08-27）** |
-| 2 | 適応的再帰分割 + early-out 判定 | 未着手 |
+| **2** | **適応分割・構成点の保持・意味論の確定** | **進行中（CP1 通過）** |
 | 3 | work-stealing 並列化、継ぎ目の整合性検証 | 未着手 |
 | 4 | Thingi10K 全件検証 | 未着手 |
 | 5+ | 点群コーデック、GWN、メッシュ化 | 未着手 |
 
-**Phase 1 は分岐点です。** この方式を続けるか断念するかをここで決めます。
-断念した場合は `csg/` を Manifold のラッパとして実装し、Phase 2〜4 を飛ばして
-Phase 5 系へ進みます。詳細は [`docs/ROADMAP.md`](docs/ROADMAP.md) と
-[`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) §11。
+**Phase 1 は分岐点でした。判断は「続行」です。** 中止条件（`SPEC-phase1.md` §11）は
+いずれにも該当せず、とくに最も危険だった「ビット幅の上界が定まらない機構が必要になる」に
+最も余裕がありました。**固定幅整数という前提が最後まで崩れなかったこと**が根拠です。
+詳細は [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ### Phase 1 で得られた数値
 
