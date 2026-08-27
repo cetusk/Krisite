@@ -16,7 +16,8 @@
 `Krisite` is a header-only C++20 library for 3D data. The long-term goal is to unify
 point-cloud compression, meshing, and exact boolean operations.
 **Phase 0 (the arithmetic foundation) and Phase 1 (minimal validation of output
-extraction) have both met their completion criteria.**
+extraction) are complete, and the Phase 1 verdict is: continue.** Work is now on
+**Phase 2 (adaptive subdivision and constructed-point reuse)**.
 [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single source of truth for where the
 project stands (Japanese).
 
@@ -166,11 +167,13 @@ The design documents are written in Japanese.
 | File | Contents |
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **Where the project stands. Start here** |
+| [`docs/SPEC-phase2.md`](docs/SPEC-phase2.md) | Phase 2 spec: split-plane culling, adaptive subdivision, non-manifold output semantics |
+| [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) | Phase 2 implementation notes (**as of CP1**). Decisions, rationale, dev-environment pitfalls |
 | [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 spec: the stitching question, test corpus, abort conditions |
 | [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) | Phase 1 implementation notes. Decisions, rationale, **and the mistakes that were corrected** |
 | [`docs/SPEC-phase0.md`](docs/SPEC-phase0.md) | Phase 0 spec: bit-width analysis, predicates, test requirements |
 | [`docs/IMPL-phase0.md`](docs/IMPL-phase0.md) | Phase 0 implementation notes. **Why it is built this way**, and how the tests were designed to have detection power |
-| [`docs/BENCH.md`](docs/BENCH.md) | Benchmark baseline and the Phase 1 measurements (per case, per depth) |
+| [`docs/BENCH.md`](docs/BENCH.md) | Benchmark baseline and the Phase 1 / Phase 2 measurements |
 | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | Third-party components and the mechanisms that keep them out of the distributable |
 | [`docs/STYLE.md`](docs/STYLE.md) | Coding conventions |
 | [`assets/BRAND.md`](assets/BRAND.md) | Logo and theme colours |
@@ -193,15 +196,16 @@ build time rather than in prose.
 |---|---|---|
 | 0 | Fixed-width exact integers + plane-based predicates | Complete (2026-08-26) |
 | **1** | **Minimal validation of output extraction** (fixed-depth subdivision, single-threaded) | **Criteria met (2026-08-27)** |
-| 2 | Adaptive recursive subdivision + early-out | Not started |
+| **2** | **Adaptive subdivision, constructed-point reuse, output semantics** | **In progress (CP1 passed)** |
 | 3 | Work-stealing parallelism, seam consistency | Not started |
 | 4 | Thingi10K full-corpus validation | Not started |
 | 5+ | Point-cloud codec, GWN, meshing | Not started |
 
-**Phase 1 is the decision point.** Whether to continue with this approach is
-decided here. If it is abandoned, `csg/` becomes a wrapper around Manifold and the
-project skips Phases 2–4 to go straight to the Phase 5 line. See
-[`docs/ROADMAP.md`](docs/ROADMAP.md) and [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) §11.
+**Phase 1 was the decision point, and the verdict is: continue.** None of the abort
+conditions (`SPEC-phase1.md` §11) were met. The most dangerous one — *needing a
+mechanism whose bit-width bound cannot be derived* — had the widest margin of all.
+**The fixed-width-integer premise held all the way through**, and that is the reason
+to keep going. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ### What Phase 1 measured
 

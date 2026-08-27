@@ -21,11 +21,14 @@ krisite_add_test(bitwidth       arith/test_bitwidth.cpp)
 krisite_add_test(predicates     geom/test_predicates.cpp)
 krisite_add_test(degenerate     geom/test_degenerate.cpp)
 krisite_add_test(plane_order    geom/test_plane_order.cpp)
+krisite_add_test(plane_box      geom/test_plane_box.cpp)
 krisite_add_test(topology      mesh/test_topology.cpp)
 krisite_add_test(uniform_grid  octree/test_uniform_grid.cpp)
 krisite_add_test(faces         csg/test_faces.cpp)
 krisite_add_test(fragment      csg/test_fragment.cpp)
 krisite_add_test(cp1           csg/test_cp1.cpp)
+# SPEC-phase2 §9.1 / CP1。絞り込みの有無を同一プロセスで比較する
+krisite_add_test(split_strategy csg/test_split_strategy.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
@@ -50,6 +53,10 @@ if(KRISITE_GMP_FOUND)
     krisite_add_test(plane_order_gmp geom/test_plane_order_gmp.cpp 300000)
     target_link_libraries(plane_order_gmp PRIVATE krisite_gmp)
 
+    # SPEC-phase2 §2.3 / §7。正解器は 8 隅すべてを mpz で評価する別経路
+    krisite_add_test(plane_box_gmp  geom/test_plane_box_gmp.cpp 200000)
+    target_link_libraries(plane_box_gmp PRIVATE krisite_gmp)
+
     # §10.3 体積の恒等式。出力の頂点は有理数なので GMP が要る
     krisite_add_test(volume_gmp     csg/test_volume_gmp.cpp)
     target_link_libraries(volume_gmp PRIVATE krisite_gmp)
@@ -58,6 +65,7 @@ if(KRISITE_GMP_FOUND)
     add_test(NAME fixed_int_gmp_quick COMMAND fixed_int_gmp 40000)
     add_test(NAME predicates_gmp_quick COMMAND predicates_gmp 5000)
     add_test(NAME plane_order_gmp_quick COMMAND plane_order_gmp 3000)
+    add_test(NAME plane_box_gmp_quick COMMAND plane_box_gmp 3000)
 endif()
 
 # ---- Manifold 正解器（Apache-2.0、テスト専用）--------------------------------
@@ -137,4 +145,25 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 cp3             FAIL)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 depth_monotonic FAIL)
     krisite_add_mutant(3 KRISITE_MUTATION_LOCAL_PLANES=1 idempotence     PASS)
+
+    # ---- Phase 2 ------------------------------------------------------------
+    #
+    # 変異 4: §2.3 の絞り込みの**基準**を「平面がセルを横切るか」から
+    #         「三角形がセルに届くか」に戻す（SPEC-phase2 §9.3）。
+    #
+    # Phase 1 の変異 3 と同型ですが、あちらは大域集合を割り当て集合に**置き換える**
+    # もので、こちらは絞り込みの**判定基準**を差し替えます。plane(T) は無限に延びる
+    # ので、T が届かないセルにも切断点を生みます。
+    #
+    # **split_strategy が最も鋭い検出器です**（118 件）。絞り込み無効の側を
+    # 正解器として直接突き合わせるためです。
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 split_strategy  FAIL)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp1             FAIL)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp2             FAIL)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp25            FAIL)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp3             FAIL)
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 depth_monotonic FAIL)
+    # **冪等性は変異 4 も検出しません。** 比較の両側に同じ変異がかかるので差が出ない、
+    # という Phase 1 と同じ構造的な盲点です。**素通りを固定して記録します。**
+    krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 idempotence     PASS)
 endif()
