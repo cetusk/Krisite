@@ -116,6 +116,12 @@ struct BoolStats {
     unsigned leaf_depth_min = 0;
     unsigned leaf_depth_max = 0;
 
+    /// §3.2 の early-out。
+    std::size_t early_out_cells = 0;      ///< 相手が居ないので arrangement を省いたセル
+    std::size_t empty_cells = 0;          ///< どちらも居ないので丸ごと飛ばしたセル
+    std::size_t early_out_fragments = 0;  ///< そのセルで作った断片（分類を省いた数）
+    std::size_t early_out_raycasts = 0;   ///< セルの隅（**整数点**）1 つで済ませた判定
+
     /// §2.4.3 の T 頂点の解決（SPEC-phase2）。
     ///
     /// **固定深度では `t_inserted` が 0 でなければなりません**（§2.4.4 (3) の負の対照）。
@@ -215,6 +221,11 @@ struct BoolOptions {
     bool adaptive = false;
     /// 分割を打ち切る三角形数の閾値（§3.1）。0 なら閾値では打ち切らない
     std::size_t leaf_threshold = 0;
+    /// **early-out**（§3.2）。相手の三角形が 1 つも無いセルで arrangement と分類を省く。
+    ///
+    /// **無効側が正解器です。** 有効・無効を同一プロセス内で比較すれば、省いたことで
+    /// 答えが変わっていないことが直接検査できます（§0.1 と同じ構図）。
+    bool early_out = false;
 };
 
 /// ブール演算。`depth` は八分木の深度（実行時パラメータ。SPEC-phase1 §2.2）。
@@ -267,6 +278,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     std::vector<Fragment> frags;
     // §5.4: 併合の局所性を測るため、断片がどのセルで生まれたかを覚えておく
     std::vector<octree::Cell> frag_cell;
+    /// §3.2 の early-out で分類が確定している断片（-1 = 未確定）。
+    std::vector<std::int8_t> frag_forced;
 
     // 面の AABB は分割判定でも割り当てでも使うので、先に作っておく
     std::vector<octree::Aabb> aabb_a(faces_a.size()), aabb_b(faces_b.size());
@@ -298,6 +311,56 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
             for (const octree::Cell& cell : leaves) {
                 const octree::CellBox cbox = octree::box_of(cell);
                 const std::size_t frags_before = frags.size();
+
+                // §3.2 の early-out。**相手が居ないセルは arrangement を計算しません。**
+                //
+                // $C$ が $B$ の三角形を 1 つも含まないなら、$C$ 全体が $B$ の内側か外側かの
+                // **どちらか一方**です。セルの隅 1 つで判定して、そのセルの $A$ の断片
+                // すべてに同じ分類を与えれば済みます。
+                //
+                // **判定点は `lo` 隅（整数点）です。** `side(plane, IPoint)` は 2.35 ns、
+                // `side(plane, HPoint)` は 7.80 ns（`BENCH.md`）。構成点を一切作りません。
+                // `hi` 隅は `+2^(b-1)` になり得て `IPoint` に入りませんが、`lo` 隅は
+                // 必ず範囲内です（`lo <= kCoordMax + 1 - セル幅`）。
+                //
+                // **`lo` 隅が $\partial B$ の上に無いことは、割り当てが保証します。**
+                // $\partial B$ が隅を含むなら、その面の AABB は隅を含むので割り当てられ、
+                // $n_B > 0$ になります。したがって `point_inside` の契約は満たされます。
+                std::size_t na = 0, nb = 0;
+                for (const octree::Aabb& r : aabb_a) {
+                    if (octree::assign_to_cell(r, cbox)) ++na;
+                }
+                for (const octree::Aabb& r : aabb_b) {
+                    if (octree::assign_to_cell(r, cbox)) ++nb;
+                }
+                // -1 = 分類を省かない、0 = 相手の外、1 = 相手の内
+                int forced[2] = {-1, -1};
+                if (opt.early_out) {
+#if defined(KRISITE_MUTATION_LOOSE_EARLY_OUT)
+                    // SPEC-phase2 §9.3 の変異 6: 判定を緩め、**相手が居るセルでも省く。**
+                    // 相手の境界がセルを横切っているので、隅 1 点の判定は断片ごとの正しい
+                    // 分類と一致しません。**分類の誤りとして位相・体積に出るはずです。**
+                    const bool skip_a = true, skip_b = true;
+#else
+                    const bool skip_a = (nb == 0), skip_b = (na == 0);
+#endif
+                    if (na == 0 && nb == 0) {
+                        ++st.empty_cells;
+                        continue;  // どちらも居ないセルは出力に寄与しません
+                    }
+                    const geom::IPoint corner{static_cast<std::int32_t>(cbox.lo[0]),
+                                              static_cast<std::int32_t>(cbox.lo[1]),
+                                              static_cast<std::int32_t>(cbox.lo[2])};
+                    if (na > 0 && skip_a) {
+                        forced[0] = point_inside(B, corner) ? 1 : 0;
+                        ++st.early_out_raycasts;
+                    }
+                    if (nb > 0 && skip_b) {
+                        forced[1] = point_inside(A, corner) ? 1 : 0;
+                        ++st.early_out_raycasts;
+                    }
+                    if (forced[0] >= 0 || forced[1] >= 0) ++st.early_out_cells;
+                }
                 // セル面の平面 ID（保持側つき）: lo 面は +、hi 面は -
                 struct CellPlane {
                     PlaneId id;
@@ -410,9 +473,13 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                         }
                         if (!alive) continue;
 
-                        // 【両メッシュの全平面】で分割（§4.3.1）
+                        // 【両メッシュの全平面】で分割（§4.3.1）。
+                        //
+                        // **early-out したセルでは分割しません**（§3.2「arrangement を
+                        // 計算しない」）。継ぎ目は §2.4.3 の T 解決が埋めます。
                         std::vector<Fragment> pieces{frag};
-                        for (PlaneId q : split_planes) {
+                        const std::vector<PlaneId> no_split;
+                        for (PlaneId q : (forced[which] >= 0) ? no_split : split_planes) {
                             std::vector<Fragment> next;
                             next.reserve(pieces.size());
                             for (const Fragment& p : pieces) {
@@ -429,6 +496,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                         for (Fragment& p : pieces) {
                             frags.push_back(std::move(p));
                             frag_cell.push_back(cell);
+                            frag_forced.push_back(static_cast<std::int8_t>(forced[which]));
+                            if (forced[which] >= 0) ++st.early_out_fragments;
                         }
                     }
                 }
@@ -558,9 +627,9 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         groups[detail::region_key(frags[fi].support, polys[fi])][frags[fi].owner].push_back(fi);
     }
 
-    std::vector<std::size_t> reps;  // 代表となる断片の添字
-    std::vector<FragClass> forced;  // 共平面重複で確定した分類
-    std::vector<char> is_coplanar;  // forced が有効か（偽なら手順 6 で決める）
+    std::vector<std::size_t> reps;        // 代表となる断片の添字
+    std::vector<FragClass> forced_class;  // 共平面重複で確定した分類
+    std::vector<char> is_coplanar;        // forced が有効か（偽なら手順 6 で決める）
     reps.reserve(groups.size() * 2);
     for (const auto& kv : groups) {
         const auto& by_owner = kv.second;
@@ -582,7 +651,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
             if (by_owner[o].empty()) continue;
             st.duplicate_fragments += by_owner[o].size() - 1;
             reps.push_back(by_owner[o].front());
-            forced.push_back(cls);
+            forced_class.push_back(cls);
             is_coplanar.push_back(both ? 1 : 0);
         }
     }
@@ -607,8 +676,12 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
 
     for (std::size_t ri = 0; ri < reps.size(); ++ri) {
         const Fragment& f = frags[reps[ri]];
-        FragClass cls = forced[ri];
-        if (!is_coplanar[ri]) {
+        FragClass cls = forced_class[ri];
+        // §3.2: early-out したセルの断片は、セルの隅 1 点の判定をそのまま使います。
+        // **符号ベクトルもレイキャストも作りません。**
+        if (!is_coplanar[ri] && frag_forced[reps[ri]] >= 0) {
+            cls = (frag_forced[reps[ri]] == 1) ? FragClass::Inside : FragClass::Outside;
+        } else if (!is_coplanar[ri]) {
             const std::vector<PlaneId>& qs = planes_of[f.owner];
             std::vector<std::int8_t> sig(qs.size());
             for (std::size_t k = 0; k < qs.size(); ++k) {

@@ -157,11 +157,20 @@ void check_case(const kritest::Case& c) {
                     to_str(vb).c_str(), to_str(want_i).c_str());
     }
 
-    for (unsigned d = 0; d <= 3; ++d) {
+    // 深度 0〜3 は固定深度、**4 番目は適応分割 + early-out**（SPEC-phase2 §3）。
+    //
+    // **体積は「断片の選択の誤り」を捕まえます**（SPEC-phase1 §10.2 の但し書き）。
+    // early-out はセルの隅 1 点で分類を決めるので、**誤ればここに出ます。**
+    // 位相検査は「割れているか」しか見ないので、この 2 つは役割が違います。
+    for (unsigned d = 0; d <= 4; ++d) {
         BoolStats st;
-        const BoolMesh u = boolean_op(A, B, BoolOp::Union, d, &st);
-        const BoolMesh i = boolean_op(A, B, BoolOp::Intersection, d, &st);
-        const BoolMesh df = boolean_op(A, B, BoolOp::Difference, d, &st);
+        BoolOptions opt;
+        opt.depth = (d <= 3) ? d : 3;
+        opt.adaptive = (d == 4);
+        opt.early_out = (d == 4);
+        const BoolMesh u = boolean_op(A, B, BoolOp::Union, opt, &st);
+        const BoolMesh i = boolean_op(A, B, BoolOp::Intersection, opt, &st);
+        const BoolMesh df = boolean_op(A, B, BoolOp::Difference, opt, &st);
         bool_mesh_volume6(vu, u);
         bool_mesh_volume6(vi, i);
         bool_mesh_volume6(vd, df);
@@ -175,8 +184,9 @@ void check_case(const kritest::Case& c) {
         mpq_sub(rhs, va, vi);
         const bool ok2 = mpq_equal(vd, rhs) != 0;
 
-        std::printf("    深度%u  ∪+∩=A+B %s   A\\B=A-∩ %s", d, ok1 ? "OK" : "**NG**",
-                    ok2 ? "OK" : "**NG**");
+        std::printf("    %-8s ∪+∩=A+B %s   A\\B=A-∩ %s",
+                    (d <= 3) ? ("深度" + std::to_string(d)).c_str() : "適応+省略",
+                    ok1 ? "OK" : "**NG**", ok2 ? "OK" : "**NG**");
         if (!ok1 || !ok2) {
             std::printf("\n      |A|=%s |B|=%s |∪|=%s |∩|=%s |\\|=%s", to_str(va).c_str(),
                         to_str(vb).c_str(), to_str(vu).c_str(), to_str(vi).c_str(),

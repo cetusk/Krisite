@@ -34,6 +34,9 @@ krisite_add_test(split_strategy csg/test_split_strategy.cpp)
 krisite_add_test(tjunction     csg/test_tjunction.cpp)
 # SPEC-phase2 §3 / §9.1 / CP2。固定深度（Phase 1 の挙動）を正解器に、適応分割と比較する
 krisite_add_test(adaptive      csg/test_adaptive.cpp)
+# SPEC-phase2 §3.2 / §3.3 / CP2。**early-out 無効側が正解器**。省いても答えが
+# 変わらないことを直接検査する
+krisite_add_test(early_out     csg/test_early_out.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
@@ -112,10 +115,15 @@ if(KRISITE_BUILD_MUTANTS)
             "（SPEC-phase1 §10.5）。")
     endif()
 
+    # 5 番目の引数に GMP を渡すと GMP をリンクする（体積検査の変異用）。
+    # **CI の変異ジョブは GMP OFF なので、そちらでは登録されません。**
     function(krisite_add_mutant tag define test expect)
         set(name "mut_${tag}_${test}")
         add_executable(${name} csg/test_${test}.cpp)
         target_link_libraries(${name} PRIVATE krisite krisite_test_util)
+        if("${ARGV4}" STREQUAL "GMP")
+            target_link_libraries(${name} PRIVATE krisite_gmp)
+        endif()
         target_compile_definitions(${name} PRIVATE ${define})
         add_test(NAME ${name} COMMAND ${name})
         set_tests_properties(${name} PROPERTIES TIMEOUT 3600 LABELS "mutation")
@@ -183,6 +191,23 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp25            PASS)
     krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 cp3             PASS)
     krisite_add_mutant(4 KRISITE_MUTATION_REACHING_TRIANGLE=1 idempotence     PASS)
+
+    # 変異 6: §3.2 の early-out の判定を緩め、**相手が居るセルでも省く**。
+    #   **主検出器: early_out（early-out 有無の比較）**
+    #
+    # **検出器は 2 つあり、役割が違います**（SPEC-phase1 §10.2 の但し書き）。
+    #
+    #   early_out   … 位相。省いたことで答えが変わっていないか（268 件）
+    #   volume_gmp  … **体積。断片の選択の誤り**（35 件）。位相は「割れているか」しか見ない
+    #
+    # **early_out 無効のテストは素通りします。** 変異が発火しないので当然です。
+    krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 early_out       FAIL)
+    krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 adaptive        PASS)
+    krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 cp3             PASS)
+    krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 depth_monotonic PASS)
+    if(KRISITE_GMP_FOUND)
+        krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 volume_gmp FAIL GMP)
+    endif()
 
     # 変異 10: §2.4.3 の T 頂点解決を無効化する（SPEC-phase2 §9.3）。
     #   **主検出器: 位相検査（adaptive。辺の次数 1）**
