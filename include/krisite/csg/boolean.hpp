@@ -122,6 +122,12 @@ struct BoolStats {
     std::size_t early_out_fragments = 0;  ///< そのセルで作った断片（分類を省いた数）
     std::size_t early_out_raycasts = 0;   ///< セルの隅（**整数点**）1 つで済ませた判定
 
+    /// §4 の構成点キャッシュ（§4.4 の記録）。
+    std::size_t cache_hits = 0;
+    std::size_t cache_misses = 0;
+    std::size_t cache_entries = 0;
+    std::size_t cache_bytes = 0;
+
     /// §2.4.3 の T 頂点の解決（SPEC-phase2）。
     ///
     /// **固定深度では `t_inserted` が 0 でなければなりません**（§2.4.4 (3) の負の対照）。
@@ -221,6 +227,11 @@ struct BoolOptions {
     bool adaptive = false;
     /// 分割を打ち切る三角形数の閾値（§3.1）。0 なら閾値では打ち切らない
     std::size_t leaf_threshold = 0;
+    /// **構成点の保持**（§4）。平面3つ組をキーにメモ化する。
+    ///
+    /// **無効側が Phase 1 の挙動 = §9.1 の正解器です。** キャッシュの有無で出力は
+    /// 1 ビットも変わらないはずなので、比較は値の完全一致で行えます。
+    bool cache_points = false;
     /// **early-out**（§3.2）。相手の三角形が 1 つも無いセルで arrangement と分類を省く。
     ///
     /// **無効側が正解器です。** 有効・無効を同一プロセス内で比較すれば、省いたことで
@@ -241,6 +252,10 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     const unsigned depth = opt.depth;
     const bool cull_planes = opt.cull_planes;
     BoolStats st;
+    // §4.2: **キャッシュはグローバルに持ちません。** ここが「CSG の文脈オブジェクト」で、
+    // 以下すべての呼び出しに明示的に引き回します（`STYLE.md` と Phase 3 の並列化のため）。
+    PointCache point_cache;
+    PointCache* const cache = opt.cache_points ? &point_cache : nullptr;
 #if defined(KRISITE_COUNT_PREDICATES)
     geom::counters::reset();
 #endif
@@ -466,7 +481,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                         bool alive = true;
                         for (const CellPlane& cp : cps) {
                             if (cp.id == frag.support) continue;
-                            if (!clip_fragment(table, frag, cp.id, cp.keep)) {
+                            if (!clip_fragment(table, frag, cp.id, cp.keep, cache)) {
                                 alive = false;
                                 break;
                             }
@@ -487,7 +502,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                                     next.push_back(p);
                                     continue;
                                 }
-                                const SplitResult r = split_fragment(table, p, q);
+                                const SplitResult r = split_fragment(table, p, q, cache);
                                 if (r.has_pos) next.push_back(r.pos);
                                 if (r.has_neg) next.push_back(r.neg);
                             }
@@ -539,7 +554,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
             return it->second;
         }
         const auto id = static_cast<std::uint32_t>(points.size());
-        const geom::HPointD v = fragment_vertex(table, f, i);
+        const geom::HPointD v = fragment_vertex(table, f, i, cache);
         KRISITE_CHECK(arith::sign(v.w) != 0,
                       "boolean_op: 構成点の w が 0（3 平面が一点で交わっていない）");
         points.push_back(v);
@@ -685,7 +700,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
             const std::vector<PlaneId>& qs = planes_of[f.owner];
             std::vector<std::int8_t> sig(qs.size());
             for (std::size_t k = 0; k < qs.size(); ++k) {
-                sig[k] = static_cast<std::int8_t>(fragment_sign(table, f, qs[k]));
+                sig[k] = static_cast<std::int8_t>(fragment_sign(table, f, qs[k], cache));
             }
             const auto key = std::make_pair(f.owner, sig);
             auto it = region_inside.find(key);
@@ -707,7 +722,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                 const mesh::TriMesh& other = (f.owner == 0) ? B : A;
                 const std::size_t nv = vertex_count(f);
                 std::vector<geom::HPointD> vs(nv);
-                for (std::size_t vi = 0; vi < nv; ++vi) vs[vi] = fragment_vertex(table, f, vi);
+                for (std::size_t vi = 0; vi < nv; ++vi)
+                    vs[vi] = fragment_vertex(table, f, vi, cache);
 
                 bool decided = false, inside = false;
                 for (std::size_t vi = 0; vi < nv && !decided; ++vi) {
@@ -759,7 +775,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                     for (PlaneId q : qs) std::fprintf(stderr, "%u ", q);
                     std::fprintf(stderr, "]\n");
                     for (std::size_t vi = 0; vi < vertex_count(f); ++vi) {
-                        const geom::HPointD v = fragment_vertex(table, f, vi);
+                        const geom::HPointD v = fragment_vertex(table, f, vi, cache);
                         std::fprintf(stderr, "  v%zu:", vi);
                         for (PlaneId q : qs) {
                             std::fprintf(stderr, " %u:%d", q, geom::side(table.at(q), v));
@@ -838,6 +854,10 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     st.side_calls = geom::counters::side_calls;
     st.intersect3_calls = geom::counters::intersect3_calls;
 #endif
+    st.cache_hits = point_cache.hits();
+    st.cache_misses = point_cache.misses();
+    st.cache_entries = point_cache.entries();
+    st.cache_bytes = point_cache.bytes();
     if (stats) *stats = st;
     return out;
 }

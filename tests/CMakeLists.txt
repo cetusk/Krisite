@@ -37,6 +37,8 @@ krisite_add_test(adaptive      csg/test_adaptive.cpp)
 # SPEC-phase2 §3.2 / §3.3 / CP2。**early-out 無効側が正解器**。省いても答えが
 # 変わらないことを直接検査する
 krisite_add_test(early_out     csg/test_early_out.cpp)
+# SPEC-phase2 §4 / CP3。**キャッシュ無効側が正解器**。値まで一致することを要求する
+krisite_add_test(cache         csg/test_cache.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
@@ -207,6 +209,23 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 depth_monotonic PASS)
     if(KRISITE_GMP_FOUND)
         krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 volume_gmp FAIL GMP)
+    endif()
+
+    # 変異 7: §4.2 の構成点キャッシュのキーから 1 平面を落とす。
+    #   **主検出器: cache（キャッシュ有無の比較。値の完全一致）**
+    #
+    # **異なる3つ組が同じキーに落ち、別の点を同一視します。** 静かに壊れる種類の誤りです。
+    #
+    #   cache       … 出力の**値**が変わる（1101 件）
+    #   volume_gmp  … **体積。別の立体を作っている**（97 件）
+    #
+    # **キャッシュ無効のテストは素通りします。** 変異が発火しないので当然です。
+    krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 cache     FAIL)
+    krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 adaptive  PASS)
+    krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 early_out PASS)
+    krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 cp3       PASS)
+    if(KRISITE_GMP_FOUND)
+        krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 volume_gmp FAIL GMP)
     endif()
 
     # 変異 10: §2.4.3 の T 頂点解決を無効化する（SPEC-phase2 §9.3）。

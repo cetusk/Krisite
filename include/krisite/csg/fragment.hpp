@@ -12,11 +12,14 @@
 #ifndef KRISITE_CSG_FRAGMENT_HPP
 #define KRISITE_CSG_FRAGMENT_HPP
 
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <vector>
 
 #include "krisite/csg/faces.hpp"
 #include "krisite/csg/plane_table.hpp"
+#include "krisite/csg/point_cache.hpp"
 #include "krisite/geom/plane.hpp"
 #include "krisite/geom/predicates.hpp"
 
@@ -36,9 +39,20 @@ inline std::size_t vertex_count(const Fragment& f) noexcept {
 }
 
 /// 頂点 i = support ∩ edge[(i-1+n)%n] ∩ edge[i]。
-inline geom::HPointD fragment_vertex(const PlaneTable& t, const Fragment& f, std::size_t i) {
+///
+/// **`cache` を渡すとメモ化されます**（SPEC-phase2 §4）。渡さなければ Phase 1 の挙動
+/// そのもので、**それが §9.1 の正解器**です。
+///
+/// **キャッシュの有無で戻り値は 1 ビットも変わりません。** どちらも平面3つ組を昇順に
+/// 並べてから `intersect3` を呼ぶためです（`point_cache.hpp` の但し書き）。
+inline geom::HPointD fragment_vertex(const PlaneTable& t, const Fragment& f, std::size_t i,
+                                     PointCache* cache = nullptr) {
     const std::size_t n = f.edge.size();
-    return geom::intersect3(t.at(f.support), t.at(f.edge[(i + n - 1) % n]), t.at(f.edge[i]));
+    const PlaneId a = f.support, b = f.edge[(i + n - 1) % n], c = f.edge[i];
+    if (cache != nullptr) return cache->get(t, a, b, c);
+    std::array<PlaneId, 3> k{a, b, c};
+    std::sort(k.begin(), k.end());
+    return geom::intersect3(t.at(k[0]), t.at(k[1]), t.at(k[2]));
 }
 
 /// 断片を平面 `q` で分割した結果。存在しない側は `edge` が空。
@@ -111,7 +125,8 @@ inline std::vector<PlaneId> clip_edges(const std::vector<PlaneId>& edge, const s
 }  // namespace detail
 
 /// 断片を平面 `q`（ID）で分割する。`q == f.support` のときは分割しません。
-inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneId q) {
+inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneId q,
+                                  PointCache* cache = nullptr) {
     SplitResult r;
     if (q == f.support) {
         r.pos = f;
@@ -123,7 +138,7 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
     std::vector<int> s(n);
     bool any_pos = false, any_neg = false;
     for (std::size_t i = 0; i < n; ++i) {
-        s[i] = geom::side(qp, fragment_vertex(t, f, i));
+        s[i] = geom::side(qp, fragment_vertex(t, f, i, cache));
         if (s[i] > 0) any_pos = true;
         if (s[i] < 0) any_neg = true;
     }
@@ -153,8 +168,9 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
 }
 
 /// 断片を半平面 `side(q, ·) * k >= 0` にクリップする（片側だけ残す）。
-inline bool clip_fragment(const PlaneTable& t, Fragment& f, PlaneId q, int k) {
-    const SplitResult r = split_fragment(t, f, q);
+inline bool clip_fragment(const PlaneTable& t, Fragment& f, PlaneId q, int k,
+                          PointCache* cache = nullptr) {
+    const SplitResult r = split_fragment(t, f, q, cache);
     if (k > 0) {
         if (!r.has_pos) return false;
         f = r.pos;
@@ -169,11 +185,12 @@ inline bool clip_fragment(const PlaneTable& t, Fragment& f, PlaneId q, int k) {
 ///
 /// 分割後の断片は `q` の片側に収まっているので、0 でない符号は高々 1 種類です。
 /// すべて 0 なら断片は `q` 上に載っています（`q == support` のとき）。
-inline int fragment_sign(const PlaneTable& t, const Fragment& f, PlaneId q) {
+inline int fragment_sign(const PlaneTable& t, const Fragment& f, PlaneId q,
+                         PointCache* cache = nullptr) {
     const std::size_t n = f.edge.size();
     int acc = 0;
     for (std::size_t i = 0; i < n; ++i) {
-        const int s = geom::side(t.at(q), fragment_vertex(t, f, i));
+        const int s = geom::side(t.at(q), fragment_vertex(t, f, i, cache));
         if (s != 0) {
             KRISITE_CHECK(acc == 0 || acc == s, "fragment_sign: 断片が平面をまたいでいる");
             acc = s;

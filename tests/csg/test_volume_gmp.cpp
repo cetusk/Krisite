@@ -168,6 +168,9 @@ void check_case(const kritest::Case& c) {
         opt.depth = (d <= 3) ? d : 3;
         opt.adaptive = (d == 4);
         opt.early_out = (d == 4);
+        // **4 番目は最適化を全部入れた構成**（適応分割 + early-out + 構成点の保持）。
+        // 出荷時の構成なので、ここが体積で守られていることに意味があります。
+        opt.cache_points = (d == 4);
         const BoolMesh u = boolean_op(A, B, BoolOp::Union, opt, &st);
         const BoolMesh i = boolean_op(A, B, BoolOp::Intersection, opt, &st);
         const BoolMesh df = boolean_op(A, B, BoolOp::Difference, opt, &st);
@@ -185,7 +188,7 @@ void check_case(const kritest::Case& c) {
         const bool ok2 = mpq_equal(vd, rhs) != 0;
 
         std::printf("    %-8s ∪+∩=A+B %s   A\\B=A-∩ %s",
-                    (d <= 3) ? ("深度" + std::to_string(d)).c_str() : "適応+省略",
+                    (d <= 3) ? ("深度" + std::to_string(d)).c_str() : "適応+全部",
                     ok1 ? "OK" : "**NG**", ok2 ? "OK" : "**NG**");
         if (!ok1 || !ok2) {
             std::printf("\n      |A|=%s |B|=%s |∪|=%s |∩|=%s |\\|=%s", to_str(va).c_str(),
