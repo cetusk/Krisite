@@ -100,6 +100,15 @@ struct BoolStats {
     /// 既定ビルドでは 0 のままです（計数のコストを本番に持ち込まないため）。
     std::uint64_t side_calls = 0;
     std::uint64_t intersect3_calls = 0;
+
+    /// §2.3 の絞り込み（SPEC-phase2）。
+    ///
+    /// `split_plane_slots` は「セル × 分割平面」の総当たり数、
+    /// `split_planes_used` は絞り込んだ後に実際に使った数です。
+    /// **比が Phase 2 の断片数削減の直接的な指標になります**（§11）。
+    std::size_t split_plane_slots = 0;
+    std::size_t split_planes_used = 0;
+    std::size_t max_planes_per_cell = 0;  ///< 1 セルで使った分割平面の最大数
 };
 
 namespace detail {
@@ -156,9 +165,16 @@ inline bool select_fragment(BoolOp op, int owner, FragClass c) noexcept {
 
 }  // namespace detail
 
-/// ブール演算。`depth` は八分木の深度（実行時パラメータ。SPEC §2.2）。
+/// ブール演算。`depth` は八分木の深度（実行時パラメータ。SPEC-phase1 §2.2）。
+///
+/// `cull_planes` は §2.3（SPEC-phase2）の分割平面の絞り込み。**既定で有効です。**
+///
+/// **無効にした側が Phase 1 の挙動そのもの**なので、両者の出力を同一プロセス内で
+/// 比較すれば §9.1 の分割戦略不変性がそのまま検査になります（§0.1）。
+/// 深度と同じく**実行時パラメータにしてあります。** コンパイル時定数にすると
+/// 1 回の実行で比較できません。
 inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolOp op,
-                           unsigned depth, BoolStats* stats = nullptr) {
+                           unsigned depth, BoolStats* stats = nullptr, bool cull_planes = true) {
     BoolStats st;
 #if defined(KRISITE_COUNT_PREDICATES)
     geom::counters::reset();
@@ -238,10 +254,34 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                     }
                     std::sort(local_planes.begin(), local_planes.end());
                 }
-                const std::vector<PlaneId>& split_planes = (depth > 0) ? local_planes : mesh_planes;
+                const std::vector<PlaneId>& all_split = (depth > 0) ? local_planes : mesh_planes;
 #else
-                const std::vector<PlaneId>& split_planes = mesh_planes;
+                const std::vector<PlaneId>& all_split = mesh_planes;
 #endif
+                // SPEC-phase2 §2.3: **平面がセルの閉包と交わるときだけ切る。**
+                //
+                // 「三角形が届くか」で絞ってはいけません。plane(T) は無限に延びるので
+                // T が届かないセルにも切断点を生みます（Phase 1 の変異 3）。
+                //
+                // **閉包で判定するので継ぎ目は割れません。** 共有面 F 上に切断点を
+                // 生む平面は F を横切り、F は両セルの閉包に含まれるので、両セルが
+                // 同じ平面で切ります（§2.3 の証明）。
+                //
+                // **深度 0 でも意味があります。** セルは 1 個ですが、座標範囲の外に
+                // ある平面は落ちます。
+                const std::int64_t clo[3] = {grid.lo(cell.i), grid.lo(cell.j), grid.lo(cell.k)};
+                const std::int64_t chi[3] = {grid.hi(cell.i), grid.hi(cell.j), grid.hi(cell.k)};
+                std::vector<PlaneId> culled;
+                if (cull_planes) {
+                    culled.reserve(all_split.size());
+                    for (PlaneId q : all_split) {
+                        if (geom::plane_crosses_box(table.at(q), clo, chi)) culled.push_back(q);
+                    }
+                }
+                const std::vector<PlaneId>& split_planes = cull_planes ? culled : all_split;
+                st.split_plane_slots += all_split.size();
+                st.split_planes_used += split_planes.size();
+                st.max_planes_per_cell = std::max(st.max_planes_per_cell, split_planes.size());
 
                 for (int which = 0; which < 2; ++which) {
                     const mesh::TriMesh& m = (which == 0) ? A : B;

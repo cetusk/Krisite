@@ -27,6 +27,8 @@ krisite_add_test(uniform_grid  octree/test_uniform_grid.cpp)
 krisite_add_test(faces         csg/test_faces.cpp)
 krisite_add_test(fragment      csg/test_fragment.cpp)
 krisite_add_test(cp1           csg/test_cp1.cpp)
+# SPEC-phase2 §9.1 / CP1。絞り込みの有無を同一プロセスで比較する
+krisite_add_test(split_strategy csg/test_split_strategy.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
