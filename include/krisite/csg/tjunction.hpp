@@ -40,50 +40,55 @@ namespace krisite::csg {
 
 /// §2.4.3 / §11 の記録。
 struct TJunctionStats {
-    std::size_t inserted = 0;            ///< 挿入された T 頂点の数
-    std::size_t candidates = 0;          ///< 索引が返した候補の数（絞り込みの効き）
-    std::size_t max_per_edge = 0;        ///< 1 本の辺に入った T 頂点の最大数
-    std::size_t degenerate_dropped = 0;  ///< 扇分割で捨てた面積 0 の三角形
-    std::size_t edges_scanned = 0;       ///< 走査した辺の数（候補数の分母）
+    std::size_t inserted = 0;      ///< 挿入された T 頂点の数
+    std::size_t candidates = 0;    ///< 索引が返した候補の数（絞り込みの効き）
+    std::size_t max_per_edge = 0;  ///< 1 本の辺に入った T 頂点の最大数
+    /// **残した**面積 0 の三角形の枚数（§2.4.4 (2)）。**捨てません。**
+    /// 起点を選べなかった多角形でだけ出ます
+    std::size_t degenerate_kept = 0;
+    std::size_t apex_fallback = 0;  ///< 起点を選べなかった多角形の数
+    std::size_t edges_scanned = 0;  ///< 走査した辺の数（候補数の分母）
 };
 
-/// **辺の平面対 → その交線上にある大域頂点 ID** の索引（§2.4.3 の手順 1）。
+/// **平面 → その平面上にある大域頂点 ID** の索引（§2.4.3 の手順 1）。
 ///
-/// 多角形の辺 (a,b) は 2 平面 (P,Q) の交線上にあります。その線上に載り得る頂点は、
-/// **平面3つ組が {P,Q} を含むもの**だけです。3つ組を登録すれば 3 つの対が張れます。
+/// 多角形の辺 (a,b) は 2 平面 (support, edge) の交線上にあります。したがって候補は
+/// **両方の平面に載っている頂点**です。判定は `side(plane, HPoint) == 0`、
+/// つまり **Phase 0 からある述語 1 本**で済みます（§2.4.3「新しい述語は要りません」）。
 ///
-/// **これが「候補を絞る」ということの全てです。** 線上に載ることは 3つ組から構造的に
-/// 決まるので、幾何的な判定は §2.4.3 の手順 2（区間の内部か）だけで済みます。
-class EdgeVertexIndex {
+/// > **平面3つ組をキーにしてはいけません。** 3つ組は正準ではありません。
+/// > **相異なる 2 平面が支持平面と同一の交線を与え得る**ためです
+/// > （`IMPL-phase1.md` §2.9。例: 支持平面 z=0 に対し x=0 と x+z=0 はどちらも
+/// > 同じ交線を与える）。同じ幾何辺が切る順序によって別の平面で記録されるので、
+/// > 平面対で引くと**別名で記録された頂点を取りこぼします。**
+/// > 取りこぼすと T 字接合がそのまま残り、次数 1 の辺が出ます。**実際に踏みました。**
+class PlaneVertexIndex {
 public:
-    /// 頂点 `vid` の生成 3 つ組を登録する。3 つの対すべてに入ります。
-    void add_triple(const std::array<PlaneId, 3>& tri, std::uint32_t vid) {
-        add_pair(tri[0], tri[1], vid);
-        add_pair(tri[0], tri[2], vid);
-        add_pair(tri[1], tri[2], vid);
+    /// `planes` の各平面について、その上に載る頂点を集める。
+    ///
+    /// 計算量は（平面数 × 頂点数）回の `side` です。平面ごとに 1 度だけなので、
+    /// 辺ごとに全頂点を走査するより桁で軽くなります。
+    void build(const PlaneTable& table, const std::vector<geom::HPointD>& verts,
+               const std::vector<PlaneId>& planes) {
+        for (PlaneId p : planes) {
+            if (map_.find(p) != map_.end()) continue;
+            std::vector<std::uint32_t>& v = map_[p];
+            for (std::uint32_t i = 0; i < verts.size(); ++i) {
+                if (geom::side(table.at(p), verts[i]) == 0) v.push_back(i);
+            }
+        }
     }
 
-    /// 平面対 (p,q) の交線上にある頂点。無ければ `nullptr`。
-    const std::vector<std::uint32_t>* find(PlaneId p, PlaneId q) const {
-        auto it = map_.find(key(p, q));
+    /// 平面 `p` の上にある頂点。登録していなければ `nullptr`。
+    const std::vector<std::uint32_t>* find(PlaneId p) const {
+        auto it = map_.find(p);
         return (it == map_.end()) ? nullptr : &it->second;
     }
 
     std::size_t size() const noexcept { return map_.size(); }
 
 private:
-    static std::pair<PlaneId, PlaneId> key(PlaneId p, PlaneId q) noexcept {
-        return (p < q) ? std::pair<PlaneId, PlaneId>{p, q} : std::pair<PlaneId, PlaneId>{q, p};
-    }
-
-    void add_pair(PlaneId p, PlaneId q, std::uint32_t vid) {
-        if (p == q) return;  // 同じ平面が 2 度現れる 3 つ組は線を定めない
-        std::vector<std::uint32_t>& v = map_[key(p, q)];
-        // 第2段の値併合で複数の 3 つ組が同じ ID に落ちるので、重複を避ける
-        if (std::find(v.begin(), v.end(), vid) == v.end()) v.push_back(vid);
-    }
-
-    std::map<std::pair<PlaneId, PlaneId>, std::vector<std::uint32_t>> map_;
+    std::map<PlaneId, std::vector<std::uint32_t>> map_;
 };
 
 namespace detail {
@@ -140,8 +145,8 @@ struct TPolygon {
 ///
 /// **1 個ずつ入れてはいけません**（§2.4.3）。生成された部分辺にさらに候補が載る場合を
 /// 取りこぼします。ここでは元の線分について候補を**全部集めてから**並べて入れます。
-inline TPolygon insert_t_vertices(const std::vector<geom::HPointD>& verts,
-                                  const EdgeVertexIndex& index, PlaneId support,
+inline TPolygon insert_t_vertices(const PlaneTable& table, const std::vector<geom::HPointD>& verts,
+                                  const PlaneVertexIndex& index, PlaneId support,
                                   const std::vector<PlaneId>& edge,
                                   const std::vector<std::uint32_t>& poly,
                                   TJunctionStats* stats = nullptr) {
@@ -168,6 +173,7 @@ inline TPolygon insert_t_vertices(const std::vector<geom::HPointD>& verts,
     out.vertex = poly;
     out.is_corner.assign(n, 1);
     for (std::uint32_t i = 0; i < n; ++i) out.orig.push_back(i);
+    (void)table;
     (void)verts;
     (void)index;
     (void)support;
@@ -184,14 +190,19 @@ inline TPolygon insert_t_vertices(const std::vector<geom::HPointD>& verts,
         out.orig.push_back(static_cast<std::uint32_t>(j));
 
         if (stats) ++stats->edges_scanned;
-        const std::vector<std::uint32_t>* cand = index.find(support, edge[j]);
+        const std::vector<std::uint32_t>* cand = index.find(support);
         if (cand == nullptr) continue;
         if (stats) stats->candidates += cand->size();
 
-        // 手順 2: 区間の内部にあるものを【全部】集める
+        // 手順 2: **両方の平面に載っていて**、区間の内部にあるものを【全部】集める。
+        //
+        // 支持平面の上にあることは索引が保証済み。もう 1 枚を `side` で見れば交線上に
+        // あることが確定し、`strictly_between` の前提（共線）が満たされます。
+        const geom::PlaneD& qp = table.at(edge[j]);
         std::vector<std::uint32_t> on_edge;
         for (std::uint32_t v : *cand) {
             if (v == a || v == b) continue;
+            if (geom::side(qp, verts[v]) != 0) continue;
             if (detail::strictly_between(verts[a], verts[b], verts[v])) on_edge.push_back(v);
         }
         if (on_edge.empty()) continue;
@@ -244,9 +255,18 @@ inline bool on_original_edge(const TPolygon& p, std::size_t k, std::uint32_t lin
 
 /// T 頂点を含む凸多角形を扇分割する（§2.4.4 (2)）。
 ///
-/// **起点は T 頂点でない頂点（元の角）に取ります。** T 頂点を起点にすると共線な三つ組が
-/// できるためです。それでも起点の隣接辺に T 頂点があると退化三角形が出ますが、
-/// **凸多角形なのでそれらは何も覆いません。捨てても被覆が保たれます。**
+/// > **退化三角形は捨てるのではなく、作らないこと。**
+///
+/// **捨ててはいけません。** 凸多角形の扇分割は $n-2$ 枚が揃って初めて円板になります
+/// （$\chi = n - (2n-3) + (n-2) = 1$）。1 枚捨てると、その三角形が持っていた**境界辺が
+/// メッシュから消え**、隣の多角形はその辺を持ったままなので**次数 1 の辺が残ります**。
+/// **面積は保たれても、組合せ的には保たれません。**
+/// 実測: 捨てると §9.1 が 138/574 で落ち、捨てないと 48/574 に減りました。
+///
+/// **起点を「両隣の元の辺に T 頂点が無い元の角」に取れば、退化は最初から出ません。**
+/// 起点が乗る直線はそれに接する 2 本の元の辺だけなので、両隣に T 頂点が無ければ
+/// 共線な三つ組は生じません。**そのような角が無い多角形では残します。**
+/// 面積 0 でも組合せ的に必要です。枚数は `degenerate_kept` に数えます（§11）。
 ///
 /// **退化の判定に幾何は要りません。** 起点は角なので、起点と共線になり得るのは
 /// 起点に接する 2 本の元の辺の上の頂点だけです。両方が同じ辺の上にあるかを見れば足ります。
@@ -256,14 +276,35 @@ inline void fan_triangulate(const TPolygon& p, std::vector<std::array<std::uint3
     const std::size_t n = p.vertex.size();
     if (n < 3) return;
 
-    std::size_t apex = 0;
+    // 元の辺ごとに T 頂点が載っているか
+    std::vector<char> edge_has_t(p.corners, 0);
     for (std::size_t i = 0; i < n; ++i) {
-        if (p.is_corner[i]) {
-            apex = i;
-            break;
+        if (!p.is_corner[i]) edge_has_t[p.orig[i]] = 1;
+    }
+
+    // **起点は「両隣の元の辺に T 頂点が無い元の角」**（§2.4.4 (2)）
+    std::size_t apex = n;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!p.is_corner[i]) continue;
+#if !defined(KRISITE_MUTATION_DROP_DEGENERATE)
+        const std::uint32_t oc = p.orig[i];
+        const std::uint32_t prev = (oc + p.corners - 1) % p.corners;
+        if (edge_has_t[oc] || edge_has_t[prev]) continue;
+#endif
+        apex = i;
+        break;
+    }
+    if (apex == n) {
+        // 選べなかった。**残します**（捨てると境界辺が消えて次数 1 の辺が出る）
+        if (stats) ++stats->apex_fallback;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (p.is_corner[i]) {
+                apex = i;
+                break;
+            }
         }
     }
-    KRISITE_CHECK(p.is_corner[apex], "fan_triangulate: 元の角が 1 つも無い");
+    KRISITE_CHECK(apex < n && p.is_corner[apex], "fan_triangulate: 元の角が 1 つも無い");
 
     // 起点に接する元の辺は 2 本。起点の元の頂点添字を c として、辺 c（出る側）と c-1（入る側）
     const std::uint32_t c = p.orig[apex];
@@ -280,8 +321,13 @@ inline void fan_triangulate(const TPolygon& p, std::vector<std::array<std::uint3
             }
         }
         if (degenerate) {
-            if (stats) ++stats->degenerate_dropped;
+            if (stats) ++stats->degenerate_kept;
+#if defined(KRISITE_MUTATION_DROP_DEGENERATE)
+            // SPEC-phase2 §9.3 の変異 13: 作らないのではなく**捨てる**。
+            // 境界辺が消えて次数 1 の辺が残ります。**面積は保たれるので体積検査では
+            // 捕まりません。**
             continue;
+#endif
         }
         out.push_back({p.vertex[apex], p.vertex[i1], p.vertex[i2]});
     }

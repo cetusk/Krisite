@@ -17,11 +17,11 @@
 
 #include "test_util.hpp"
 
-using krisite::csg::EdgeVertexIndex;
 using krisite::csg::fan_triangulate;
 using krisite::csg::insert_t_vertices;
 using krisite::csg::PlaneId;
 using krisite::csg::PlaneTable;
+using krisite::csg::PlaneVertexIndex;
 using krisite::csg::TJunctionStats;
 using krisite::csg::TPolygon;
 using krisite::geom::Axis;
@@ -35,19 +35,26 @@ namespace {
 struct Scaffold {
     PlaneTable table;
     std::vector<HPointD> verts;
-    EdgeVertexIndex index;
+    PlaneVertexIndex index;
+    std::vector<PlaneId> planes;
 
-    PlaneId plane(Axis ax, std::int64_t c) { return table.intern(plane_axis_aligned(ax, c)).id; }
+    PlaneId plane(Axis ax, std::int64_t c) {
+        const PlaneId id = table.intern(plane_axis_aligned(ax, c)).id;
+        if (std::find(planes.begin(), planes.end(), id) == planes.end()) planes.push_back(id);
+        return id;
+    }
 
-    /// 3 平面の交点を頂点として登録し、索引にも入れる。
+    /// 3 平面の交点を頂点として登録する。**座標を手で書きません。**
+    /// 被検体と同じ経路（`intersect3`）を通らないと、別物を検査することになります。
     std::uint32_t vertex(PlaneId p, PlaneId q, PlaneId r) {
         const auto id = static_cast<std::uint32_t>(verts.size());
         verts.push_back(krisite::geom::intersect3(table.at(p), table.at(q), table.at(r)));
-        std::array<PlaneId, 3> tri{p, q, r};
-        std::sort(tri.begin(), tri.end());
-        index.add_triple(tri, id);
         return id;
     }
+
+    /// **頂点を全部足してから呼ぶこと。** 索引は `side` で張るので、後から足した頂点は
+    /// 入りません。
+    void build() { index.build(table, verts, planes); }
 };
 
 /// z = 0 上の正方形 (0,0)-(4,4)。頂点 i = support ∩ edge[i-1] ∩ edge[i] の規約に合わせる。
@@ -81,8 +88,10 @@ void test_inserts_in_order() {
     const std::uint32_t t3 = sq.s.vertex(sq.support, sq.y0, sq.s.plane(Axis::X, 3));
     const std::uint32_t t1 = sq.s.vertex(sq.support, sq.y0, sq.s.plane(Axis::X, 1));
 
+    sq.s.build();
     TJunctionStats st;
-    const TPolygon p = insert_t_vertices(sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
+    const TPolygon p =
+        insert_t_vertices(sq.s.table, sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
 
     KRI_CHECK_MSG(st.inserted == 2,
                   "T 頂点が 2 個入るはず（実測 " + std::to_string(st.inserted) + "）");
@@ -108,8 +117,10 @@ void test_rejects_outside_and_endpoints() {
     // 端点と同一の値を持つ別 ID（第2段が併合し損ねた場合を模す）
     sq.s.vertex(sq.support, sq.y0, sq.x4);
 
+    sq.s.build();
     TJunctionStats st;
-    const TPolygon p = insert_t_vertices(sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
+    const TPolygon p =
+        insert_t_vertices(sq.s.table, sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
     KRI_CHECK_MSG(st.inserted == 0, "区間の外・端点を入れてしまっている（実測 " +
                                         std::to_string(st.inserted) + " 個）");
     KRI_CHECK(p.vertex.size() == 4);
@@ -121,8 +132,10 @@ void test_other_edge_not_mixed() {
     Square sq;
     const std::uint32_t on_x4 = sq.s.vertex(sq.support, sq.x4, sq.s.plane(Axis::Y, 2));
 
+    sq.s.build();
     TJunctionStats st;
-    const TPolygon p = insert_t_vertices(sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
+    const TPolygon p =
+        insert_t_vertices(sq.s.table, sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
     KRI_CHECK_MSG(st.inserted == 1, "辺 x=4 の上の点がちょうど 1 個入るはず");
     // 辺 1（x = 4、(4,0) → (4,4)）の内部に入ること
     KRI_CHECK(p.vertex.size() == 5);
@@ -132,54 +145,91 @@ void test_other_edge_not_mixed() {
 
 // ---- 扇分割（§2.4.4 (2)）---------------------------------------------------
 
-void test_fan_drops_only_degenerate() {
+/// **退化三角形は捨てるのではなく作らない**（§2.4.4 (2)）。起点を選べば 1 枚も出ません。
+void test_fan_avoids_degenerate() {
     Square sq;
     sq.s.vertex(sq.support, sq.y0, sq.s.plane(Axis::X, 1));
     sq.s.vertex(sq.support, sq.y0, sq.s.plane(Axis::X, 3));
 
+    sq.s.build();
     TJunctionStats st;
-    const TPolygon p = insert_t_vertices(sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
+    const TPolygon p =
+        insert_t_vertices(sq.s.table, sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
     std::vector<std::array<std::uint32_t, 3>> tris;
     fan_triangulate(p, tris, &st);
 
-    // 頂点 6 個の凸多角形だが、起点の隣接辺に T 頂点が 2 個あるので退化が 2 枚出る。
-    // **面積は四角形のままなので、正しい三角形は 2 枚。**
-    KRI_CHECK_MSG(tris.size() == 2,
-                  "三角形が 2 枚のはず（実測 " + std::to_string(tris.size()) + " 枚）");
-    KRI_CHECK_MSG(st.degenerate_dropped == 2,
-                  "退化を 2 枚捨てるはず（実測 " + std::to_string(st.degenerate_dropped) + "）");
-    // 起点は元の角であること
-    for (const auto& t : tris) KRI_CHECK(t[0] == sq.poly[0]);
-    // 退化していない = 同じ頂点を 2 度使っていない
+    // T 頂点は辺 0 だけに載るので、**元の角 2**（隣接辺は 1 と 2）が起点に選ばれる
+    KRI_CHECK_MSG(tris.size() == p.vertex.size() - 2,
+                  "扇は n-2 枚そろうこと（実測 " + std::to_string(tris.size()) + " 枚 / n=" +
+                      std::to_string(p.vertex.size()) + "）。**1 枚でも欠けると境界辺が消える**");
+    KRI_CHECK_MSG(st.degenerate_kept == 0, "起点を選べば退化は出ないはず（実測 " +
+                                               std::to_string(st.degenerate_kept) + " 枚）");
+    KRI_CHECK_MSG(st.apex_fallback == 0, "起点は選べるはず");
+    for (const auto& t : tris) KRI_CHECK_MSG(t[0] == sq.poly[2], "起点が元の角 2 でない");
     for (const auto& t : tris) KRI_CHECK(t[0] != t[1] && t[1] != t[2] && t[0] != t[2]);
+}
+
+/// **起点を選べない多角形では残します。** 捨てると境界辺が消えて次数 1 の辺が出ます。
+void test_fan_fallback_keeps_degenerate() {
+    Square sq;
+    // 4 辺すべてに T 頂点を 1 個ずつ → どの角も隣接辺に T 頂点を持つ
+    sq.s.vertex(sq.support, sq.y0, sq.s.plane(Axis::X, 2));
+    sq.s.vertex(sq.support, sq.x4, sq.s.plane(Axis::Y, 2));
+    sq.s.vertex(sq.support, sq.y4, sq.s.plane(Axis::X, 2));
+    sq.s.vertex(sq.support, sq.x0, sq.s.plane(Axis::Y, 2));
+
+    sq.s.build();
+    TJunctionStats st;
+    const TPolygon p =
+        insert_t_vertices(sq.s.table, sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
+    std::vector<std::array<std::uint32_t, 3>> tris;
+    fan_triangulate(p, tris, &st);
+
+    KRI_CHECK_MSG(st.inserted == 4,
+                  "4 辺に 1 個ずつ入るはず（実測 " + std::to_string(st.inserted) + "）");
+    KRI_CHECK_MSG(st.apex_fallback == 1, "起点を選べないはず（どの角も隣に T 頂点がある）");
+    // **枚数は n-2 のまま。捨てないので境界辺は全部残ります**
+    KRI_CHECK_MSG(tris.size() == p.vertex.size() - 2,
+                  "退化を残しても扇は n-2 枚（実測 " + std::to_string(tris.size()) + " 枚）");
+    KRI_CHECK_MSG(st.degenerate_kept == 2,
+                  "残した退化は 2 枚のはず（実測 " + std::to_string(st.degenerate_kept) + "）");
 }
 
 /// **T 頂点が無ければ扇分割は Phase 1 と同一であること。** 負の対照の土台です。
 void test_fan_unchanged_without_t() {
     Square sq;
+    sq.s.build();
     TJunctionStats st;
-    const TPolygon p = insert_t_vertices(sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
+    const TPolygon p =
+        insert_t_vertices(sq.s.table, sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
     std::vector<std::array<std::uint32_t, 3>> tris;
     fan_triangulate(p, tris, &st);
 
-    KRI_CHECK(st.inserted == 0 && st.degenerate_dropped == 0);
+    KRI_CHECK(st.inserted == 0 && st.degenerate_kept == 0);
     KRI_CHECK(tris.size() == 2);
     KRI_CHECK(tris[0][0] == sq.poly[0] && tris[0][1] == sq.poly[1] && tris[0][2] == sq.poly[2]);
     KRI_CHECK(tris[1][0] == sq.poly[0] && tris[1][1] == sq.poly[2] && tris[1][2] == sq.poly[3]);
 }
 
-/// 索引の絞り込みが効いていること。**全頂点を返すなら索引の意味がありません。**
-void test_index_narrows() {
+/// 索引が `side` で張られていること。**平面3つ組で張ってはいけません**（別名問題）。
+void test_index_is_geometric() {
     Square sq;
     for (int i = 1; i <= 3; ++i) sq.s.vertex(sq.support, sq.y0, sq.s.plane(Axis::X, i));
     for (int i = 1; i <= 3; ++i) sq.s.vertex(sq.support, sq.x4, sq.s.plane(Axis::Y, i));
+    sq.s.build();
 
-    const auto* on_y0 = sq.s.index.find(sq.support, sq.y0);
+    // 支持平面 z=0 の上には**全頂点**が載る（この足場はすべて z=0 上に作っている）
+    const auto* on_support = sq.s.index.find(sq.support);
+    KRI_CHECK(on_support != nullptr);
+    KRI_CHECK_MSG(on_support->size() == sq.s.verts.size(),
+                  "支持平面の索引が全頂点を返していない（`side` で張れていない）");
+
+    // 平面 y=0 の上には、その線上の点だけ: 角 2 つ + 追加 3 点 = 5
+    const auto* on_y0 = sq.s.index.find(sq.y0);
     KRI_CHECK(on_y0 != nullptr);
-    // 辺 y=0 の線上: 角 2 つ + 追加 3 点 = 5
     KRI_CHECK_MSG(on_y0->size() == 5,
-                  "候補数が想定と違う（実測 " + std::to_string(on_y0->size()) + "）");
-    KRI_CHECK_MSG(on_y0->size() < sq.s.verts.size(), "索引が全頂点を返している（絞り込み無効）");
+                  "y=0 上の頂点数が想定と違う（実測 " + std::to_string(on_y0->size()) + "）");
+    KRI_CHECK_MSG(on_y0->size() < sq.s.verts.size(), "絞り込みが効いていない");
 }
 
 }  // namespace
@@ -189,9 +239,10 @@ int main() {
     test_inserts_in_order();
     test_rejects_outside_and_endpoints();
     test_other_edge_not_mixed();
-    test_fan_drops_only_degenerate();
+    test_fan_avoids_degenerate();
+    test_fan_fallback_keeps_degenerate();
     test_fan_unchanged_without_t();
-    test_index_narrows();
+    test_index_is_geometric();
     std::printf("\n");
     return kritest::finish("csg/tjunction");
 }

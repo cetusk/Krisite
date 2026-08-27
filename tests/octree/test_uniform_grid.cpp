@@ -118,12 +118,14 @@ std::vector<std::size_t> assigned_cells(const UniformGrid& g, const Aabb& box, b
     return out;
 }
 
-/// セル面上に乗る三角形は、閉領域なら両側のセルに割り当てられる。
+/// セル面上に**完全に乗る**三角形は、**半開区間なら上側のセルだけ**に入る（§3.4）。
 ///
-/// **開領域だと、どのセルにも入らず消えます。** 片側に落ちるだけではありません。
-/// 境界 x = m の両隣のセルについて、下側は `lo >= chi`、上側は `hi <= clo` で
+/// **開領域とは別物です。** 開領域だとどのセルにも入らず消えます。片側に落ちるだけでは
+/// ありません。境界 x = m の両隣のセルについて、下側は `lo >= chi`、上側は `hi <= clo` で
 /// どちらも弾かれるためです。これが §10.5 の変異 2 が突く差で、
 /// 予想より深刻な壊れ方をします（幾何が丸ごと欠落する）。
+///
+/// 半開は「乗る面をどちらか一方に決める」規則で、**幾何は失われません。**
 void test_closed_vs_open_assignment() {
     const UniformGrid g(1);  // 2x2x2、境界は x=0（中央）
     const std::int64_t mid = g.bound(1);
@@ -138,10 +140,13 @@ void test_closed_vs_open_assignment() {
     const auto closed = assigned_cells(g, box, false);
     const auto open = assigned_cells(g, box, true);
 
-    // 閉領域: x 方向の両セル（i=0 と i=1）に入る
-    std::set<std::uint32_t> ci_closed;
-    for (std::size_t id : closed) ci_closed.insert(static_cast<std::uint32_t>(id / 4));
-    KRI_CHECK_MSG(ci_closed.size() == 2, "閉領域なら x 方向の両セルに割り当てられるはず");
+    // **半開区間 [lo, hi)**（SPEC-phase2 §3.4）: 境界平面に**完全に乗る**面は
+    // **上側のセルだけ**に入る。閉領域だと両側に入り、適応分割で入れ子の重複になる
+    std::set<std::uint32_t> ci_half;
+    for (std::size_t id : closed) ci_half.insert(static_cast<std::uint32_t>(id / 4));
+    KRI_CHECK_MSG(ci_half.size() == 1, "半開なら x 方向は上側のセルだけのはず（§3.4）");
+    KRI_CHECK_MSG(*ci_half.begin() == 1, "上側（i=1）に入るはず。lo が境界に一致する側");
+    // **開領域とは別物です。** 開領域だとどのセルにも入らず、幾何が丸ごと消えます
     KRI_CHECK_MSG(open.empty(),
                   "開領域だとセル境界上の三角形がどのセルにも入らず消える（変異 2 の狙い）");
 

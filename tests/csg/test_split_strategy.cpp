@@ -124,12 +124,11 @@ void run_case(const kritest::Case& c) {
                               std::to_string(s_on.t.inserted) +
                               " 個）。大域平面集合では切断点が既に角になっているはずです");
             KRI_CHECK_MSG(s_off.t.inserted == 0, tag + ": 絞り込み無効側で T 頂点が入った");
-            KRI_CHECK_MSG(s_on.t.degenerate_dropped == 0,
-                          tag + ": T 頂点が無いのに退化三角形を捨てた");
+            KRI_CHECK_MSG(s_on.t.degenerate_kept == 0, tag + ": T 頂点が無いのに退化三角形が出た");
             g_t.inserted += s_on.t.inserted;
             g_t.candidates += s_on.t.candidates;
             g_t.edges += s_on.t.edges_scanned;
-            g_t.dropped += s_on.t.degenerate_dropped;
+            g_t.dropped += s_on.t.degenerate_kept;
 
             g_cull[d].slots += s_on.split_plane_slots;
             g_cull[d].used += s_on.split_planes_used;
