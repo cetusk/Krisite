@@ -171,6 +171,8 @@ void check_case(const kritest::Case& c) {
         // **4 番目は最適化を全部入れた構成**（適応分割 + early-out + 構成点の保持）。
         // 出荷時の構成なので、ここが体積で守られていることに意味があります。
         opt.cache_points = (d == 4);
+        // **既定に依存させないこと**（§9.4 の CI ジョブで既定が反転する）
+        opt.split_contacts = true;
         const BoolMesh u = boolean_op(A, B, BoolOp::Union, opt, &st);
         const BoolMesh i = boolean_op(A, B, BoolOp::Intersection, opt, &st);
         const BoolMesh df = boolean_op(A, B, BoolOp::Difference, opt, &st);
@@ -217,6 +219,32 @@ void check_case(const kritest::Case& c) {
             KRI_CHECK_MSG(mpq_equal(vd, rhs) != 0, std::string("ケース ") + c.id + "（深度 " +
                                                        std::to_string(d) +
                                                        "）: |A\\B| が解析値と食い違う");
+        }
+
+        // ---- §9.4.2: **分裂の有無で体積が一致すること** ----
+        //
+        // 「分裂は体積を変えない」は §5.1.3 の**定理**です。変異 8 / 9 の素通りで
+        // 間接的に固定するより、**不変量そのものを直接検査する**ほうが確かです。
+        // 分裂の誤りは体積では捕まりませんが、**分裂が幾何を動かしていないこと**は
+        // ここでしか言えません。
+        {
+            BoolOptions ns = opt;
+            ns.split_contacts = false;
+            const BoolMesh u2 = boolean_op(A, B, BoolOp::Union, ns, &st);
+            const BoolMesh i2 = boolean_op(A, B, BoolOp::Intersection, ns, &st);
+            const BoolMesh d2 = boolean_op(A, B, BoolOp::Difference, ns, &st);
+            mpq_t nu, ni, nd;
+            mpq_init(nu);
+            mpq_init(ni);
+            mpq_init(nd);
+            bool_mesh_volume6(nu, u2);
+            bool_mesh_volume6(ni, i2);
+            bool_mesh_volume6(nd, d2);
+            const bool same =
+                mpq_equal(nu, vu) != 0 && mpq_equal(ni, vi) != 0 && mpq_equal(nd, vd) != 0;
+            KRI_CHECK_MSG(same, std::string("ケース ") + c.id + "（深度 " + std::to_string(d) +
+                                    "）: **分裂の有無で体積が変わった**（§9.4.2 / §5.1.3）");
+            for (mpq_ptr q : {nu, ni, nd}) mpq_clear(q);
         }
 
         // 深度不変性の体積版: 深度によらず同じ値であること（§10.2.1 の補強）
