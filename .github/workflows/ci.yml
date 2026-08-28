@@ -15,9 +15,18 @@ name: CI
 # 混ざった変更は通常どおり全部走ります。**範囲を減らす手当てではありません。**
 #
 # `.github/workflows/**` は除外しません。CI 自身の変更は CI で確かめます。
+# **`push` は `main` だけです。** フェーズ用ブランチ（`phase2/**` など）への push では
+# CI を回しません。**ためて、キリの良いところで PR を開いて一気に回す**運用のためです。
+#
+# 途中で確かめたくなったら `workflow_dispatch` で手動実行できます。
+#
+# **代償: PR を開くまで一度も検証されません。** ローカルで検証できない領域
+# （`arith/intrinsics.hpp`、CMake、依存の追加）に触った回は、ためずに早めに
+# 手動実行するか PR を開いてください。MSVC のビルドエラーを 20 コミット後に
+# まとめて受け取ると、切り分けに時間がかかります。
 on:
   push:
-    branches: [main, "phase0/**"]
+    branches: [main]
     # **アンカー（&/*）は使えません。** GitHub Actions のワークフロー構文は
     # YAML のアンカーを解決しないので、同じ一覧を 2 度書きます。
     # **片方だけ直すと push と PR で挙動がずれます。両方直すこと。**
@@ -76,7 +85,16 @@ jobs:
           base="${{ github.event.pull_request.base.sha }}"
           git cat-file -e "$base^{commit}" 2>/dev/null || \
             git fetch --no-tags --depth=1 origin "$base"
-          files=$(git diff --name-only "$base" HEAD)
+          files=$(git diff --name-only "$base" HEAD) || files=""
+          # **差分が取れなかったら安全側に倒します**（`CLAUDE.md`「失敗の向きを
+          # 安全側に」）。`set -e` を使えない構造なので、`git diff` が黙って失敗すると
+          # 全部 false になり、**全ジョブが skip されてワークフローは緑**になります。
+          # 空振り 1 回のコストより、網が黙って消えるほうが高くつきます。
+          if [ -z "$files" ]; then
+            echo "差分が取れませんでした。安全側に倒して全ジョブを回します" >&2
+            printf 'code=true\nmutation=true\nsemantics=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "--- 変更されたファイル ---"
           echo "$files"
           has() { echo "$files" | grep -qE "$1"; }
@@ -100,6 +118,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      # **毎 PR で必ず走るジョブなので、ccache が最も効きます。**
+      - uses: ./.github/actions/ccache
+        with:
+          key: pr-gate
       - name: 構成
         env:
           CC: clang-18
@@ -108,9 +130,12 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DKRISITE_COORD_BITS=21 \
-            -DKRISITE_CHECKED_ARITH=ON
+            -DKRISITE_CHECKED_ARITH=ON \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - run: cmake --build build
       - run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
+      - name: ccache の効き
+        run: ccache -s | head -12
 
   # ---- プラットフォーム検証（§9 の 2 番目の条件）------------------------------
   #
@@ -134,13 +159,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { name: "Linux GCC",      os: ubuntu-24.04,  cc: gcc-13,   cxx: g++-13,     coord_bits: 21, tests: full  }
-          - { name: "Linux GCC",      os: ubuntu-24.04,  cc: gcc-13,   cxx: g++-13,     coord_bits: 26, tests: width }
-          - { name: "Linux Clang",    os: ubuntu-24.04,  cc: clang-18, cxx: clang++-18, coord_bits: 26, tests: full  }
-          - { name: "macOS arm64",    os: macos-14,      cc: clang,    cxx: clang++,    coord_bits: 21, tests: full  }
-          - { name: "macOS arm64",    os: macos-14,      cc: clang,    cxx: clang++,    coord_bits: 26, tests: width }
-          - { name: "Windows MSVC",   os: windows-2022,  cc: "",       cxx: "",         coord_bits: 21, tests: full  }
-          - { name: "Windows MSVC",   os: windows-2022,  cc: "",       cxx: "",         coord_bits: 26, tests: width }
+          - { id: gcc21,   name: "Linux GCC",    os: ubuntu-24.04, cc: gcc-13,   cxx: g++-13,     coord_bits: 21, tests: full  }
+          - { id: gcc26,   name: "Linux GCC",    os: ubuntu-24.04, cc: gcc-13,   cxx: g++-13,     coord_bits: 26, tests: width }
+          - { id: clang26, name: "Linux Clang",  os: ubuntu-24.04, cc: clang-18, cxx: clang++-18, coord_bits: 26, tests: full  }
+          - { id: mac21,   name: "macOS arm64",  os: macos-14,     cc: clang,    cxx: clang++,    coord_bits: 21, tests: full  }
+          - { id: mac26,   name: "macOS arm64",  os: macos-14,     cc: clang,    cxx: clang++,    coord_bits: 26, tests: width }
+          - { id: msvc21,  name: "Windows MSVC", os: windows-2022, cc: "",       cxx: "",         coord_bits: 21, tests: full  }
+          - { id: msvc26,  name: "Windows MSVC", os: windows-2022, cc: "",       cxx: "",         coord_bits: 26, tests: width }
 
     steps:
       - uses: actions/checkout@v4
@@ -152,6 +177,15 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1
 
+      # **合成アクションは apt に依存するので Linux だけです。**
+      # macOS / Windows でも使いたくなったら、パッケージ導入の分岐を
+      # `.github/actions/ccache` 側に足してください（ここに書かないこと）。
+      - name: ccache（Linux のみ）
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/ccache
+        with:
+          key: build-${{ matrix.id }}
+
       - name: 構成
         shell: bash
         env:
@@ -161,7 +195,8 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DKRISITE_COORD_BITS=${{ matrix.coord_bits }} \
-            -DKRISITE_CHECKED_ARITH=ON
+            -DKRISITE_CHECKED_ARITH=ON \
+            ${{ runner.os == 'Linux' && '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache' || '' }}
 
       - name: ビルド
         run: cmake --build build
@@ -196,11 +231,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - uses: ./.github/actions/ccache
+        with:
+          key: adaptive
       - run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DKRISITE_COORD_BITS=${{ matrix.coord_bits }} \
             -DKRISITE_CHECKED_ARITH=ON \
-            -DKRISITE_DEFAULT_ADAPTIVE=ON
+            -DKRISITE_DEFAULT_ADAPTIVE=ON \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - run: cmake --build build
       - run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
       # **空回りの番人が実際に働いたことをログに残す。**
@@ -220,7 +259,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
-      - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      # **`-v` でコンパイル行を見るジョブなので、ccache を通しても行は変わりません。**
+      - uses: ./.github/actions/ccache
+        with:
+          key: debug-checked
+      - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: Debug で検査が自動 ON になること
         run: |
           cmake --build build -v --target bitwidth 2>&1 | tee build.log
@@ -257,7 +300,10 @@ jobs:
       - run: cmake --build build
       - env:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-        run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
+        # **並列度を落としています。** ASan は影のメモリを確保するので、
+        # 4 並列だと 4 コア / 16GB のランナーで OOM に当たり得ます。
+        # OOM は「テストが落ちた」と区別が付きにくいので、ここは安全側に倒します。
+        run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 2
       - name: ccache の効き
         run: ccache -s | head -12
 
@@ -277,15 +323,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        flags:
-          - "-DKRISITE_NO_INTRINSICS"
-          - "-DKRISITE_NO_INTRINSICS -DKRISITE_NO_INT128"
+        include:
+          - { key: nointr,     flags: "-DKRISITE_NO_INTRINSICS" }
+          - { key: noint128,   flags: "-DKRISITE_NO_INTRINSICS -DKRISITE_NO_INT128" }
     steps:
       - uses: actions/checkout@v4
       - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      # 鍵にフラグを含めます。**経路が違えば別のオブジェクトなので、混ぜると命中しません。**
+      - uses: ./.github/actions/ccache
+        with:
+          key: fallback-${{ matrix.key }}
       - run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DKRISITE_CHECKED_ARITH=ON -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+            -DKRISITE_CHECKED_ARITH=ON -DCMAKE_CXX_FLAGS="${{ matrix.flags }}" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - run: cmake --build build
       - run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4 -LE heavy_geometry
 
@@ -302,13 +353,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - uses: ./.github/actions/ccache
+        with:
+          key: gmp-${{ matrix.coord_bits }}
       - name: GMP を導入
         run: sudo apt-get update && sudo apt-get install -y libgmp-dev
       - run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DKRISITE_COORD_BITS=${{ matrix.coord_bits }} \
             -DKRISITE_CHECKED_ARITH=ON \
-            -DKRISITE_BUILD_TESTS_WITH_GMP=ON
+            -DKRISITE_BUILD_TESTS_WITH_GMP=ON \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - run: cmake --build build
       # SPEC §9: 算術 10^7 件、述語 10^6 件以上
       - run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
