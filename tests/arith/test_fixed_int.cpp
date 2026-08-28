@@ -183,13 +183,28 @@ void test_determinants() {
             KRI_CHECK(sign(det3(q)) == -sign(det3(m)));
         }
 
-        // det2 の反対称性
+        // det2 の反対称性（行の交換で符号が反転し、行が等しければ 0）
         const auto a = from_i64<1>(rng.range(-100000, 100000));
         const auto b = from_i64<1>(rng.range(-100000, 100000));
         const auto c = from_i64<1>(rng.range(-100000, 100000));
         const auto d = from_i64<1>(rng.range(-100000, 100000));
-        KRI_CHECK(sign(det2(a, b, c, d)) == -sign(det2(b, a, d, c)));
-        KRI_CHECK(sign(det2(a, b, a, b)) == 0);
+        const row2<1> r0{a, b}, r1{c, d};
+        KRI_CHECK(sign(det2(r0, r1)) == -sign(det2(r1, r0)));
+        KRI_CHECK(sign(det2(r0, r0)) == 0);
+        // 列の交換でも反転する
+        KRI_CHECK(sign(det2(r0, r1)) == -sign(det2(row2<1>{b, a}, row2<1>{d, c})));
+
+        // 外積は各成分が det2。**独立に書き下した式と一致すること**（別経路の検算）
+        const auto e = from_i64<1>(rng.range(-100000, 100000));
+        const auto f = from_i64<1>(rng.range(-100000, 100000));
+        const vec3<1> u{a, b, c}, v{d, e, f};
+        const auto cr = cross(u, v);
+        KRI_CHECK(sign(cr.x) == sign(sub_widen(mul(b, f), mul(c, e))));
+        KRI_CHECK(sign(cr.y) == sign(sub_widen(mul(c, d), mul(a, f))));
+        KRI_CHECK(sign(cr.z) == sign(sub_widen(mul(a, e), mul(b, d))));
+        // u x u = 0
+        const auto z3 = cross(u, u);
+        KRI_CHECK(is_zero(z3.x) && is_zero(z3.y) && is_zero(z3.z));
     }
 }
 

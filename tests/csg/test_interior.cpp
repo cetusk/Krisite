@@ -50,9 +50,16 @@ bool rejected_reason_holds(const IPoint& p1, const IPoint& p2, const PlaneD& sp,
     const W sx = krisite::arith::resize<limbs::kOffset>(sp.a);
     const W sy = krisite::arith::resize<limbs::kOffset>(sp.b);
     const W sz = krisite::arith::resize<limbs::kOffset>(sp.c);
-    const auto cx = krisite::arith::det2(ny, nz, sy, sz);  // ny*sz - nz*sy
-    const auto cy = krisite::arith::det2(nz, nx, sz, sx);  // nz*sx - nx*sz
-    const auto cz = krisite::arith::det2(nx, ny, sx, sy);  // nx*sy - ny*sx
+    // **正解器なので `arith::cross` は使いません。** 被検体と同じ関数を通すと、
+    // 同じ間違いをして両方が通ります（`CLAUDE.md`「正解器は被検体と別経路で書く」）。
+    // ここでは外積の成分を `det2` で直接書き下します。
+    using krisite::arith::row2;
+    const auto cx = krisite::arith::det2(row2<limbs::kOffset>{ny, nz},
+                                         row2<limbs::kOffset>{sy, sz});  // ny*sz - nz*sy
+    const auto cy = krisite::arith::det2(row2<limbs::kOffset>{nz, nx},
+                                         row2<limbs::kOffset>{sz, sx});  // nz*sx - nx*sz
+    const auto cz = krisite::arith::det2(row2<limbs::kOffset>{nx, ny},
+                                         row2<limbs::kOffset>{sx, sy});  // nx*sy - ny*sx
     return krisite::arith::is_zero(cx) && krisite::arith::is_zero(cy) &&
            krisite::arith::is_zero(cz);
 }
