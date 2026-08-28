@@ -188,13 +188,12 @@ jobs:
         run: |
           # 期待する変異テストの件数。減っていたら「変異テストがある」だけの状態に
           # 戻っているので落とす。
-          # **GMP OFF での件数です。** GMP を有効にすると体積検査の変異
-          # （変異 6 / 変異 7）が 2 件増えます。このジョブは GMP OFF なので決定的です。
-          # **裏を返すと、体積の変異は CI では走っていません**（主検出器は
-          # early_out / cache で、どちらも CI に居ます。体積は補助です）。
+          # **体積の変異は別ラベル（mutation_gmp）です**（SPEC-phase2 §9.4.1）。
+          # ラベルが分かれているので、**この件数は GMP の有無で動きません。**
+          # 体積の変異は下の mutation_gmp ジョブが回します。
           n=$(ctest --test-dir build -L mutation -N | grep -c "Test #")
           echo "登録されている変異テスト: $n 件"
-          test "$n" -eq 60 || { echo "変異テストの件数が想定と違います（期待 60）"; exit 1; }
+          test "$n" -eq 67 || { echo "変異テストの件数が想定と違います（期待 67）"; exit 1; }
           ctest --test-dir build --no-tests=error -L mutation --output-on-failure
       - name: 変異 3 は検査ビルドでは表明が止めること
         # もう一方の検出経路。位相検査に届く前に fragment_sign の不変条件が落とす。
@@ -212,6 +211,42 @@ jobs:
           fi
           grep -q "krisite: " out.txt || { echo "表明で止まっていません"; cat out.txt; exit 1; }
           echo "OK: 表明が停止させました"
+
+  # ---- GMP 付きの変異テスト（SPEC-phase2 §9.4.1）------------------------------
+  #
+  # **体積が意味を持つ変異だけを GMP 付きで回します。** 変異ジョブ全体を GMP 付きに
+  # しても、時間が増えるだけで検出力は増えません。
+  #
+  #   変異 6 / 7             体積が**検出器**（FAIL が期待値）
+  #   変異 8 / 8a / 8b / 9   体積は**素通り**（PASS が期待値。§5.1.3 の定理）
+  #
+  # **素通りの側にも意味があります。** 「体積は分裂の誤りを検出しない」という
+  # 役割分担を固定しているので、体積で拾えるようになったら（＝分裂が幾何を
+  # 動かしたら）ここが落ちます。
+  mutation_gmp:
+    name: GMP 付き変異テスト (§9.4.1)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - name: GMP を導入
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev
+      - name: 構成
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKRISITE_CHECKED_ARITH=OFF \
+            -DKRISITE_BUILD_MUTANTS=ON \
+            -DKRISITE_BUILD_TESTS_WITH_GMP=ON
+      - name: ビルド
+        run: cmake --build build
+      - name: 体積の変異が期待どおりであること
+        run: |
+          # **空回りの番人。** GMP が見つからなければ 0 件で緑になってしまう。
+          n=$(ctest --test-dir build -L mutation_gmp -N | grep -c "Test #")
+          echo "登録されている GMP 変異テスト: $n 件"
+          test "$n" -eq 6 || { echo "件数が想定と違います（期待 6）"; exit 1; }
+          ctest --test-dir build --no-tests=error -L mutation_gmp --output-on-failure
 
   # ---- 外部正解器 Manifold（SPEC-phase1 §10.4 / §10.6）-----------------------
   #
