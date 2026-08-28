@@ -89,8 +89,8 @@ void run_case(const kritest::Case& c) {
 
     for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
         for (unsigned d = 0; d <= kMaxDepth; ++d) {
-            BoolOptions off;
-            off.depth = d;
+            // **既定値に依存しないこと**（§9.4 の CI ジョブで既定が反転する）
+            BoolOptions off = kritest::phase1_options(d);
             BoolOptions on = off;
             on.cache_points = true;
 

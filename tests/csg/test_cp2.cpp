@@ -39,7 +39,7 @@ const char* op_name(BoolOp op) {
 }
 
 TopologyReport run(const TriMesh& a, const TriMesh& b, BoolOp op, unsigned depth, BoolStats& st) {
-    const BoolMesh r = boolean_op(a, b, op, depth, &st);
+    const BoolMesh r = boolean_op(a, b, op, kritest::phase1_options(depth), &st);
     return check_topology(r.triangles);
 }
 
@@ -92,7 +92,7 @@ void test_case8_identical() {
         BoolStats su, si, sd;
         const TopologyReport u = run(a, a, BoolOp::Union, d, su);
         const TopologyReport i = run(a, a, BoolOp::Intersection, d, si);
-        const BoolMesh diff = boolean_op(a, a, BoolOp::Difference, d, &sd);
+        const BoolMesh diff = boolean_op(a, a, BoolOp::Difference, kritest::phase1_options(d), &sd);
 
         std::printf(
             "    深度%u  ∪:C=%zu g=%lld  ∩:C=%zu g=%lld  \\:F=%zu  "
@@ -194,7 +194,7 @@ void report_54() {
         const TriMesh a = c.make_a(), b = c.make_b();
         for (unsigned d : {0u, 1u, 2u, 3u}) {
             BoolStats st;
-            boolean_op(a, b, BoolOp::Union, d, &st);
+            boolean_op(a, b, BoolOp::Union, kritest::phase1_options(d), &st);
             std::printf("    %-3s %-4u %-8zu %-8zu %-8zu %-8zu %-8zu %-8zu %-8zu %zu/%zu\n", c.id,
                         d, st.fragments, st.duplicate_fragments, st.constructed_points,
                         st.merged_points, st.merged_by_value, st.max_planes_at_point,

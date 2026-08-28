@@ -62,6 +62,35 @@ jobs:
       - name: テスト（GMP 非依存の分）
         run: ctest --test-dir build --no-tests=error --output-on-failure
 
+  # ---- 適応分割モード（SPEC-phase2 §9.4）------------------------------------
+  #
+  # **固定深度モードも残します**（§0.1 の正解器として必要）。ここは既定を
+  # 「適応分割 + early-out + 構成点の保持」に反転させ、**Phase 1 の検査体系が
+  # 適応分割モードでも全通過する**ことを確かめるジョブです（§9.2）。
+  #
+  # **空回りしないことを cp3 が検査します。** 既定を反転させても、テストが構成を明示して
+  # いれば何も変わりません。適応分割モードでは葉の深さに差が出ていることを確かめます。
+  adaptive:
+    name: 適応分割モード (§9.4, b=${{ matrix.coord_bits }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        coord_bits: [21, 26]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_COORD_BITS=${{ matrix.coord_bits }} \
+            -DKRISITE_CHECKED_ARITH=ON \
+            -DKRISITE_DEFAULT_ADAPTIVE=ON
+      - run: cmake --build build
+      - run: ctest --test-dir build --no-tests=error --output-on-failure
+      # **空回りの番人が実際に働いたことをログに残す。**
+      - name: 適応分割が効いていることを確認
+        run: ctest --test-dir build --no-tests=error -R '^cp3$' -V | grep -F "§9.4 適応分割モード"
+
   # ---- 検査ビルド（Debug では KRISITE_CHECKED_ARITH が自動で ON）--------------
   debug-checked:
     name: Linux Debug (検査自動 ON)

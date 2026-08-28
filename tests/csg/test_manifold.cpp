@@ -79,10 +79,12 @@ Topo topo_of(const manifold::Manifold& m) {
     return r;
 }
 
-/// §9.3: 孤立した頂点・辺接触は合否判定から除外します。
-/// **定義は `corpus_expect.hpp` の 1 箇所だけです。**
+/// §9.3 の除外。**接触の分裂（SPEC-phase2 §5）を入れたので 0 件です。**
+///
+/// Phase 1 は孤立した頂点・辺接触の $\cup$ を除外していました。分裂後は全ケースで
+/// 多様体になるので、**Manifold と全構成で比較できます**（§5.6）。
 bool excluded(const std::string& id, BoolOp op) {
-    return kritest::exclusion_of(id, op) != kritest::Exclusion::None;
+    return kritest::exclusion_of(id, op, /*split_contacts=*/true) != kritest::Exclusion::None;
 }
 
 /// 実際に比較した (ケース, 演算, 深度) の組数。
@@ -107,15 +109,29 @@ void check_case(const kritest::Case& c) {
                                                                     : manifold::OpType::Subtract;
         const Topo want = topo_of(ma.Boolean(mb, mop));
 
-        for (unsigned d = 0; d <= 3; ++d) {
+        // 深度 0〜3 は固定深度、**4 番目は最適化を全部入れた構成**（適応分割 +
+        // early-out + 構成点の保持）。出荷時の構成が外部正解器で守られていることに
+        // 意味があります。
+        for (unsigned d = 0; d <= 4; ++d) {
             BoolStats st;
-            const BoolMesh r = boolean_op(A, B, op, d, &st);
+            BoolOptions opt;
+            opt.depth = (d <= 3) ? d : 3;
+            opt.adaptive = (d == 4);
+            opt.early_out = (d == 4);
+            opt.cache_points = (d == 4);
+            const BoolMesh r = boolean_op(A, B, op, opt, &st);
             const TopologyReport t = check_topology(r.triangles);
+            // §5.4: **$g$ は $\chi$ が偶数のときにしか種数を意味しません。**
+            // 分裂後は必ず偶数のはずなので、そこを先に確かめてから $g$ で比べます
+            KRI_CHECK_MSG(t.empty || t.chi_even,
+                          std::string("ケース ") + c.id + " " + op_name(op) +
+                              ": 分裂後なのに χ が奇数（§5.4）。g で比較できません");
             const bool skip = excluded(c.id, op);
             const bool agree =
                 (t.components == want.components) && (t.genus_total == want.genus_total);
-            std::printf("    d%u %s  Krisite C=%zu g=%-2lld / Manifold C=%zu g=%-2lld  %s\n", d,
-                        op_name(op), t.components, t.genus_total, want.components, want.genus_total,
+            std::printf("    %-8s %s  Krisite C=%zu g=%-2lld / Manifold C=%zu g=%-2lld  %s\n",
+                        (d <= 3) ? ("d" + std::to_string(d)).c_str() : "適応+全部", op_name(op),
+                        t.components, t.genus_total, want.components, want.genus_total,
                         skip ? "（§9.3 で合否対象外）" : (agree ? "一致" : "**不一致**"));
             if (skip) continue;
             ++compared;
@@ -147,7 +163,8 @@ int main() {
             if (excluded(c.id, op)) ++n_excluded;
         }
     }
-    const std::size_t expect = kritest::corpus().size() * 3 * 4 - n_excluded * 4;
+    // 深度 0〜3 + 適応分割の 5 段。**除外は 0 件のはず**（§5.3）
+    const std::size_t expect = kritest::corpus().size() * 3 * 5 - n_excluded * 5;
     std::printf("\n  比較した組数: %zu（期待 %zu）\n", compared, expect);
     KRI_CHECK_MSG(compared == expect, "比較した組数が期待と違う（" + std::to_string(compared) +
                                           " 対 " + std::to_string(expect) +

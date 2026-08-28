@@ -48,6 +48,50 @@ inline std::string pair_msg(const A& a, const B& b) {
     return "左辺 = " + std::to_string(a) + " / 右辺 = " + std::to_string(b);
 }
 
+/// **Phase 1 の挙動（§0.1 の正解器）。すべての最適化を明示的に切ります。**
+///
+/// **既定値に依存してはいけません。** `KRISITE_DEFAULT_ADAPTIVE`（SPEC-phase2 §9.4 の
+/// CI ジョブ）で `BoolOptions` の既定が反転するので、比較の基準側は必ず明示すること。
+/// **一度これで落ちました** — 「無効側」が無効でなくなり、比較が自分自身との比較に
+/// なっていました。
+inline krisite::csg::BoolOptions phase1_options(unsigned depth) {
+    krisite::csg::BoolOptions o;
+    o.depth = depth;
+    o.cull_planes = true;  // §2.3 の絞り込みは CP1 で no-op と確認済み
+    o.adaptive = false;
+    o.early_out = false;
+    o.cache_points = false;
+    o.split_contacts = false;
+    return o;
+}
+
+/// **Phase 1 の検査体系を回すときの構成**（SPEC-phase2 §9.2 / §9.4）。
+///
+/// 既定は Phase 1 の挙動ですが、**CI の「適応分割モード」ジョブ**
+/// （`KRISITE_DEFAULT_ADAPTIVE`）では適応分割 + early-out + 構成点の保持になります。
+/// **「Phase 1 の検査体系が適応分割モードで全通過する」ことを、同じテストで確かめます。**
+///
+/// **比較のテスト（正解器と突き合わせるもの）には使わないでください。**
+/// あちらは基準側を `phase1_options` で固定する必要があります。
+inline krisite::csg::BoolOptions corpus_options(unsigned depth) {
+    krisite::csg::BoolOptions o = phase1_options(depth);
+#if defined(KRISITE_DEFAULT_ADAPTIVE)
+    o.adaptive = true;
+    o.early_out = true;
+    o.cache_points = true;
+#endif
+    return o;
+}
+
+/// このビルドが §9.4 の適応分割モードか。
+inline constexpr bool adaptive_mode() noexcept {
+#if defined(KRISITE_DEFAULT_ADAPTIVE)
+    return true;
+#else
+    return false;
+#endif
+}
+
 /// テスト本体の末尾で呼ぶ。
 inline int finish(const char* name) {
     if (g_failures == 0) {

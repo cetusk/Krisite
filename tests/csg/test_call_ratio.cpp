@@ -42,9 +42,8 @@ int main() {
         for (unsigned d = 0; d <= 3; ++d) {
             for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
                 BoolStats st;
-                BoolOptions opt;
-                opt.depth = d;
-                boolean_op(a, b, op, opt, &st);
+                // **既定値に依存しないこと**（§9.4 の CI ジョブで既定が反転する）
+                boolean_op(a, b, op, kritest::phase1_options(d), &st);
                 KRI_CHECK_MSG(st.side_calls > 0,
                               "side が 1 回も呼ばれていない（計数が効いていない）");
                 KRI_CHECK_MSG(st.intersect3_calls > 0, "intersect3 が 1 回も呼ばれていない");
@@ -89,8 +88,7 @@ int main() {
         for (unsigned d = 0; d <= 3; ++d) {
             for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
                 BoolStats st;
-                BoolOptions opt;
-                opt.depth = d;
+                BoolOptions opt = kritest::phase1_options(d);
                 opt.cache_points = true;
                 boolean_op(a, b, op, opt, &st);
                 c_side += st.side_calls;
@@ -121,8 +119,7 @@ int main() {
         for (const kritest::Case& c : kritest::corpus()) {
             const auto a = c.make_a(), b = c.make_b();
             for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
-                BoolOptions opt;
-                opt.depth = 3;
+                BoolOptions opt = kritest::phase1_options(3);
                 opt.cache_points = cache;
                 opt.adaptive = adaptive;
                 opt.early_out = early;

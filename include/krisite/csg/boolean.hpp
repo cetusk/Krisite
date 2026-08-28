@@ -228,7 +228,14 @@ struct BoolOptions {
     bool cull_planes = true;
     /// **適応分割**（§3.1）。偽なら常に最大深度まで分割する固定深度モード。
     /// **固定深度モードを消さないこと。** §9.1 の正解器です
+    ///
+    /// `KRISITE_DEFAULT_ADAPTIVE` を定義すると既定が反転します（§9.4 の CI ジョブ用）。
+    /// **明示的に指定すれば従来どおり**なので、比較のテストは影響を受けません。
+#if defined(KRISITE_DEFAULT_ADAPTIVE)
+    bool adaptive = true;
+#else
     bool adaptive = false;
+#endif
     /// 分割を打ち切る三角形数の閾値（§3.1）。0 なら閾値では打ち切らない
     std::size_t leaf_threshold = 0;
     /// **接触の分裂**（§5）。**既定で有効です**（§5.2）。
@@ -244,12 +251,20 @@ struct BoolOptions {
     ///
     /// **無効側が Phase 1 の挙動 = §9.1 の正解器です。** キャッシュの有無で出力は
     /// 1 ビットも変わらないはずなので、比較は値の完全一致で行えます。
+#if defined(KRISITE_DEFAULT_ADAPTIVE)
+    bool cache_points = true;
+#else
     bool cache_points = false;
+#endif
     /// **early-out**（§3.2）。相手の三角形が 1 つも無いセルで arrangement と分類を省く。
     ///
     /// **無効側が正解器です。** 有効・無効を同一プロセス内で比較すれば、省いたことで
     /// 答えが変わっていないことが直接検査できます（§0.1 と同じ構図）。
+#if defined(KRISITE_DEFAULT_ADAPTIVE)
+    bool early_out = true;
+#else
     bool early_out = false;
+#endif
 };
 
 /// ブール演算。`depth` は八分木の深度（実行時パラメータ。SPEC-phase1 §2.2）。

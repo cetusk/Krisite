@@ -60,7 +60,7 @@ void test_monotonic() {
             std::string raw_line, can_line;
             for (unsigned d = 0; d <= kMaxDepth; ++d) {
                 BoolStats st;
-                boolean_op(a, b, op, d, &st);
+                boolean_op(a, b, op, kritest::phase1_options(d), &st);
                 if (d == 0) {
                     raw_line = std::to_string(st.raw_fragments);
                     can_line = std::to_string(st.fragments);
@@ -99,8 +99,8 @@ void test_guard_detects_undersized() {
     KRI_CHECK_MSG(!kritest::size_discipline_ok(a, b),
                   "番人の検出力: この配置はサイズ規律に違反しているはず");
     BoolStats s0, s3;
-    boolean_op(a, b, BoolOp::Union, 0, &s0);
-    boolean_op(a, b, BoolOp::Union, kMaxDepth, &s3);
+    boolean_op(a, b, BoolOp::Union, kritest::phase1_options(0), &s0);
+    boolean_op(a, b, BoolOp::Union, kritest::phase1_options(kMaxDepth), &s3);
     std::printf(
         "\n  番人の検出力（規律違反の配置）: 断片 深度0=%zu 深度%u=%zu"
         "（生 %zu → %zu）\n",
