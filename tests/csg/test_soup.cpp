@@ -149,6 +149,23 @@ void test_chain_is_exact() {
         b2 = std::max(b2, soup_bits(s2));
         b3 = std::max(b3, soup_bits(s3));
 
+        // **同じメッシュを 2 度使う連鎖**（CP3 の段 1 で開きました）。
+        //
+        // 内外の 1 ビットでは「同じ曲面を 2 度跨いだ」を表せず、CP2 では 17 / 44 が
+        // 食い違っていました。**巻き数なら w = 2 になるだけ**です。
+        {
+            const csg::PolySoup ub = csg::boolean(csg::boolean(SA, SB, csg::BoolOp::Union, o), SB,
+                                                  csg::BoolOp::Difference, o);
+            const csg::PolySoup ab = csg::boolean(SA, SB, csg::BoolOp::Difference, o);
+            csg::ToMeshOptions t2;
+            t2.split_contacts = false;
+            const TopologyReport t_ub = check_topology(csg::to_mesh(ub, t2).triangles);
+            const TopologyReport t_ab = check_topology(csg::to_mesh(ab, t2).triangles);
+            KRI_CHECK_MSG(t_ub.components == t_ab.components && t_ub.chi == t_ab.chi,
+                          tag + ": (A∪B)\\B と A\\B が食い違う（同じ曲面を 2 度跨ぐ配置）" +
+                              kritest::pair_msg(t_ab.chi, t_ub.chi));
+        }
+
         // 自己整合: (A ∪ B) \ D  ≡  (A \ D) ∪ (B \ D)
         csg::ToMeshOptions tm;
         tm.split_contacts = false;

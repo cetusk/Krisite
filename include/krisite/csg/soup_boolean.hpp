@@ -206,7 +206,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             bool any = false;
             for (std::size_t i = 0; i < n_src; ++i) {
                 if (count[i] > 0) continue;
-                forced[i] = point_inside(out.sources[i], corner) ? 1 : 0;
+                int wo = 0, cf = 0, cb = 0;
+                winding_split(out.sources[i], geom::to_homogeneous(corner),
+                              out.table.at(all_split.empty() ? PlaneId{0} : all_split.front()), &wo,
+                              &cf, &cb);
+                KRISITE_CHECK(cf == 0 && cb == 0,
+                              "early-out: セルの隅が source の曲面に載っている"
+                              "（曲面が無いはずのセル）");
+                forced[i] = static_cast<std::int8_t>(wo);
                 ++st.early_out_raycasts;
                 any = true;
             }
@@ -407,117 +414,77 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
     }
 
-    // ---- 7. 分類（真偽値版の指示関数）----------------------------------------
-    std::map<std::pair<std::uint32_t, std::vector<std::int8_t>>, bool> membership;
+    // ---- 7. 分類（WNV。`SPEC-phase3.md` §5.1 / §14 の CP3 の変更 1）--------------
+    //
+    // **内外の 1 ビットではなく巻き数で持ちます。** 同じ曲面を 2 度跨ぐ配置
+    // （同じメッシュを 2 度使う連鎖、入れ子、自己交差）は、真偽値では表せません。
+    //
+    // 断片の表裏の巻き数は `winding_split` が 3 つに分けて返します。
+    //
+    //   w_other  断片に載っていない面から決まる分（表裏で共通）
+    //   c_front  法線の側（+N）で、載っている面が寄与する分
+    //   c_back   反対側（-N）で寄与する分
+    //
+    // **載っている面を除いてからレイキャストする**のが要点です。境界上から飛ばすと
+    // 契約（`point_on_boundary` でないこと）が破れます。
+    struct Wnd {
+        int w_other, c_front, c_back;
+    };
+    std::map<std::pair<std::uint32_t, std::vector<std::int8_t>>, Wnd> wcache;
 
     for (const auto& kv : regions) {
-        // **この領域に載っている面をすべて集めます。** 共平面重複（複数の source の面が
-        // 同じ領域を占める）は例外ではなく常態です（`SPEC-phase2.md` §4.3.3）。
-        //
-        // EMBER §3.4 の「$y$ が表面上にある場合」の扱いに倣います。基準の向きを
-        // 支持平面の法線 $N$ とすると、**$+N$ 側の内外は、載っている面ごとに決まります。**
-        //
-        //   面の外向き法線が $+N$   → その source の内部は $-N$ 側 → $+N$ 側は【外】
-        //   面の外向き法線が $-N$   → $+N$ 側は【内】
-        //
-        // 反対側（$-N$ 側）はそれぞれ反転します。
+        // 同じ領域に複数の断片が載っていても、出力するのは 1 枚です（§5.4.1）。
+        // **巻き数は source のメッシュから決まる**ので、どの断片を代表に取っても同じです。
         const std::size_t pick = *std::min_element(
             kv.second.begin(), kv.second.end(), [&](std::size_t a, std::size_t b) {
                 return std::make_tuple(frag_src[a], frag_tag[a], a) <
                        std::make_tuple(frag_src[b], frag_tag[b], b);
             });
         const Fragment& f = frags[pick];
+        const geom::PlaneD& refpl = out.table.at(f.support);
 
-        // source ごとに、この領域に載っている面の向きを集める
-        std::vector<int> front(n_src, -1);  // -1 = 載っていない、0 = 外、1 = 内
-        std::vector<char> conflict(n_src, 0);
-        for (std::size_t fi : kv.second) {
-            const std::uint32_t j = frag_src[fi];
-            const int bit = frags[fi].flipped ? 1 : 0;
-            if (front[j] < 0) {
-                front[j] = bit;
-            } else if (front[j] != bit) {
-                // **同じ source の面が逆向きに重なっている**（自己接触。ケース 16）。
-                // 巻き数の偶奇では両側が同じになるので、**跨いでも内外が変わりません。**
-                conflict[j] = 1;
-            }
-        }
-
-        // 載っていない source は、**この領域が source の曲面と重なっていないか**を
-        // 先に確かめます。**スープに面が残っていなくても曲面はそこにあります**
-        // （前段で消えた面。連鎖で実際に踏みました）。重なっていればレイキャストは
-        // 境界上からの発射になり、答えが定まりません。
         bool need_point = false;
         for (std::size_t i2 = 0; i2 < n_src; ++i2) {
-            if (front[i2] >= 0 && !conflict[i2]) continue;
-            if (frag_forced[pick][i2] >= 0) continue;
-            need_point = true;
+            if (frag_forced[pick][i2] < 0) need_point = true;
         }
         geom::HPointD rep{};
-        if (need_point) {
-            rep = interior_point(out.table, f, cache, &st.interior);
-            const geom::PlaneD& refpl = out.table.at(f.support);
-            for (std::size_t i2 = 0; i2 < n_src; ++i2) {
-                if (front[i2] >= 0 || frag_forced[pick][i2] >= 0) continue;
-                const int o = boundary_orientation(out.sources[i2], rep, refpl);
-                if (o == 0) continue;
-                // 外向き法線が +N なら、+N 側は source の【外】
-                front[i2] = (o > 0) ? 0 : 1;
-                conflict[i2] = 0;
-                ++st.coplanar_same;  // §11 の記録（重なりの検出回数）
-            }
-        }
+        if (need_point) rep = interior_point(out.table, f, cache, &st.interior);
 
         std::vector<std::int32_t> w_front(n_src, 0), w_back(n_src, 0);
         for (std::size_t i2 = 0; i2 < n_src; ++i2) {
-            if (front[i2] >= 0 && !conflict[i2]) {
-                w_front[i2] = front[i2];
-                w_back[i2] = 1 - front[i2];  // 跨ぐと内外が入れ替わる
+            if (frag_forced[pick][i2] >= 0) {
+                // セルに曲面が無い source。隅で決めた巻き数が全体で一定
+                w_front[i2] = frag_forced[pick][i2];
+                w_back[i2] = frag_forced[pick][i2];
                 continue;
             }
-            bool in = false;
-            if (frag_forced[pick][i2] >= 0) {
-                in = frag_forced[pick][i2] == 1;
-            } else {
-                std::vector<std::int8_t> sig(planes_of_src[i2].size());
-                for (std::size_t k = 0; k < planes_of_src[i2].size(); ++k) {
-                    sig[k] = static_cast<std::int8_t>(
-                        fragment_sign(out.table, f, planes_of_src[i2][k], cache));
-                }
-                const auto key = std::make_pair(static_cast<std::uint32_t>(i2), std::move(sig));
-                auto it = membership.find(key);
-                if (it == membership.end()) {
-                    in = point_inside(out.sources[i2], rep);
-#if defined(KRISITE_DEBUG_SOUP)
-                    std::fprintf(stderr,
-                                 "  raycast src=%zu → %d 境界上=%d rep≈(%.2f,%.2f,%.2f) sig=[", i2,
-                                 (int)in, (int)point_on_boundary(out.sources[i2], rep),
-                                 detail::approx(rep.x) / detail::approx(rep.w),
-                                 detail::approx(rep.y) / detail::approx(rep.w),
-                                 detail::approx(rep.z) / detail::approx(rep.w));
-                    for (std::int8_t v : key.second) std::fprintf(stderr, "%d ", (int)v);
-                    std::fprintf(stderr, "]\n");
-#endif
-                    ++st.raycasts;
-                    ++st.regions;
-                    it = membership.emplace(key, in).first;
-                } else {
-                    in = it->second;
-                }
+            std::vector<std::int8_t> sig(planes_of_src[i2].size());
+            for (std::size_t k = 0; k < planes_of_src[i2].size(); ++k) {
+                sig[k] = static_cast<std::int8_t>(
+                    fragment_sign(out.table, f, planes_of_src[i2][k], cache));
             }
-            w_front[i2] = in ? 1 : 0;
-            w_back[i2] = w_front[i2];  // 跨いでも変わらない
+            const auto key = std::make_pair(static_cast<std::uint32_t>(i2), std::move(sig));
+            auto it = wcache.find(key);
+            if (it == wcache.end()) {
+                Wnd v{};
+                winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back);
+                ++st.raycasts;
+                ++st.regions;
+                it = wcache.emplace(key, v).first;
+            }
+            w_front[i2] = it->second.w_other + it->second.c_front;
+            w_back[i2] = it->second.w_other + it->second.c_back;
         }
 
         const bool in_front = out.indicator.eval(w_front);
         const bool in_back = out.indicator.eval(w_back);
 #if defined(KRISITE_DEBUG_SOUP)
         {
-            std::fprintf(stderr, "region src=%u tag=%u n=%zu  wF=[", frag_src[pick], frag_tag[pick],
+            std::fprintf(stderr, "region src=%u tag=%u n=%zu wF=[", frag_src[pick], frag_tag[pick],
                          kv.second.size());
-            for (std::int32_t v : w_front) std::fprintf(stderr, "%d", v);
+            for (std::int32_t v : w_front) std::fprintf(stderr, "%d ", v);
             std::fprintf(stderr, "] wB=[");
-            for (std::int32_t v : w_back) std::fprintf(stderr, "%d", v);
+            for (std::int32_t v : w_back) std::fprintf(stderr, "%d ", v);
             std::fprintf(stderr, "] → %d/%d %s\n", (int)in_front, (int)in_back,
                          in_front == in_back ? "捨てる" : "出力");
         }
@@ -529,13 +496,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         q.frag.flipped = false;  // 基準は支持平面の法線
         q.src = frag_src[pick];
         q.tag = frag_tag[pick];
-        const octree::CellBox cb = octree::box_of(frag_cell[pick]);
+        const octree::CellBox cb2 = octree::box_of(frag_cell[pick]);
         for (int k = 0; k < 3; ++k) {
-            q.aabb.lo[k] = cb.lo[k];
-            q.aabb.hi[k] = cb.hi[k];
+            q.aabb.lo[k] = cb2.lo[k];
+            q.aabb.hi[k] = cb2.hi[k];
         }
-        // **立体は「in の側」にあります。** 外向き法線は立体から外を向くので、
-        // $+N$ 側が in なら法線は $-N$、つまり反転して出力します（§5.2）。
+        // **立体は in の側にあります。** 外向き法線は立体から外を向くので、
+        // +N 側が in なら法線は -N、つまり反転して出力します（§5.2）。
         if (in_front) {
             std::vector<std::uint32_t> dummy(vertex_count(q.frag), 0);
             std::vector<PlaneId> e = q.frag.edge;
