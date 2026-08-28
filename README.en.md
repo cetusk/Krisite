@@ -15,9 +15,9 @@
 
 `Krisite` is a header-only C++20 library for 3D data. The long-term goal is to unify
 point-cloud compression, meshing, and exact boolean operations.
-**Phase 0 (the arithmetic foundation) and Phase 1 (minimal validation of output
-extraction) are complete, and the Phase 1 verdict is: continue.** Work is now on
-**Phase 2 (adaptive subdivision and constructed-point reuse)**.
+**Phase 0 (the arithmetic foundation), Phase 1 (minimal validation of output
+extraction), and Phase 2 (adaptive subdivision and output semantics) are complete.**
+The Phase 1 verdict was: continue. Work is now on **the Phase 3 (parallelism) spec**.
 [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single source of truth for where the
 project stands (Japanese).
 
@@ -27,7 +27,7 @@ project stands (Japanese).
 |---|---|---|
 | `arith/` | Fixed-width exact integers — no dynamic allocation, no exceptions, no global state | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
 | `geom/` | Plane-based geometric predicates. **Widths live in the type**, so exceeding a derived bound is a compile error | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
-| `mesh/` `octree/` `csg/` | Exact booleans ($\cup$ / $\cap$ / $\setminus$), topology checking, fixed-depth spatial subdivision | [`SPEC-phase1.md`](docs/SPEC-phase1.md) |
+| `mesh/` `octree/` `csg/` | Exact booleans ($\cup$ / $\cap$ / $\setminus$), topology checking, **adaptive subdivision + early-out + constructed-point reuse**, **contact splitting** (non-manifold output semantics) | [`SPEC-phase1.md`](docs/SPEC-phase1.md) / [`SPEC-phase2.md`](docs/SPEC-phase2.md) |
 
 **No floating point, no epsilons.** Every decision is the sign of an exact integer.
 
@@ -138,6 +138,7 @@ cmake --build build-rel
 | `KRISITE_BUILD_TESTS_WITH_GMP` | **OFF** | GMP differential tests (LGPL, tests only) |
 | `KRISITE_BUILD_TESTS_WITH_MANIFOLD` | **OFF** | Manifold oracle (Apache-2.0, tests only) |
 | `KRISITE_BUILD_MUTANTS` | OFF | Mutation tests (requires checking OFF) |
+| `KRISITE_DEFAULT_ADAPTIVE` | OFF | Make adaptive subdivision + early-out + constructed-point reuse the default for boolean operations |
 | `KRISITE_BUILD_BENCH` | OFF | Build the benchmarks |
 
 `KRISITE_CHECKED_ARITH` is independent of `NDEBUG`. Passing
@@ -150,14 +151,33 @@ The matrix of Linux (GCC/Clang) / macOS (Apple Silicon) / Windows (MSVC) ×
 and that file is the authority. There is no need to install those toolchains in a
 development container.
 
-CI also runs:
+**"Must be verified" and "runs on every PR" are different things.** The specs require
+the former; how often things run is an operational decision. The policy lives in
+[`docs/ROADMAP.md`](docs/ROADMAP.md) ("CI の方針") and has four tiers.
+
+| Tier | When | Contents |
+|---|---|---|
+| PR gate | Every PR | Formatting + the full test suite on one primary configuration |
+| Impact-triggered | PRs touching the relevant paths | Mutation tests, platform matrix, Manifold |
+| **main gate** | Push to main | **Every job** |
+| **Phase completion** | Closing a phase | **Record that every job was green, with the SHA it ran on** |
+
+**The requirement that every job is green before a phase closes has not been
+relaxed.** The tiers change frequency only; nothing was removed from the checks.
+
+CI runs:
 
 | Job | Contents |
 |---|---|
+| **PR gate** | Full test suite on Linux Clang, `b=21`. **Always runs** |
+| Changed scope | Decides from the changed paths which of the jobs below to run |
 | Fallback paths | Forces the `__int128` and 32-bit schoolbook paths explicitly |
+| **UBSan / ASan** | Undefined behaviour on the **shipping configuration (checking OFF)** |
 | GMP differential | $10^7$ arithmetic and $10^6$ predicate comparisons, plus volume identities |
+| **Adaptive-subdivision mode** | Flips the default to adaptive and confirms **the Phase 1 test suite still passes in full** |
 | Manifold oracle | Compares component count and genus of boolean output against an independent implementation |
 | **Mutation tests** | Injects deliberate faults and pins down **both** which tests catch them **and** which combinations do not |
+| **Mutation tests with GMP** | Runs only the mutations for which volume is meaningful (2 detected + 4 deliberately not) |
 | clang-format | Formatting |
 
 ## Documentation
@@ -168,7 +188,7 @@ The design documents are written in Japanese.
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **Where the project stands. Start here** |
 | [`docs/SPEC-phase2.md`](docs/SPEC-phase2.md) | Phase 2 spec: split-plane culling, adaptive subdivision, non-manifold output semantics |
-| [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) | Phase 2 implementation notes (**as of CP1**). Decisions, rationale, dev-environment pitfalls |
+| [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) | Phase 2 implementation notes (**as of completion**). Decisions, rationale, and how added mechanisms moved the detectors |
 | [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 spec: the stitching question, test corpus, abort conditions |
 | [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) | Phase 1 implementation notes. Decisions, rationale, **and the mistakes that were corrected** |
 | [`docs/SPEC-phase0.md`](docs/SPEC-phase0.md) | Phase 0 spec: bit-width analysis, predicates, test requirements |
@@ -195,32 +215,46 @@ build time rather than in prose.
 | Phase | Contents | Status |
 |---|---|---|
 | 0 | Fixed-width exact integers + plane-based predicates | Complete (2026-08-26) |
-| **1** | **Minimal validation of output extraction** (fixed-depth subdivision, single-threaded) | **Criteria met (2026-08-27)** |
-| **2** | **Adaptive subdivision, constructed-point reuse, output semantics** | **In progress (CP1 passed)** |
-| 3 | Work-stealing parallelism, seam consistency | Not started |
+| 1 | Minimal validation of output extraction (fixed-depth subdivision, single-threaded) | Complete (2026-08-27) — **verdict: continue** |
+| **2** | **Adaptive subdivision, constructed-point reuse, output semantics** | **Complete (2026-08-28)** |
+| **3** | **Work-stealing parallelism, seam consistency** | **Spec in progress** |
 | 4 | Thingi10K full-corpus validation | Not started |
 | 5+ | Point-cloud codec, GWN, meshing | Not started |
 
-**Phase 1 was the decision point, and the verdict is: continue.** None of the abort
-conditions (`SPEC-phase1.md` §11) were met. The most dangerous one — *needing a
-mechanism whose bit-width bound cannot be derived* — had the widest margin of all.
-**The fixed-width-integer premise held all the way through**, and that is the reason
-to keep going. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Phase 1 was the decision point, and the verdict was: continue** (decided
+2026-08-27). None of the abort conditions (`SPEC-phase1.md` §11) were met. The most
+dangerous one — *needing a mechanism whose bit-width bound cannot be derived* — had
+the widest margin of all. **The fixed-width-integer premise held all the way
+through**, and that is the reason to keep going.
 
-### What Phase 1 measured
+**Phase 2 passed CP1 through CP5 and is complete** (2026-08-28). Its completion
+criteria are about correctness only; no performance target was set.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-These numbers drive the decision and the design of the next phases. Measured across
-18 cases × 3 operations × depths 0–3.
+### Measurements (Phase 1 → Phase 2)
+
+Across 22 cases × 3 operations × (fixed depths 0–3 + adaptive subdivision).
+
+| Quantity | Phase 1 | Phase 2 | Why it matters |
+|---|---|---|---|
+| Leaves | 32,256 | **7,434** | Adaptive subdivision; sets the grain for cell parallelism |
+| Fragments (after canonicalisation) | 15,624 | **8,217** | Adaptive subdivision → early-out |
+| `intersect3` calls | 1,539,819 | **28,836 (1.9%)** | **Constructed-point reuse** |
+| `side` : `intersect3` ratio | 1.26 : 1 | **160.57 : 1** | **Phase 1's top-priority problem is resolved.** Mixed-width `det3` has dropped in priority |
+| Wall clock, whole corpus | 220.9 ms | **47.6 ms** | Recorded, not a criterion. **Varies ±15%, so a 10% difference means nothing** |
+| Non-manifold outputs excluded | 3 configs | **0** | Contact splitting |
+
+The structural numbers Phase 1 established still hold.
 
 | Quantity | Measured | Why it matters |
 |---|---|---|
 | Max planes meeting at one point | **3** axis-aligned / **9** with slanted faces | **An axis-aligned-only corpus structurally cannot exceed 3** |
 | Rate of value-based vertex merging | up to **44%** | Keying on the plane triple alone is not enough |
 | Spatial extent of a merge group | **one cell and its neighbours** | No global sort needed; parallelism closes at cell scope |
-| `side` : `intersect3` call ratio | **1.26 : 1** | Constructed points are recomputed; caching them would cut this sharply |
 
 Details in [`docs/BENCH.md`](docs/BENCH.md); the reasoning behind them in
-[`docs/IMPL-phase1.md`](docs/IMPL-phase1.md).
+[`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) and
+[`docs/IMPL-phase2.md`](docs/IMPL-phase2.md).
 
 ## References
 
