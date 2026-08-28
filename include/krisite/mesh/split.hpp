@@ -68,6 +68,12 @@ struct SplitStats {
     /// **分裂しても多様体にならなかった配置の数**（§5.1.2.1）。
     /// **radial sort を実装する必要性の判断材料です。** 0 でなければ報告すること。
     std::size_t unresolved = 0;
+    /// **early-out で arrangement を省いたセル由来の三角形に接する頂点が分裂した回数**
+    /// （SPEC-phase2 §13 の CP5）。
+    ///
+    /// CP5 の相互作用「early-out × 分裂」が**実際に通ったこと**の指標です。
+    /// 省いたセルの断片は分割されないまま分裂に回るので、単独の検査では通りません。
+    std::size_t split_from_early_out = 0;
 };
 
 namespace detail {
@@ -104,7 +110,8 @@ private:
 inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t vertex_count,
                                        std::vector<std::uint32_t>* origin,
                                        SplitStats* stats = nullptr,
-                                       const std::vector<int>* owner = nullptr) {
+                                       const std::vector<int>* owner = nullptr,
+                                       const std::vector<char>* from_early_out = nullptr) {
     // ---- 無向辺 → 接する三角形 ----
     std::map<std::pair<VertexId, VertexId>, std::vector<std::size_t>> edge_tris;
     for (std::size_t t = 0; t < tris.size(); ++t) {
@@ -230,6 +237,15 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
 
         ++st.split_vertices;
         st.max_fans = std::max(st.max_fans, fan_id.size());
+        // §13 の CP5:「early-out × 分裂」を通った回数
+        if (from_early_out != nullptr) {
+            for (std::size_t i = 0; i < inc.size(); ++i) {
+                if (inc[i] < from_early_out->size() && (*from_early_out)[inc[i]] != 0) {
+                    ++st.split_from_early_out;
+                    break;
+                }
+            }
+        }
         st.predicted_delta_v += fan_id.size() - 1;
         for (std::size_t i = 0; i < inc.size(); ++i) {
             const std::uint32_t id = fan_id[dsu.find(i)];

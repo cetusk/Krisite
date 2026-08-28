@@ -560,6 +560,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     // 頂点 ID を使うためです。
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
     std::vector<geom::HPointD> points;
+    /// **その構成点が「覚えていた側」から返されたか**（§13 の CP5 の相互作用）。
+    std::vector<char> point_from_cache;
     // 構成点ごとの、生成に関わったセル添字の範囲（§5.4 の局所性）
     struct CellRange {
         std::uint32_t lo[3], hi[3];
@@ -586,6 +588,9 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         KRISITE_CHECK(arith::sign(v.w) != 0,
                       "boolean_op: 構成点の w が 0（3 平面が一点で交わっていない）");
         points.push_back(v);
+        // **`fragment_vertex` を呼んだ「あと」に見ます。** 分割の途中で作られた点が
+        // ここで再利用されたときだけ旗が立ちます（それが CP5 の見たい経路です）。
+        point_from_cache.push_back(cache != nullptr && cache->served_from_cache(k) ? 1 : 0);
         point_cells.push_back(CellRange{{ci[0], ci[1], ci[2]}, {ci[0], ci[1], ci[2]}});
         by_key.emplace(k, id);
         return id;
@@ -609,17 +614,20 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     });
     std::vector<std::uint32_t> remap(points.size());
     std::vector<geom::HPointD> merged;
+    std::vector<char> merged_from_cache;
 #if !defined(KRISITE_MUTATION_NO_STAGE2)
     for (std::size_t i = 0; i < order.size();) {
         std::size_t j = i;
         const auto id = static_cast<std::uint32_t>(merged.size());
         merged.push_back(points[order[i]]);
+        merged_from_cache.push_back(0);
         std::uint32_t lo[3] = {point_cells[order[i]].lo[0], point_cells[order[i]].lo[1],
                                point_cells[order[i]].lo[2]};
         std::uint32_t hi[3] = {point_cells[order[i]].hi[0], point_cells[order[i]].hi[1],
                                point_cells[order[i]].hi[2]};
         while (j < order.size() && geom::h_equal(points[order[i]], points[order[j]])) {
             remap[order[j]] = id;
+            if (point_from_cache[order[j]] != 0) merged_from_cache[id] = 1;
             for (int t = 0; t < 3; ++t) {
                 lo[t] = std::min(lo[t], point_cells[order[j]].lo[t]);
                 hi[t] = std::max(hi[t], point_cells[order[j]].hi[t]);
@@ -639,6 +647,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
 #else
     // §10.5 の変異 1: 第2段を無効化する
     merged = points;
+    merged_from_cache = point_from_cache;
     for (std::uint32_t i = 0; i < remap.size(); ++i) remap[i] = i;
 #endif
     st.merged_points = merged.size();
@@ -838,6 +847,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     // 大域頂点はすべて入れる」。片側だけに入れると T 字接合を作ってしまいます。
     BoolMesh out;
     std::vector<int> tri_owner;
+    /// **early-out で arrangement を省いたセル由来か**（§13 の CP5 の相互作用）。
+    std::vector<char> tri_from_early;
     out.vertices = std::move(merged);
     {
         // 出力に残る断片の支持平面だけ索引を張る（平面数 x 頂点数 回の `side`）
@@ -856,13 +867,15 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         std::vector<PlaneId> edge = f.edge;
         if (poly.size() < 3) continue;
         if (op == BoolOp::Difference && f.owner == 1) detail::reverse_polygon(poly, edge);
-        const TPolygon tp =
-            insert_t_vertices(table, out.vertices, vertex_index, f.support, edge, poly, &st.t);
+        const TPolygon tp = insert_t_vertices(table, out.vertices, vertex_index, f.support, edge,
+                                              poly, &st.t, &merged_from_cache);
         const std::size_t before_n = out.triangles.size();
         fan_triangulate(tp, out.triangles, &st.t);
         // **owner は出力時に直接記録します。** 多角形の頂点数から再構成すると、
         // T 頂点が入ったときに数が合いません（§9.3 の変異 9 で使う）
         tri_owner.insert(tri_owner.end(), out.triangles.size() - before_n, f.owner);
+        tri_from_early.insert(tri_from_early.end(), out.triangles.size() - before_n,
+                              frag_forced[reps[ri]] >= 0 ? 1 : 0);
     }
 
     // ---- §5.4: 1 点に集まる平面の最大枚数（総当たり）----
@@ -912,8 +925,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         const std::vector<int>* owner_ptr = nullptr;
         (void)tri_owner;
 #endif
-        out.triangles =
-            mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split, owner_ptr);
+        out.triangles = mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split,
+                                             owner_ptr, &tri_from_early);
         for (std::uint32_t o : origin) out.vertices.push_back(out.vertices[o]);
     }
 

@@ -31,6 +31,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <map>
 
 #include "krisite/csg/plane_table.hpp"
@@ -63,11 +64,23 @@ public:
         auto it = map_.find(k);
         if (it != map_.end()) {
             ++hits_;
-            return it->second;
+            ++it->second.hits;
+            return it->second.point;
         }
         ++misses_;
-        return map_.emplace(k, geom::intersect3(table.at(k[0]), table.at(k[1]), table.at(k[2])))
-            .first->second;
+        return map_
+            .emplace(k, Entry{geom::intersect3(table.at(k[0]), table.at(k[1]), table.at(k[2])), 0})
+            .first->second.point;
+    }
+
+    /// **この3つ組が 1 度でも「覚えていた側」から返されたか**（SPEC-phase2 §13 の CP5）。
+    ///
+    /// CP5 の「構成点の保持 × T 解決」は、**保持された点がそのまま T 頂点として
+    /// 挿入される経路**です。両方の機構が同じ実行で動いただけでは足りないので、
+    /// **同じ点が両方を通ったこと**を数えられるようにします。
+    bool served_from_cache(const Key& k) const noexcept {
+        auto it = map_.find(k);
+        return it != map_.end() && it->second.hits > 0;
     }
 
     std::size_t hits() const noexcept { return hits_; }
@@ -76,12 +89,16 @@ public:
 
     /// 占有メモリの概算（§4.4 の記録）。**`HPoint` は 7 リム規模**（`BENCH.md`）なので
     /// 構成点が増えると効きます。ノードの管理領域は含みません。
-    std::size_t bytes() const noexcept {
-        return map_.size() * (sizeof(Key) + sizeof(geom::HPointD));
-    }
+    std::size_t bytes() const noexcept { return map_.size() * (sizeof(Key) + sizeof(Entry)); }
 
 private:
-    std::map<Key, geom::HPointD> map_;
+    /// 点と、**その3つ組が覚えていた側から返された回数**。
+    struct Entry {
+        geom::HPointD point;
+        std::uint32_t hits;
+    };
+
+    std::map<Key, Entry> map_;
     std::size_t hits_ = 0;
     std::size_t misses_ = 0;
 };

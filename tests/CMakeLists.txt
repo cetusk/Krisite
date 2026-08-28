@@ -39,11 +39,17 @@ krisite_add_test(adaptive      csg/test_adaptive.cpp)
 krisite_add_test(early_out     csg/test_early_out.cpp)
 # SPEC-phase2 §4 / CP3。**キャッシュ無効側が正解器**。値まで一致することを要求する
 krisite_add_test(cache         csg/test_cache.cpp)
-# SPEC-phase2 §5 / CP4。**§5.5.1 の C 不変性が対応付けの唯一の番人**
+# SPEC-phase2 §5 / CP4。**§5.5.1 の壊れ方 2 通りを両方見る**
+#   誤った組で分裂が起きる   → C 不変性
+#   誤った組で分裂が起きない → 分裂後の多様体性 + ΔE の予測不一致
 krisite_add_test(split_semantics csg/test_split_semantics.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
+# SPEC-phase2 §13 の CP5。**機構どうしの相互作用**（適応分割 × 分裂 /
+# 構成点の保持 × T 解決 / early-out × 分裂）。3 経路を踏んだ回数を数え、
+# 0 なら落とす。§9.4.2 の「分裂の有無で幾何が一致する」もここが常時見る
+krisite_add_test(cp5           csg/test_cp5.cpp)
 krisite_add_test(idempotence   csg/test_idempotence.cpp)
 krisite_add_test(depth_monotonic csg/test_depth_monotonic.cpp)
 
@@ -120,17 +126,21 @@ if(KRISITE_BUILD_MUTANTS)
     endif()
 
     # 5 番目の引数に GMP を渡すと GMP をリンクする（体積検査の変異用）。
-    # **CI の変異ジョブは GMP OFF なので、そちらでは登録されません。**
+    #
+    # **ラベルを分けます**（SPEC-phase2 §9.4.1）。GMP 版は `mutation_gmp` だけを持つので、
+    # **`mutation` の件数は GMP の有無で動きません。** 件数の番人が構成に依存しなくなります。
     function(krisite_add_mutant tag define test expect)
         set(name "mut_${tag}_${test}")
         add_executable(${name} csg/test_${test}.cpp)
         target_link_libraries(${name} PRIVATE krisite krisite_test_util)
+        set(label "mutation")
         if("${ARGV4}" STREQUAL "GMP")
             target_link_libraries(${name} PRIVATE krisite_gmp)
+            set(label "mutation_gmp")
         endif()
         target_compile_definitions(${name} PRIVATE ${define})
         add_test(NAME ${name} COMMAND ${name})
-        set_tests_properties(${name} PROPERTIES TIMEOUT 3600 LABELS "mutation")
+        set_tests_properties(${name} PROPERTIES TIMEOUT 3600 LABELS "${label}")
         if(expect STREQUAL "FAIL")
             set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
         endif()
@@ -141,6 +151,27 @@ if(KRISITE_BUILD_MUTANTS)
     # 「素通りする組合せを固定する」の自然な拡張です。**通ることだけでなく、どれが
     # 捕まえているかを固定します。** 検出器が黙って移動したら、この表が落ちて可視化されます。
     # 実際、案 D の導入で変異 3 / 4 の主検出器が位相検査から §9.1 に移動しました（§2.4.6）。
+    #
+    # **表には「CI で検証されているか」も併記します**（§9.3.1）。CI で回らない検出器が
+    # 混ざっていると、**表そのものが「緑だが検証していない」状態**になります。
+    #
+    #   変異                       主検出器                       CI
+    #   ------------------------   ----------------------------   --------------------
+    #    1 第2段の無効化           位相（cp25 / cp3）             mutation
+    #    2 割り当てを開区間に       位相（cp2 / cp25 / cp3）       mutation
+    #    3 分割平面を局所に         split_strategy（§9.1）★       mutation
+    #    4 到達三角形の取り違え     split_strategy（§9.1）★       mutation
+    #    6 early-out を緩める       early_out（有無の比較）        mutation + mutation_gmp
+    #    7 キャッシュのキー落ち     cache（値の完全一致）          mutation + mutation_gmp
+    #    8 分裂の無効化             split_semantics（多様体性）    mutation + mutation_gmp
+    #    9 対応付けを owner に      split_semantics（深度で交替）  mutation + mutation_gmp
+    #   10 T 解決の無効化           位相（adaptive。次数 1）       mutation
+    #   11 T を 1 個ずつ            位相（adaptive。次数 1）       mutation
+    #   12 割り当てを閉領域に       位相（adaptive。C の破裂）     mutation
+    #   13 退化三角形を捨てる       位相（adaptive。次数 1）       mutation
+    #
+    # **CI で回らない登録はありません。** `mutation`（GMP OFF）と `mutation_gmp`
+    # （§9.4.1）の 2 ジョブが、上のすべてを回します。
 
     # 変異 1: §5.3 の第2段（値ベースの併合）を無効化
     #   **主検出器: 位相検査（cp25 / cp3）**
@@ -266,6 +297,16 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(9 KRISITE_MUTATION_SPLIT_BY_OWNER=1 cp3             PASS)
     krisite_add_mutant(9 KRISITE_MUTATION_SPLIT_BY_OWNER=1 adaptive        PASS)
 
+    # **分裂の変異は体積では捕まりません**（§5.1.3 の定理。§9.4.1 で素通りを固定する）。
+    # **不変量そのものは volume_gmp の §9.4.2 の検査が直接見ています。**
+    # ここで固定するのは「体積は分裂の誤りの検出器ではない」という役割分担です。
+    if(KRISITE_GMP_FOUND)
+        krisite_add_mutant(8  KRISITE_MUTATION_NO_SPLIT=1         volume_gmp PASS GMP)
+        krisite_add_mutant(8a KRISITE_MUTATION_NO_EDGE_SPLIT=1    volume_gmp PASS GMP)
+        krisite_add_mutant(8b KRISITE_MUTATION_NO_VERTEX_SPLIT=1  volume_gmp PASS GMP)
+        krisite_add_mutant(9  KRISITE_MUTATION_SPLIT_BY_OWNER=1   volume_gmp PASS GMP)
+    endif()
+
     # 変異 10: §2.4.3 の T 頂点解決を無効化する（SPEC-phase2 §9.3）。
     #   **主検出器: 位相検査（adaptive。辺の次数 1）**
     #
@@ -319,4 +360,24 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 tjunction       FAIL)
     krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 split_strategy  PASS)
     krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 cp3             PASS)
+
+    # ---- CP5 の組合せでも検出されること（SPEC-phase2 §13）--------------------
+    #
+    # **CP5 は機構を全部有効にした状態です。** 機構が増えると検出器は移動し、
+    # ときに**互いを覆い隠します**（実例: 案 D の T 解決が変異 3 / 4 を覆いました。
+    # §9.3.2）。そこで「この組合せでも捕まるか」を別に固定します。
+    #
+    # **素通りの 2 件も固定します。** 変異 3 / 4 は T 解決に覆われて cp5 では
+    # 素通りします（主検出器は split_strategy に移動済み。§2.4.6）。
+    # **ここが FAIL に転じたら覆いが外れたということなので、報告してください。**
+    #
+    # 実測（`IMPL-phase2.md` §7.16）: 14 の変異のうち 12 が cp5 で落ち、
+    # 素通りは変異 3 / 4 の 2 件だけでした。ここに登録したのはその代表です。
+    krisite_add_mutant(3  KRISITE_MUTATION_LOCAL_PLANES=1      cp5 PASS)
+    krisite_add_mutant(4  KRISITE_MUTATION_REACHING_TRIANGLE=1 cp5 PASS)
+    krisite_add_mutant(6  KRISITE_MUTATION_LOOSE_EARLY_OUT=1   cp5 FAIL)
+    krisite_add_mutant(7  KRISITE_MUTATION_CACHE_KEY_DROP=1    cp5 FAIL)
+    krisite_add_mutant(9  KRISITE_MUTATION_SPLIT_BY_OWNER=1    cp5 FAIL)
+    krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1      cp5 FAIL)
+    krisite_add_mutant(12 KRISITE_MUTATION_CLOSED_CELLS=1      cp5 FAIL)
 endif()
