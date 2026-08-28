@@ -1,0 +1,26 @@
+# ccache を用意して復元する（**このリポジトリ自身の合成アクション**）
+#
+# **第三者アクションは使いません**（`CLAUDE.md`「CI で使う第三者アクションも依存です」）。
+# 中身は GitHub 純正の `actions/cache` と、標準パッケージの `ccache` だけです。
+#
+# 効果の実測（変異ジョブ、67 個の実行ファイル）:
+#   cold  5.2 分（命中 0 / 91）
+#   warm  1.2 分（命中 91 / 91）
+#
+# **使う側は `-DCMAKE_CXX_COMPILER_LAUNCHER=ccache` を渡してください。**
+name: ccache
+description: ccache を導入し、ジョブごとの鍵で復元する
+inputs:
+  key:
+    description: ジョブを識別する鍵（ジョブごとに変える）
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: sudo apt-get update && sudo apt-get install -y ccache
+    - uses: actions/cache@v4
+      with:
+        path: ~/.cache/ccache
+        key: ccache-${{ inputs.key }}-${{ github.sha }}
+        restore-keys: ccache-${{ inputs.key }}-
