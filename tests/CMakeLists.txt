@@ -250,12 +250,18 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(8b KRISITE_MUTATION_NO_VERTEX_SPLIT=1 cp3             PASS)
 
     # 変異 9: §5.1.2 の対応付けを owner に戻す。
-    #   **主検出器: split_semantics（§5.5.1 の C 不変性の検査群）**
+    #   **主検出器: split_semantics。ただし深度で入れ替わります**（§5.5.1 の訂正）
+    #
+    #   深度 0      分裂が起きない  → 多様体性 / ΔE（予測 4・実測 0）/ Δχ / unresolved
+    #   深度 1〜3   誤って分裂する  → **C 不変性のみ**（C が 4 → 1）
+    #
+    # **片方の検査だけでは深度の半分を取り逃がします。** 9 件の失敗の内訳がこれです。
     #
     # **ケース 16（自己接触）でのみ発火します**（§8.1）。13 / 14 / 15 は自己接触を
     # 作らないので、owner でも連結成分でも同じ結果になり**素通りします。**
     #
-    # **$\chi$ でも体積でも捕まりません。** cp3 / adaptive / volume_gmp はすべて素通り。
+    # **$\chi$ でも体積でも捕まりません。** cp3 / adaptive は素通り。体積は 0 件
+    # （§5.1.3。分裂は体積を変えません）。**volume_gmp は GMP ビルドでのみ登録されます。**
     krisite_add_mutant(9 KRISITE_MUTATION_SPLIT_BY_OWNER=1 split_semantics FAIL)
     krisite_add_mutant(9 KRISITE_MUTATION_SPLIT_BY_OWNER=1 cp3             PASS)
     krisite_add_mutant(9 KRISITE_MUTATION_SPLIT_BY_OWNER=1 adaptive        PASS)
