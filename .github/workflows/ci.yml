@@ -363,7 +363,7 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: ビルド
         run: cmake --build build
-      - name: ccache の効き（**この数字で入れるか決めます**）
+      - name: ccache の効き（**この数字で入れるか決めます**。cold 0% → warm を測る）
         run: ccache -s | head -20
       - name: 変異が期待どおり検出されること
         run: |
