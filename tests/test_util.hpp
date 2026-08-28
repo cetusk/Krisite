@@ -62,6 +62,7 @@ inline krisite::csg::BoolOptions phase1_options(unsigned depth) {
     o.early_out = false;
     o.cache_points = false;
     o.split_contacts = false;
+    o.local_bsp = false;  // §5.4 の局所 BSP を切る = 過剰分割（CP3 までの挙動）
     return o;
 }
 
@@ -75,6 +76,9 @@ inline krisite::csg::BoolOptions phase1_options(unsigned depth) {
 /// あちらは基準側を `phase1_options` で固定する必要があります。
 inline krisite::csg::BoolOptions corpus_options(unsigned depth) {
     krisite::csg::BoolOptions o = phase1_options(depth);
+    // **局所 BSP は CI ジョブで切り替わる最適化ではなく、CP4 の置き換えです。**
+    // 適応分割モードかどうかに関係なく主経路を回します（`SPEC-phase3.md` §5.4）。
+    o.local_bsp = true;
 #if defined(KRISITE_DEFAULT_ADAPTIVE)
     o.adaptive = true;
     o.early_out = true;

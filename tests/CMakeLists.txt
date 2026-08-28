@@ -400,7 +400,7 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 split_strategy  PASS)
     krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 cp3             PASS)
 
-    # 変異 15: 出力の向きを **`f.flipped` を見ずに `in_front` だけ**で決める。
+    # 変異 15: 出力の向きを **`f.flipped` を見ずに `in_front` だけ**で決める（CP4 で修正）。
     #   **主検出器: volume_gmp（体積。符号が狂う）**
     #
     # **これは実際に入っていた誤りです**（`IMPL-phase3.md` §6.1）。断片の巻き順は
@@ -416,6 +416,19 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(15 KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED=1 depth_monotonic PASS)
     if(KRISITE_GMP_FOUND)
         krisite_add_mutant(15 KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED=1 volume_gmp FAIL GMP)
+    endif()
+
+    # 変異 16: §5.4 の局所 BSP が **1 枚も切らない**。
+    #   **主検出器: soup（局所 BSP ↔ 過剰分割の比較）**
+    #
+    # 断片の相対内部をシートが横切るので、**代表点 1 点で分類できる前提が崩れます**
+    # （§7.2 の仮定）。位相と体積の両方に出ます。
+    #
+    # **二項実装は過剰分割のままなので、`cp3` などは素通りします。**
+    krisite_add_mutant(16 KRISITE_MUTATION_BSP_NEVER_CUT=1 soup FAIL)
+    krisite_add_mutant(16 KRISITE_MUTATION_BSP_NEVER_CUT=1 cp3  PASS)
+    if(KRISITE_GMP_FOUND)
+        krisite_add_mutant(16 KRISITE_MUTATION_BSP_NEVER_CUT=1 volume_gmp FAIL GMP)
     endif()
 
     # ---- CP5 の組合せでも検出されること（SPEC-phase2 §13）--------------------

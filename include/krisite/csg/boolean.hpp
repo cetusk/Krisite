@@ -111,6 +111,15 @@ struct BoolStats {
     std::size_t split_planes_used = 0;
     std::size_t max_planes_per_cell = 0;  ///< 1 セルで使った分割平面の最大数
 
+    /// §5.4 の局所 BSP（CP4）。**切断候補のうち何枚を実際に切ったか。**
+    ///
+    /// `bsp_cut_slots` は「セル内の候補平面 × 支持平面」の総当たり数。
+    /// **`bsp_cuts_used` と `bsp_cuts_skipped` の両方が非零であること**を
+    /// テストで確かめます。**片方が 0 なら判定が空回りしています**（一方に倒れている）。
+    std::size_t bsp_cut_slots = 0;
+    std::size_t bsp_cuts_used = 0;     ///< 支持平面に触れるので切った枚数
+    std::size_t bsp_cuts_skipped = 0;  ///< 厳密に片側なので切らなかった枚数
+
     /// §3.1 の適応分割。葉の深度の分布（**深さの差が §2.4 の前提**）。
     unsigned leaf_depth_min = 0;
     unsigned leaf_depth_max = 0;
@@ -263,6 +272,16 @@ struct BoolOptions {
 #else
     bool early_out = false;
 #endif
+    /// **局所 BSP**（`SPEC-phase3.md` §5.4。CP4）。**既定で有効です。**
+    ///
+    /// 断片を切るのは「このセルに居る三角形のうち、支持平面に触れるもの」の平面だけ。
+    /// **無効側が過剰分割 = CP3 までの挙動で、§10.1 の正解器です。**
+    ///
+    /// 一致するのは $(C, \chi)$ と体積で、**三角形の集合と断片数は一致しません**
+    /// （それが目的です）。比較のテストでは**両側を明示的に指定してください。**
+    ///
+    /// **`soup_boolean` でのみ効きます**（二項の `boolean` は過剰分割のままです）。
+    bool local_bsp = true;
     /// **領域を逆順に分類する**（`SPEC-phase3.md` §14 の CP3 の判定）。
     ///
     /// 葉の分類が可変な共有状態に依存していれば、順序を変えると結果が変わります。

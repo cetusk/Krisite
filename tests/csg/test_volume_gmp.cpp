@@ -40,7 +40,7 @@ namespace {
 /// 分子は整数行列式、分母は 3 つの $w$ の積です。**三角形ごとに分母が違う**ので、
 /// `mpq` で足し合わせます（ここが GMP を要する理由）。
 /// **`BoolMesh` と `SoupMesh` の両方**で使えるようにテンプレートにしています
-/// （どちらも `vertices` / `triangles` を持つだけの型）。**スープ経路の体積**を
+/// （どちらも `vertices` / `triangles` を持つだけの型）。CP4 で**スープ経路の体積**も
 /// 見るために要ります。
 template <class Mesh>
 void mesh_volume6(mpq_ptr out, const Mesh& m) {
@@ -254,31 +254,56 @@ void check_case(const kritest::Case& c) {
             for (mpq_ptr q : {nu, ni, nd}) mpq_clear(q);
         }
 
-        // ---- **スープ経路の体積**（`SPEC-phase3.md` §10.1）★ ----------------
+        // ---- CP4: **局所 BSP ↔ 過剰分割の体積一致**（`SPEC-phase3.md` §10.1）----
         //
-        // 位相検査は「割れているか」しか見ず、$(C, \chi)$ は**面の向きを反転しても
-        // 変わりません。** スープ経路の出力を体積で見ていなかったため、
-        // **出力の向きの誤りが CP2 から CP3 まで残りました**（`IMPL-phase3.md` §6.1）。
+        // 位相検査は「割れているか」しか見ません。**断片の選択の誤り**は体積でしか
+        // 出ないので、分割方式を替えたときはここを通す必要があります。
+        //
+        // **(b) はスープ経路そのものの検査です。** $(C, \chi)$ は面の向きを反転しても
+        // 変わらないので、ここを見ていなかったために**出力の向きの誤りが CP2 から
+        // CP3 まで残りました**（`IMPL-phase3.md` §6.1、変異 15）。
+        //
+        // **両側を明示的に指定します。** 既定に依存させると、既定が変わったときに
+        // 自分自身との比較になります（`CLAUDE.md`）。
         {
-            krisite::csg::ToMeshOptions tmo;
-            tmo.split_contacts = true;
-            mpq_ptr ref[3] = {vu, vi, vd};
-            const char* nm[3] = {"∪", "∩", "\\"};
-            int k = 0;
-            for (BoolOp bop : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
-                const krisite::csg::SoupMesh sm = krisite::csg::to_mesh(
-                    krisite::csg::boolean(krisite::csg::from_mesh(A), krisite::csg::from_mesh(B),
-                                          bop, opt),
-                    tmo);
-                mpq_t sv;
-                mpq_init(sv);
-                mesh_volume6(sv, sm);
-                KRI_CHECK_MSG(mpq_equal(sv, ref[k]) != 0,
+            mpq_t sv[2][3];
+            for (auto& row : sv) {
+                for (auto& q : row) mpq_init(q);
+            }
+            for (int bsp = 0; bsp < 2; ++bsp) {
+                BoolOptions so = opt;
+                so.local_bsp = (bsp == 1);
+                so.split_contacts = true;
+                krisite::csg::ToMeshOptions tmo;
+                tmo.split_contacts = true;
+                int k = 0;
+                for (BoolOp bop : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
+                    const krisite::csg::SoupMesh sm = krisite::csg::to_mesh(
+                        krisite::csg::boolean(krisite::csg::from_mesh(A),
+                                              krisite::csg::from_mesh(B), bop, so),
+                        tmo);
+                    mesh_volume6(sv[bsp][k++], sm);
+                }
+            }
+            // (a) 分割方式によらず同じ体積
+            for (int k = 0; k < 3; ++k) {
+                KRI_CHECK_MSG(mpq_equal(sv[0][k], sv[1][k]) != 0,
                               std::string("ケース ") + c.id + "（深度 " + std::to_string(d) +
-                                  "）: スープの " + nm[k] + " の体積が二項正解器と違う（得 " +
-                                  to_str(sv) + " 期待 " + to_str(ref[k]) + "）");
-                mpq_clear(sv);
-                ++k;
+                                  "）: **局所 BSP と過剰分割で体積が違う**（§5.4 / §10.1）");
+            }
+            // (b) 二項正解器と同じ体積か
+            {
+                mpq_ptr ref[3] = {vu, vi, vd};
+                const char* nm[3] = {"∪", "∩", "\\"};
+                for (int k = 0; k < 3; ++k) {
+                    KRI_CHECK_MSG(mpq_equal(sv[1][k], ref[k]) != 0,
+                                  std::string("ケース ") + c.id + "（深度 " + std::to_string(d) +
+                                      "）: スープの " + nm[k] + " の体積が二項正解器と違う（得 " +
+                                      to_str(sv[1][k]) + " 期待 " + to_str(ref[k]) + "）");
+                }
+            }
+            for (auto& row : sv) {
+                for (auto& q : row) mpq_clear(q);
             }
         }
 
