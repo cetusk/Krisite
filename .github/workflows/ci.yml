@@ -258,6 +258,8 @@ jobs:
       - env:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
+      - name: ccache の効き
+        run: ccache -s | head -12
 
   # ---- 可搬フォールバック経路（__int128 / 32bit 筆算）------------------------
   #
@@ -424,6 +426,8 @@ jobs:
           echo "登録されている GMP 変異テスト: $n 件"
           test "$n" -eq 6 || { echo "件数が想定と違います（期待 6）"; exit 1; }
           ctest --test-dir build --no-tests=error -L mutation_gmp --output-on-failure --parallel 4
+      - name: ccache の効き
+        run: ccache -s | head -12
 
   # ---- 外部正解器 Manifold（SPEC-phase1 §10.4 / §10.6）-----------------------
   #

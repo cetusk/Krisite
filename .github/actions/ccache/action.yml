@@ -24,3 +24,7 @@ runs:
         path: ~/.cache/ccache
         key: ccache-${{ inputs.key }}-${{ github.sha }}
         restore-keys: ccache-${{ inputs.key }}-
+    # **命中率をログに残します。** 0% のまま気づかない、を防ぐためです
+    # （鍵の付け方を間違えると復元に失敗し、静かに毎回フルビルドに戻ります）。
+    - shell: bash
+      run: ccache -z >/dev/null && echo "ccache: 統計を初期化しました（ジョブ末尾の値がこの実行の命中率）"
