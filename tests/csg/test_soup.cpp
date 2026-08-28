@@ -12,6 +12,8 @@
 //   4. §10.3.1 連鎖でビット幅が伸びないこと ★ 契約の成立条件
 //
 // **三角形の集合と断片数は一致しません**（§10.1）。面併合をやめたので分割が違います。
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <string>
 #include <type_traits>
@@ -58,6 +60,76 @@ const char* op_name(csg::BoolOp op) {
         default:
             return "\\";
     }
+}
+
+/// 頂点の**値**で見た三角形の多重集合（順序非依存の比較。`SPEC-phase2.md` §9.4.2）。
+std::vector<std::array<std::uint32_t, 3>> geometric_key(const csg::SoupMesh& m) {
+    std::vector<std::uint32_t> ord(m.vertices.size());
+    for (std::uint32_t i = 0; i < ord.size(); ++i) ord[i] = i;
+    std::sort(ord.begin(), ord.end(), [&](std::uint32_t a, std::uint32_t b) {
+        return geom::lex_less(m.vertices[a], m.vertices[b]);
+    });
+    std::vector<std::uint32_t> canon(m.vertices.size(), 0);
+    std::uint32_t next = 0;
+    for (std::size_t i = 0; i < ord.size();) {
+        std::size_t j = i;
+        while (j < ord.size() && geom::h_equal(m.vertices[ord[i]], m.vertices[ord[j]])) {
+            canon[ord[j]] = next;
+            ++j;
+        }
+        ++next;
+        i = j;
+    }
+    std::vector<std::array<std::uint32_t, 3>> out;
+    out.reserve(m.triangles.size());
+    for (const mesh::Tri& t : m.triangles) {
+        const std::uint32_t c[3] = {canon[t[0]], canon[t[1]], canon[t[2]]};
+        int s = 0;
+        if (c[1] < c[s]) s = 1;
+        if (c[2] < c[s]) s = 2;
+        out.push_back({c[s], c[(s + 1) % 3], c[(s + 2) % 3]});
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+/// **並列化の前提の検査**（`SPEC-phase3.md` §14 の CP3 の判定）。
+///
+/// > 判定基準は「葉の分類が、可変な共有状態に触れずに書けるか」です。
+///
+/// 分類が可変な共有状態に依存していれば、**領域を回す順序を変えると結果が変わります。**
+/// 依存していなければ、順序を変えても幾何は同じです。
+///
+/// **これは「書ける」ことの証拠であって、証明ではありません。** 依存があっても
+/// たまたま同じ結果になる可能性は残ります。ただし、依存が入ったときに落ちる網には
+/// なります（`CLAUDE.md`「機構を足したら、その機構が空回りしていないことを別に検査」）。
+void test_classification_is_order_independent() {
+    std::size_t n = 0;
+    for (const kritest::Case& c : kritest::corpus()) {
+        const TriMesh a = c.make_a(), b = c.make_b();
+        for (csg::BoolOp op :
+             {csg::BoolOp::Union, csg::BoolOp::Intersection, csg::BoolOp::Difference}) {
+            for (unsigned d = 0; d <= kMaxDepth; ++d) {
+                csg::BoolOptions o1 = kritest::phase1_options(d);
+                csg::BoolOptions o2 = o1;
+                o2.reverse_regions = true;
+                csg::ToMeshOptions tm;
+                tm.split_contacts = false;
+                const csg::SoupMesh m1 =
+                    csg::to_mesh(csg::boolean(csg::from_mesh(a), csg::from_mesh(b), op, o1), tm);
+                const csg::SoupMesh m2 =
+                    csg::to_mesh(csg::boolean(csg::from_mesh(a), csg::from_mesh(b), op, o2), tm);
+                const std::string tag = std::string("ケース ") + c.id + " " + op_name(op) +
+                                        "（深度 " + std::to_string(d) + "）";
+                KRI_CHECK_MSG(geometric_key(m1) == geometric_key(m2),
+                              tag +
+                                  ": **領域を回す順序で結果が変わった。** 分類が可変な"
+                                  "共有状態に依存しています（並列化の前提が崩れます）");
+                ++n;
+            }
+        }
+    }
+    std::printf("    順序非依存 %zu 件（並列化の前提。§14 の CP3 の判定）\n", n);
 }
 
 /// 1. 往復。**入口と出口だけで閉じる検査**なので、中核の誤りが混ざりません。
@@ -198,6 +270,7 @@ int main() {
     test_round_trip();
     test_matches_binary_oracle();
     test_chain_is_exact();
+    test_classification_is_order_independent();
     std::printf("\n");
     return kritest::finish("csg/soup");
 }

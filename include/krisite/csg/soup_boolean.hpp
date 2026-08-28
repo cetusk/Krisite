@@ -432,7 +432,15 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     };
     std::map<std::pair<std::uint32_t, std::vector<std::int8_t>>, Wnd> wcache;
 
-    for (const auto& kv : regions) {
+    // **順序非依存の検査**（§14 の CP3 の判定）。分類が可変な共有状態に依存していれば、
+    // 逆順にすると結果が変わります。依存していなければ幾何の多重集合は同じです。
+    std::vector<const std::pair<const detail::RegionKey, std::vector<std::size_t>>*> region_order;
+    region_order.reserve(regions.size());
+    for (const auto& kv : regions) region_order.push_back(&kv);
+    if (opt.reverse_regions) std::reverse(region_order.begin(), region_order.end());
+
+    for (const auto* kvp : region_order) {
+        const auto& kv = *kvp;
         // 同じ領域に複数の断片が載っていても、出力するのは 1 枚です（§5.4.1）。
         // **巻き数は source のメッシュから決まる**ので、どの断片を代表に取っても同じです。
         const std::size_t pick = *std::min_element(

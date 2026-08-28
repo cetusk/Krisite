@@ -263,6 +263,12 @@ struct BoolOptions {
 #else
     bool early_out = false;
 #endif
+    /// **領域を逆順に分類する**（`SPEC-phase3.md` §14 の CP3 の判定）。
+    ///
+    /// 葉の分類が可変な共有状態に依存していれば、順序を変えると結果が変わります。
+    /// **並列化できるかを機構で確かめるためのフラグ**です。出力の順序は変わりますが、
+    /// **幾何の多重集合は変わらないはず**です。
+    bool reverse_regions = false;
 };
 
 /// ブール演算。`depth` は八分木の深度（実行時パラメータ。SPEC-phase1 §2.2）。

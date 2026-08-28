@@ -15,7 +15,8 @@
 `Krisite` は 3D データを扱う C++20 ヘッダオンリーライブラリです。
 最終目標は点群圧縮・メッシュ化・厳密ブール演算の統合です。
 **Phase 0（算術基盤）・Phase 1（出力抽出の最小検証）・Phase 2（適応分割と意味論の確定）は
-完了しています。** Phase 1 の判断は「続行」でした。現在は **Phase 3（並列化）の仕様検討**です。
+完了しています。** Phase 1 の判断は「続行」でした。現在は **Phase 3（中核の再設計）**を
+進めています（$n$ 項演算、WNV による分類、中核と後処理の分離）。
 現在地は [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ## いま提供しているもの
@@ -24,7 +25,7 @@
 |---|---|---|
 | `arith/` | 固定幅の厳密整数演算（動的確保なし・例外なし・グローバル状態なし） | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
 | `geom/` | 平面ベース幾何述語。**幅を型で表す**ので上界超過がコンパイル時に防がれる | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
-| `mesh/` `octree/` `csg/` | 厳密ブール演算（$\cup$ / $\cap$ / $\setminus$）、位相検査、**適応分割 + early-out + 構成点の保持**、**接触の分裂**（非多様体出力の意味論） | [`SPEC-phase1.md`](docs/SPEC-phase1.md) / [`SPEC-phase2.md`](docs/SPEC-phase2.md) |
+| `mesh/` `octree/` `csg/` | 厳密ブール演算（$\cup$ / $\cap$ / $\setminus$、**$n$ 項**）、位相検査、**適応分割 + early-out + 構成点の保持**、**接触の分裂**、**WNV による分類** | [`SPEC-phase1.md`](docs/SPEC-phase1.md) 〜 [`SPEC-phase3.md`](docs/SPEC-phase3.md) |
 
 **浮動小数点も許容誤差も使いません。** 判定はすべて整数の厳密演算です。
 
@@ -172,6 +173,8 @@ CI は次のジョブを回します。
 | ファイル | 内容 |
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **現在地とフェーズの全体像。まずここを読む** |
+| [`docs/SPEC-phase3.md`](docs/SPEC-phase3.md) | **Phase 3 の仕様。** $n$ 項の契約、WNV、中核と後処理の分離 |
+| [`docs/IMPL-phase3.md`](docs/IMPL-phase3.md) | Phase 3 の実装ノート（進行中） |
 | [`docs/SPEC-phase2.md`](docs/SPEC-phase2.md) | Phase 2 の仕様。分割平面の絞り込み、適応分割、非多様体出力の意味論 |
 | [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) | Phase 2 の実装ノート（**完了時点**）。判断と根拠、機構が検出器を動かした記録 |
 | [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 の仕様。縫合の可否判定、テストコーパス、中止条件 |
@@ -202,9 +205,10 @@ Manifold（Apache-2.0）は**テストの正解器としてのみ**使い、既�
 | 0 | 固定幅厳密整数 + 平面ベース述語 | 完了（2026-08-26） |
 | 1 | 出力抽出の最小検証（固定深度分割、単スレッド） | 完了（2026-08-27）**続行を決定** |
 | **2** | **適応分割・構成点の保持・意味論の確定** | **完了（2026-08-28）** |
-| **3** | **work-stealing 並列化、継ぎ目の整合性検証** | **仕様検討中** |
-| 4 | Thingi10K 全件検証 | 未着手 |
-| 5+ | 点群コーデック、GWN、メッシュ化 | 未着手 |
+| **3** | **中核の再設計**（$n$ 項、WNV、中核と後処理の分離。単スレッド） | **進行中** |
+| 4 | work-stealing 並列化 | 未着手 |
+| 5 | Thingi10K 全件検証・性能目標 | 未着手 |
+| 6+ | 点群コーデック、GWN、メッシュ化 | 未着手 |
 
 **Phase 1 は分岐点でした。判断は「続行」です**（2026-08-27 に決定済み）。中止条件
 （`SPEC-phase1.md` §11）はいずれにも該当せず、とくに最も危険だった「ビット幅の上界が
@@ -212,7 +216,19 @@ Manifold（Apache-2.0）は**テストの正解器としてのみ**使い、既�
 崩れなかったこと**が根拠です。
 
 **Phase 2 は CP1〜CP5 をすべて通過して完了しました**（2026-08-28）。完了条件は正しさ
-だけで、性能目標は置いていません。詳細は [`docs/ROADMAP.md`](docs/ROADMAP.md)。
+だけで、性能目標は置いていません。
+
+**Phase 3 は中核を作り直しています。** ブール演算は連鎖して使うのが常態なので、
+$n$ 項演算として一度に評価でき、**中間結果を丸めずに繋げる**ことを要件に加えました。
+
+```
+from_mesh : TriMesh(整数) → PolySoup      入口。量子化・凸分割・辺平面の構成
+boolean   : PolySoup × … → PolySoup       ★ CSG について閉じる。n 項
+to_mesh   : PolySoup → TriMesh            出口。縫合・T 解決・再併合・三角形化
+```
+
+分類は符号ベクトルから**一般化巻き数ベクトル（WNV）**に変わりました。詳細は
+[`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ### 実測値（Phase 1 → Phase 2）
 

@@ -17,7 +17,8 @@
 point-cloud compression, meshing, and exact boolean operations.
 **Phase 0 (the arithmetic foundation), Phase 1 (minimal validation of output
 extraction), and Phase 2 (adaptive subdivision and output semantics) are complete.**
-The Phase 1 verdict was: continue. Work is now on **the Phase 3 (parallelism) spec**.
+The Phase 1 verdict was: continue. Work is now on **Phase 3 (core redesign)** — $n$-ary
+operations, winding-number classification, and separating the core from post-processing.
 [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single source of truth for where the
 project stands (Japanese).
 
@@ -27,7 +28,7 @@ project stands (Japanese).
 |---|---|---|
 | `arith/` | Fixed-width exact integers — no dynamic allocation, no exceptions, no global state | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
 | `geom/` | Plane-based geometric predicates. **Widths live in the type**, so exceeding a derived bound is a compile error | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
-| `mesh/` `octree/` `csg/` | Exact booleans ($\cup$ / $\cap$ / $\setminus$), topology checking, **adaptive subdivision + early-out + constructed-point reuse**, **contact splitting** (non-manifold output semantics) | [`SPEC-phase1.md`](docs/SPEC-phase1.md) / [`SPEC-phase2.md`](docs/SPEC-phase2.md) |
+| `mesh/` `octree/` `csg/` | Exact booleans ($\cup$ / $\cap$ / $\setminus$, **$n$-ary**), topology checking, **adaptive subdivision + early-out + constructed-point reuse**, **contact splitting**, **WNV classification** | [`SPEC-phase1.md`](docs/SPEC-phase1.md) – [`SPEC-phase3.md`](docs/SPEC-phase3.md) |
 
 **No floating point, no epsilons.** Every decision is the sign of an exact integer.
 
@@ -187,6 +188,8 @@ The design documents are written in Japanese.
 | File | Contents |
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **Where the project stands. Start here** |
+| [`docs/SPEC-phase3.md`](docs/SPEC-phase3.md) | **Phase 3 spec.** The $n$-ary contract, WNV, core/post-processing split |
+| [`docs/IMPL-phase3.md`](docs/IMPL-phase3.md) | Phase 3 implementation notes (in progress) |
 | [`docs/SPEC-phase2.md`](docs/SPEC-phase2.md) | Phase 2 spec: split-plane culling, adaptive subdivision, non-manifold output semantics |
 | [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) | Phase 2 implementation notes (**as of completion**). Decisions, rationale, and how added mechanisms moved the detectors |
 | [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 spec: the stitching question, test corpus, abort conditions |
@@ -217,9 +220,10 @@ build time rather than in prose.
 | 0 | Fixed-width exact integers + plane-based predicates | Complete (2026-08-26) |
 | 1 | Minimal validation of output extraction (fixed-depth subdivision, single-threaded) | Complete (2026-08-27) — **verdict: continue** |
 | **2** | **Adaptive subdivision, constructed-point reuse, output semantics** | **Complete (2026-08-28)** |
-| **3** | **Work-stealing parallelism, seam consistency** | **Spec in progress** |
-| 4 | Thingi10K full-corpus validation | Not started |
-| 5+ | Point-cloud codec, GWN, meshing | Not started |
+| **3** | **Core redesign** ($n$-ary, WNV, core/post-processing split; single-threaded) | **In progress** |
+| 4 | Work-stealing parallelism | Not started |
+| 5 | Thingi10K full-corpus validation, performance targets | Not started |
+| 6+ | Point-cloud codec, GWN, meshing | Not started |
 
 **Phase 1 was the decision point, and the verdict was: continue** (decided
 2026-08-27). None of the abort conditions (`SPEC-phase1.md` §11) were met. The most
@@ -229,7 +233,19 @@ through**, and that is the reason to keep going.
 
 **Phase 2 passed CP1 through CP5 and is complete** (2026-08-28). Its completion
 criteria are about correctness only; no performance target was set.
-See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+**Phase 3 is rebuilding the core.** Booleans are normally used in chains, so the
+requirement is now to evaluate them as an $n$-ary operation and **chain them without
+rounding intermediate results**.
+
+```
+from_mesh : TriMesh (integers) → PolySoup   entry: quantise, convex-split, build edge planes
+boolean   : PolySoup × … → PolySoup         ★ closed under CSG; n-ary
+to_mesh   : PolySoup → TriMesh              exit: stitch, resolve T-vertices, split, triangulate
+```
+
+Classification moved from sign vectors to **generalized winding number vectors (WNV)**.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) (Japanese).
 
 ### Measurements (Phase 1 → Phase 2)
 
