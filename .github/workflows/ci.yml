@@ -339,14 +339,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      # ---- ccache（**計測中**。効かなければ外します）---------------------------
+      #
+      # このジョブは 67 個の実行ファイルを毎回フルビルドしていて、**クリティカル
+      # パス**です。ヘッダオンリー + 重いテンプレートなので、コンパイルが支配的です。
+      #
+      # **第三者アクションは使いません**（`CLAUDE.md`）。GitHub 純正の
+      # `actions/cache` と、標準パッケージの `ccache` だけで組みます。
+      - name: ccache を用意
+        run: sudo apt-get update && sudo apt-get install -y ccache
+      - name: ccache を復元
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache
+          key: ccache-mutation-${{ github.sha }}
+          restore-keys: ccache-mutation-
       - name: 構成
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DKRISITE_CHECKED_ARITH=OFF \
-            -DKRISITE_BUILD_MUTANTS=ON
+            -DKRISITE_BUILD_MUTANTS=ON \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: ビルド
         run: cmake --build build
+      - name: ccache の効き（**この数字で入れるか決めます**）
+        run: ccache -s | head -20
       - name: 変異が期待どおり検出されること
         run: |
           # 期待する変異テストの件数。減っていたら「変異テストがある」だけの状態に
