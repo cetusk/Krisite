@@ -95,8 +95,14 @@ struct BoolStats {
     std::size_t raycasts = 0;                  ///< レイキャスト回数
     /// 代表点の構成（SPEC-phase3 §2.1 の段 0）。**どちらの経路で決まったか。**
     InteriorStats interior{};
-    /// セグメントトレースで経路が退化し、別の内部点で試した回数（§5.5）
-    std::size_t midpoint_retries = 0;
+    /// セグメントトレースの記録（`SPEC-phase3.md` §5.3.2）。
+    std::size_t midpoint_retries = 0;  ///< 経路が退化して別の内部点で試した回数
+    std::size_t ref_moves = 0;         ///< 参照点を子へ移した回数
+    std::size_t ref_rejects = 0;       ///< そのうち経路が退化した回数
+    std::size_t ref_segments = 0;      ///< 参照点の移動で辿ったセグメント数
+    std::size_t path_single = 0;       ///< 分類が【軸平行 1 本】で済んだ回数
+    std::size_t path_fallback = 0;     ///< 予備経路（平面の置き換え）に落ちた回数
+    std::size_t path_crossings = 0;    ///< 経路が跨いだ多角形の総数
     /// `side` と `intersect3` の呼び出し数（SPEC-phase1 §12）。
     ///
     /// **`KRISITE_COUNT_PREDICATES` を定義したビルドでのみ埋まります。**

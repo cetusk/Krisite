@@ -80,7 +80,7 @@ inline bool same_side(const PlaneTable& t, PlaneId e, const geom::HPointD& p,
 ///
 /// **跨いだ向きは端点の符号から決まります。** 差を取る必要はありません
 /// （$\mathrm{side}$ の符号が反対なら跨いでいて、終点側の符号が進行方向）。
-inline bool trace_segment(const PlaneTable& t, const std::vector<TracePoly>& polys, PlaneId l0,
+inline bool trace_segment(PlaneTable& t, const std::vector<TracePoly>& polys, PlaneId l0,
                           PlaneId l1, PlaneId ea, PlaneId eb, const geom::HPointD& a,
                           const geom::HPointD& b, std::vector<std::int32_t>* w,
                           bool a_on_surface = false, bool b_on_surface = false) {
@@ -89,10 +89,24 @@ inline bool trace_segment(const PlaneTable& t, const std::vector<TracePoly>& pol
         const int sa = geom::side(sp, a);
         const int sb = geom::side(sp, b);
         if (sa == 0 && sb == 0) {
+            // **線分が支持平面に乗っています。** その平面は跨ぎませんが、
+            // 多角形の面上を通っていると巻き数が定まりません。
+            //
+            // **分離軸で判定します。** ある辺平面について両端が外側なら、線分は
+            // 多角形と重なりません（凸なので 1 枚見つければ十分）。
+            bool separated = false;
+            for (std::size_t k = 0; k < q.edge.size() && !separated; ++k) {
+                const int ea2 = geom::side(t.at(q.edge[k]), a);
+                const int eb2 = geom::side(t.at(q.edge[k]), b);
+                if (ea2 != 0 && eb2 != 0 && ea2 != q.inward[k] && eb2 != q.inward[k]) {
+                    separated = true;
+                }
+            }
+            if (separated) continue;  // 重ならない → 跨がない
 #if defined(KRISITE_DEBUG_TRACE)
-            std::fprintf(stderr, "  退化: 線分が支持平面 %u に乗っている\n", q.support);
+            std::fprintf(stderr, "  退化: 線分が多角形 %u の面上を通っている\n", q.support);
 #endif
-            return false;  // 線分が支持平面に乗っている → 退化
+            return false;
         }
         if (sa == 0 || sb == 0) {
             // **端点が支持平面の上。** 分類する面の上に始点を置くので、これは常態です。
@@ -121,7 +135,9 @@ inline bool trace_segment(const PlaneTable& t, const std::vector<TracePoly>& pol
         }
         if (sa == sb) continue;  // 跨いでいない
 
-        // 交点。線が支持平面と平行なら跨げない（w = 0 は起きない: sa != sb なので）
+        // 交点。**呼ぶ前に交わるかを確かめます**（`intersect3` は表明で弾く）。
+        // sa != sb なら幾何的には交わりますが、線の 2 平面が退化していることがあります。
+        if (!geom::planes_meet_at_point(t.at(l0), t.at(l1), sp)) return false;
         const geom::HPointD p = geom::intersect3(t.at(l0), t.at(l1), sp);
 
         // 多角形の内部か（**厳密に内側**。辺の上なら経路が退化）
@@ -161,11 +177,69 @@ inline bool trace_segment(const PlaneTable& t, const std::vector<TracePoly>& pol
     return true;
 }
 
+/// 整数点どうしを結ぶ**軸平行セグメント**のトレース（`SPEC-phase3.md` §3.3.0 の主経路）。
+///
+/// **参照点が整数点なので、経路が軸平行で済みます。** 線は残り 2 軸の軸平行平面、
+/// 端も軸平行平面なので、係数がすべて小さくなります。
+///
+/// `a` と `b` は 1 軸だけが違う整数点であること。
+inline bool trace_axis_segment(PlaneTable& t, const std::vector<TracePoly>& polys,
+                               const geom::IPoint& a, const geom::IPoint& b, geom::Axis axis,
+                               std::vector<std::int32_t>* w, bool a_on_surface = false) {
+    const geom::Axis u = (axis == geom::Axis::X)   ? geom::Axis::Y
+                         : (axis == geom::Axis::Y) ? geom::Axis::Z
+                                                   : geom::Axis::X;
+    const geom::Axis v = (axis == geom::Axis::X)   ? geom::Axis::Z
+                         : (axis == geom::Axis::Y) ? geom::Axis::X
+                                                   : geom::Axis::Y;
+    auto comp = [](const geom::IPoint& p, geom::Axis c) -> std::int64_t {
+        return (c == geom::Axis::X) ? p.x : (c == geom::Axis::Y) ? p.y : p.z;
+    };
+    if (comp(a, axis) == comp(b, axis)) return true;  // 動いていない
+    const PlaneId l0 = t.intern(geom::plane_axis_aligned(u, comp(a, u))).id;
+    const PlaneId l1 = t.intern(geom::plane_axis_aligned(v, comp(a, v))).id;
+    const PlaneId ea = t.intern(geom::plane_axis_aligned(axis, comp(a, axis))).id;
+    const PlaneId eb = t.intern(geom::plane_axis_aligned(axis, comp(b, axis))).id;
+    return trace_segment(t, polys, l0, l1, ea, eb, geom::to_homogeneous(a),
+                         geom::to_homogeneous(b), w, a_on_surface, false);
+}
+
+/// 整数点から整数点へ、**軸ごとに 3 本**の軸平行セグメントでトレースする。
+///
+/// 経路は $x \to (b_x, a_y, a_z) \to (b_x, b_y, a_z) \to b$ です。
+/// **途中の点も整数**なので、係数が小さいまま保たれます。
+inline bool trace_axis_path(PlaneTable& t, const std::vector<TracePoly>& polys,
+                            const geom::IPoint& a, const geom::IPoint& b,
+                            std::vector<std::int32_t>* w, std::size_t* segments = nullptr,
+                            bool a_on_surface = false) {
+    const geom::IPoint p1{b.x, a.y, a.z};
+    const geom::IPoint p2{b.x, b.y, a.z};
+    std::size_t n = 0;
+    if (a.x != b.x) ++n;
+    if (a.y != b.y) ++n;
+    if (a.z != b.z) ++n;
+    if (segments != nullptr) *segments = n;
+    // **最初の実質的なセグメントだけが「面の上から出発」します。**
+    bool first = a_on_surface;
+    if (a.x != b.x) {
+        if (!trace_axis_segment(t, polys, a, p1, geom::Axis::X, w, first)) return false;
+        first = false;
+    }
+    if (a.y != b.y) {
+        if (!trace_axis_segment(t, polys, p1, p2, geom::Axis::Y, w, first)) return false;
+        first = false;
+    }
+    if (a.z != b.z) {
+        if (!trace_axis_segment(t, polys, p2, b, geom::Axis::Z, w, first)) return false;
+    }
+    return true;
+}
+
 /// 経路（最大 3 セグメント）で $x$ から $x_{ref}$ へトレースする（§3.3）。
 ///
 /// $x$ を定義する平面を 1 枚ずつ $x_{ref}$ のものに置き換えます。**置き換える順序は
 /// 任意**なので、退化したら別の順序を試します（6 通り）。
-inline TraceResult trace_path(const PlaneTable& t, const std::vector<TracePoly>& polys,
+inline TraceResult trace_path(PlaneTable& t, const std::vector<TracePoly>& polys,
                               const PPoint& x, const PPoint& xref,
                               const std::vector<std::int32_t>& w_ref, PointCache* cache = nullptr) {
     TraceResult r;

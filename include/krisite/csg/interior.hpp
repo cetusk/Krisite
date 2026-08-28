@@ -82,8 +82,8 @@ inline int inward_sign(const PlaneTable& t, const std::vector<geom::HPointD>& vs
 ///   variant >= 1       予備経路（角ごと・刻みごと。順に別の角を使う）
 inline geom::HPointD interior_point(PlaneTable& t, const Fragment& f, PointCache* cache = nullptr,
                                     InteriorStats* st = nullptr,
-                                    std::array<PlaneId, 3>* planes = nullptr,
-                                    unsigned variant = 0) {
+                                    std::array<PlaneId, 3>* planes = nullptr, unsigned variant = 0,
+                                    geom::IPoint* anchor = nullptr, geom::Axis* anchor_axis = nullptr) {
     const std::size_t n = vertex_count(f);
     KRISITE_CHECK(n >= 3, "interior_point: 頂点が 3 未満");
 
@@ -155,6 +155,13 @@ inline geom::HPointD interior_point(PlaneTable& t, const Fragment& f, PointCache
                     // 軸平行平面を表に登録します。幅は kAxisOffset <= kOffset で収まります。
                     *planes = {t.intern(a0).id, t.intern(a1).id, f.support};
                 }
+                // **主経路の整数アンカー**（§3.3.0）。この点と x は軸平行な線で結べます。
+                if (anchor != nullptr) {
+                    *anchor = geom::IPoint{static_cast<std::int32_t>(ic[0]),
+                                           static_cast<std::int32_t>(ic[1]),
+                                           static_cast<std::int32_t>(ic[2])};
+                }
+                if (anchor_axis != nullptr) *anchor_axis = static_cast<geom::Axis>(axis);
                 return x;
             }
         }

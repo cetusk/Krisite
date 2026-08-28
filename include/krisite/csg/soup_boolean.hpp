@@ -93,7 +93,9 @@ inline PolySoup boolean_nary(const std::vector<const PolySoup*>& inputs, const I
 
     // ---- 2. トレースの対象（多角形そのものが曲面）----------------------------
     std::vector<TracePoly> tps;
+    std::vector<octree::Aabb> tps_aabb;
     tps.reserve(polys.size());
+    tps_aabb.reserve(polys.size());
     for (const Poly& q : polys) {
         TracePoly tp;
         tp.support = q.frag.support;
@@ -117,17 +119,15 @@ inline PolySoup boolean_nary(const std::vector<const PolySoup*>& inputs, const I
             tp.inward[k] = sgn;
         }
         tps.push_back(std::move(tp));
+        tps_aabb.push_back(q.aabb);
     }
 
-    // ---- 3. 参照点（**全多角形の外**。だから WNV は 0）--------------------------
+    // ---- 3. 根の参照点（**全多角形の外**。だから WNV は 0）------------------------
     //
-    // **点は平面 3 つ組で持ちます**（経路の構成に要る。§3.3）。
-    //
-    // 外接箱の外に取れば「すべての立体の外」が保証され、巻き数は 0 です。
-    // **座標は奇数ずらしにします。** 入力が軸平行だと、整列した参照点への経路が
-    // 他の面の辺をちょうど通り、経路が退化します（実際に踏みました）。
-    std::vector<PPoint> ref_candidates;
-    const std::vector<std::int32_t> w_ref(n_comp, 0);
+    // 以降、分割のたびに子の箱へ**伝播**させます（§5.3.1）。
+    // **伝播は最適化ではなく成功率の前提です。** 大域の参照点から辿ると経路が長くなり、
+    // 軸平行な入力では途中で必ず辺や頂点に当たります。
+    geom::IPoint root_ref{};
     {
         octree::Aabb all{};
         for (int k = 0; k < 3; ++k) {
@@ -140,60 +140,133 @@ inline PolySoup boolean_nary(const std::vector<const PolySoup*>& inputs, const I
                 all.hi[k] = std::max(all.hi[k], q.aabb.hi[k]);
             }
         }
-        const std::int64_t lim = -static_cast<std::int64_t>(krisite::kCoordMin);
-        const std::int64_t odd[3] = {1, 3, 5};
-        for (int axis = 0; axis < 3; ++axis) {
-            for (int sidek = 0; sidek < 2; ++sidek) {
-                std::int64_t c[3];
-                bool ok = true;
+        // 外接箱の外（奇数ずらしで整列を崩す）。**整数点**であることが主経路の条件
+        std::int64_t c[3];
+        bool ok = false;
+        for (int axis = 0; axis < 3 && !ok; ++axis) {
+            for (int sidek = 0; sidek < 2 && !ok; ++sidek) {
                 for (int k = 0; k < 3; ++k) {
-                    if (k == axis) {
-                        c[k] = (sidek == 0) ? all.lo[k] - 1 : all.hi[k] + 1;
-                        if (c[k] < krisite::kCoordMin || c[k] > lim) ok = false;
-                    } else {
-                        // 箱の中央から奇数ぶんずらす（整列を崩す）
-                        c[k] = (all.lo[k] + all.hi[k]) / 2 + odd[k];
-                        if (c[k] < krisite::kCoordMin) c[k] = krisite::kCoordMin;
-                        if (c[k] > lim) c[k] = lim;
-                    }
+                    c[k] = (k == axis) ? ((sidek == 0) ? all.lo[k] - 1 : all.hi[k] + 1)
+                                       : ((all.lo[k] + all.hi[k]) / 2 + 1 + 2 * k);
                 }
-                if (!ok) continue;
-                // **斜めの平面で定義します。** 軸平行だと、軸平行な入力との組で
-                // 平面が平行になり、経路の点が作れません（実際に踏みました）。
-                // 法線 (1,1,0),(0,1,1),(1,0,1) は行列式 2 で独立です。
-                const geom::IPoint rp{static_cast<std::int32_t>(c[0]),
-                                      static_cast<std::int32_t>(c[1]),
-                                      static_cast<std::int32_t>(c[2])};
-                ref_candidates.push_back(
-                    {out.table.intern(geom::plane_with_normal(1, 1, 0, rp)).id,
-                     out.table.intern(geom::plane_with_normal(0, 1, 1, rp)).id,
-                     out.table.intern(geom::plane_with_normal(1, 0, 1, rp)).id});
+                ok = true;
+                for (int k = 0; k < 3; ++k) {
+                    if (c[k] < krisite::kCoordMin || c[k] > krisite::kCoordMax) ok = false;
+                }
             }
         }
-        KRISITE_CHECK(!ref_candidates.empty(),
-                      "boolean_nary: 参照点を外接箱の外に取れない（領域全体を覆う入力）");
+        KRISITE_CHECK(ok, "boolean_nary: 参照点を外接箱の外に取れない");
+        root_ref = geom::IPoint{static_cast<std::int32_t>(c[0]), static_cast<std::int32_t>(c[1]),
+                                static_cast<std::int32_t>(c[2])};
     }
 
     // ---- 4. セルごとの arrangement（過剰分割。CP2 と同じ）--------------------
     const octree::SubdivisionPolicy policy{opt.depth, !opt.adaptive, opt.leaf_threshold};
-    const std::vector<octree::Cell> leaves =
-        octree::build_leaves(policy, [&](const octree::Cell& c, std::size_t* na, std::size_t* nb) {
-            const octree::CellBox cb = octree::box_of(c);
-            *na = 0;
-            *nb = 0;
-            for (const Poly& q : polys) {
-                if (!octree::assign_to_cell(q.aabb, cb)) continue;
-                if (q.comp == 0) {
-                    ++*na;
+
+    // ---- 分割の再帰 + 参照点の伝播（§5.3.1）------------------------------------
+    //
+    // `build_leaves` と同じ規則で降りながら、**整数の参照点とその WNV** を運びます。
+    // 子の箱に親の参照点が入っていなければ、**箱の中の整数点へ軸平行にトレース**して
+    // 更新します（§3.3.0 の主経路）。経路は親の箱の中に収まるので短く済みます。
+    struct Sub {
+        octree::Cell cell;
+        geom::IPoint ref;
+        std::vector<std::int32_t> w;
+    };
+    std::vector<Sub> stack{Sub{octree::Cell{0, 0, 0, 0}, root_ref,
+                               std::vector<std::int32_t>(n_comp, 0)}};
+    std::vector<Sub> leaves;
+
+    auto in_box = [](const geom::IPoint& p, const octree::CellBox& b) {
+        const std::int64_t c[3] = {p.x, p.y, p.z};
+        for (int k = 0; k < 3; ++k) {
+            if (c[k] < b.lo[k] || c[k] >= b.hi[k]) return false;
+        }
+        return true;
+    };
+    // その箱に重なる多角形だけを見る（経路は箱の中に収まる）
+    auto polys_in = [&](const octree::CellBox& b) {
+        std::vector<TracePoly> v;
+        for (std::size_t i = 0; i < tps.size(); ++i) {
+            if (octree::assign_to_cell(tps_aabb[i], b)) v.push_back(tps[i]);
+        }
+        return v;
+    };
+
+    while (!stack.empty()) {
+        const Sub cur = std::move(stack.back());
+        stack.pop_back();
+        const octree::CellBox cb = octree::box_of(cur.cell);
+
+        bool split = false;
+        if (cur.cell.depth < policy.max_depth) {
+            if (policy.uniform) {
+                split = true;
+            } else {
+                std::size_t na = 0, nb = 0;
+                for (const Poly& q : polys) {
+                    if (!octree::assign_to_cell(q.aabb, cb)) continue;
+                    if (q.comp == 0) {
+                        ++na;
+                    } else {
+                        ++nb;
+                    }
+                }
+                split = (na > 0 && nb > 0) && (na + nb > policy.leaf_threshold);
+            }
+        }
+        if (!split) {
+            leaves.push_back(cur);
+            continue;
+        }
+
+        const std::vector<TracePoly> here_polys = polys_in(cb);
+        for (int t2 = 0; t2 < 8; ++t2) {
+            const octree::Cell child{cur.cell.depth + 1,
+                                     cur.cell.i * 2 + static_cast<std::uint32_t>(t2 & 1),
+                                     cur.cell.j * 2 + static_cast<std::uint32_t>((t2 >> 1) & 1),
+                                     cur.cell.k * 2 + static_cast<std::uint32_t>((t2 >> 2) & 1)};
+            const octree::CellBox chb = octree::box_of(child);
+            if (in_box(cur.ref, chb)) {
+                stack.push_back(Sub{child, cur.ref, cur.w});
+                continue;
+            }
+            // 子の箱の中の整数点へ移す。**まず射影**（EMBER §4.2.2 の第一候補）
+            bool done = false;
+            for (int attempt = 0; attempt < 8 && !done; ++attempt) {
+                std::int64_t c[3];
+                for (int k = 0; k < 3; ++k) {
+                    const std::int64_t lo = chb.lo[k], hi = chb.hi[k] - 1;
+                    std::int64_t v = (attempt == 0) ? std::int64_t{(&cur.ref.x)[k]}
+                                                    : (lo + hi) / 2 + attempt * (1 + 2 * k);
+                    if (v < lo) v = lo;
+                    if (v > hi) v = hi;
+                    c[k] = v;
+                }
+                const geom::IPoint np{static_cast<std::int32_t>(c[0]),
+                                      static_cast<std::int32_t>(c[1]),
+                                      static_cast<std::int32_t>(c[2])};
+                std::vector<std::int32_t> w = cur.w;
+                std::size_t segs = 0;
+                ++st.ref_moves;
+                if (trace_axis_path(out.table, here_polys, cur.ref, np, &w, &segs)) {
+                    st.ref_segments += segs;
+                    stack.push_back(Sub{child, np, std::move(w)});
+                    done = true;
                 } else {
-                    ++*nb;
+                    ++st.ref_rejects;
                 }
             }
-        });
+            KRISITE_CHECK(done, "boolean_nary: 子の参照点を作れない（経路がすべて退化）");
+        }
+    }
+    std::sort(leaves.begin(), leaves.end(),
+              [](const Sub& a, const Sub& b) { return a.cell < b.cell; });
+
     st.leaf_depth_min = opt.depth;
-    for (const octree::Cell& c : leaves) {
-        st.leaf_depth_min = std::min(st.leaf_depth_min, c.depth);
-        st.leaf_depth_max = std::max(st.leaf_depth_max, c.depth);
+    for (const Sub& l : leaves) {
+        st.leaf_depth_min = std::min(st.leaf_depth_min, l.cell.depth);
+        st.leaf_depth_max = std::max(st.leaf_depth_max, l.cell.depth);
     }
     st.total_cells = leaves.size();
 
@@ -201,7 +274,10 @@ inline PolySoup boolean_nary(const std::vector<const PolySoup*>& inputs, const I
     std::vector<octree::Cell> frag_cell;
     std::vector<std::uint32_t> frag_comp, frag_tag;
 
-    for (const octree::Cell& cell : leaves) {
+    std::vector<std::vector<std::int32_t>> frag_wref;
+    std::vector<geom::IPoint> frag_ref;
+    for (const Sub& leaf : leaves) {
+        const octree::Cell& cell = leaf.cell;
         const octree::CellBox cbox = octree::box_of(cell);
         const std::size_t frags_before = frags.size();
         std::vector<Fragment> local;
@@ -335,6 +411,8 @@ inline PolySoup boolean_nary(const std::vector<const PolySoup*>& inputs, const I
             frag_cell.push_back(cell);
             frag_comp.push_back(local_comp[i]);
             frag_tag.push_back(local_tag[i]);
+            frag_wref.push_back(leaf.w);
+            frag_ref.push_back(leaf.ref);
         }
         if (frags.size() != frags_before) ++st.active_cells;
     }
@@ -399,6 +477,8 @@ inline PolySoup boolean_nary(const std::vector<const PolySoup*>& inputs, const I
                        std::make_tuple(frag_comp[b], frag_tag[b], b);
             });
         const Fragment& f = frags[pick];
+        // **経路は葉の箱に収まる**ので、その箱に重なる多角形だけを見ます（局所化）
+        const std::vector<TracePoly> leaf_polys = polys_in(octree::box_of(frag_cell[pick]));
 
         // **この領域に載っている面（シート）の寄与。**
         //
@@ -429,21 +509,89 @@ inline PolySoup boolean_nary(const std::vector<const PolySoup*>& inputs, const I
         //
         // 軸平行な入力では、内部点を通る軸平行線が他の面の辺をちょうど通ることが
         // あります。順序を変えても直らないので、**点そのものを変えます**。
-        TraceResult tr;
+        // ---- 分類（§5.5）--------------------------------------------------
+        //
+        // **主経路**（§3.3.0）: 内部点 x は整数アンカー c を通る軸平行線の上にあるので、
+        //   x → c は軸平行 1 本。c → 葉の参照点も整数どうしの軸平行 3 本まで。
+        //   **経路は葉の箱に収まります**（参照点の伝播があるから）。
+        //
+        // **予備**（§3.3.1）: 平面を 1 枚ずつ置き換える 3 セグメント経路。
+        const std::vector<std::int32_t>& w_leaf = frag_wref[pick];
+        const geom::IPoint& ref_leaf = frag_ref[pick];
+        std::vector<std::int32_t> w_at_x;
+        bool traced = false;
+
         const std::size_t nv_f = vertex_count(f);
-        for (unsigned variant = 0; variant <= nv_f && !tr.ok; ++variant) {
-            PPoint xp{};
-            interior_point(out.table, f, cache, &st.interior, &xp, variant);
-            for (const PPoint& xr : ref_candidates) {
-                tr = trace_path(out.table, tps, xp, xr, w_ref, cache);
-                if (tr.ok) break;
+        for (unsigned variant = 0; variant <= nv_f && !traced; ++variant) {
+            std::array<PlaneId, 3> xp{};
+            geom::IPoint anchor{};
+            geom::Axis aaxis = geom::Axis::X;
+            const geom::HPointD x =
+                interior_point(out.table, f, cache, &st.interior, &xp, variant, &anchor, &aaxis);
+            std::vector<std::int32_t> w = w_leaf;
+
+            if (variant == 0) {
+                // x → アンカー（軸平行 1 本。x は面の上にある）
+                const geom::Axis u = (aaxis == geom::Axis::X)   ? geom::Axis::Y
+                                     : (aaxis == geom::Axis::Y) ? geom::Axis::Z
+                                                                : geom::Axis::X;
+                const geom::Axis v = (aaxis == geom::Axis::X)   ? geom::Axis::Z
+                                     : (aaxis == geom::Axis::Y) ? geom::Axis::X
+                                                                : geom::Axis::Y;
+                const std::int64_t ac[3] = {anchor.x, anchor.y, anchor.z};
+                const PlaneId l0 =
+                    out.table.intern(geom::plane_axis_aligned(u, ac[static_cast<int>(u)])).id;
+                const PlaneId l1 =
+                    out.table.intern(geom::plane_axis_aligned(v, ac[static_cast<int>(v)])).id;
+                const PlaneId eb =
+                    out.table.intern(
+                            geom::plane_axis_aligned(aaxis, ac[static_cast<int>(aaxis)]))
+                        .id;
+                std::size_t segs = 0;
+                // **アンカーが支持平面の上にあることがあります**（軸平行な面では
+                // 重心の丸めがちょうど面に乗る）。その場合 x == アンカーで、
+                // 最初のセグメントは長さ 0。**面の上から出発する扱いを引き継ぎます。**
+                const bool anchor_on_plane =
+                    geom::side(out.table.at(f.support), geom::to_homogeneous(anchor)) == 0;
+                const bool seg0 =
+                    anchor_on_plane ||
+                    trace_segment(out.table, leaf_polys, l0, l1, f.support, eb, x,
+                                  geom::to_homogeneous(anchor), &w, true, false);
+                if (seg0 && trace_axis_path(out.table, leaf_polys, anchor, ref_leaf, &w, &segs,
+                                            anchor_on_plane)) {
+                    traced = true;
+                    if (segs == 0) ++st.path_single;
+                    w_at_x = std::move(w);
+                    break;
+                }
                 ++st.midpoint_retries;
+                continue;
             }
+            // 予備経路
+            const std::array<PlaneId, 3> rp{
+                out.table.intern(geom::plane_with_normal(1, 1, 0, ref_leaf)).id,
+                out.table.intern(geom::plane_with_normal(0, 1, 1, ref_leaf)).id,
+                out.table.intern(geom::plane_with_normal(1, 0, 1, ref_leaf)).id};
+            const TraceResult tr = trace_path(out.table, leaf_polys, xp, rp, w_leaf, cache);
+            if (tr.ok) {
+                traced = true;
+                ++st.path_fallback;
+                w_at_x = tr.dw;
+                break;
+            }
+            ++st.midpoint_retries;
         }
-        KRISITE_CHECK(tr.ok, "boolean_nary: 経路がすべて退化した（内部点も順序も尽きた）");
+#if defined(KRISITE_TRACE_COUNT_ONLY)
+        if (!traced) {
+            ++st.path_fallback;  // 集計用: 失敗した領域
+            continue;
+        }
+#else
+        KRISITE_CHECK(traced, "boolean_nary: 経路がすべて退化した（内部点も順序も尽きた）");
+#endif
         ++st.raycasts;
 
-        std::vector<std::int32_t> w_front = tr.dw, w_back = tr.dw;
+        std::vector<std::int32_t> w_front = w_at_x, w_back = w_at_x;
         for (std::size_t i = 0; i < n_comp; ++i) {
             w_front[i] += d_front[i];
             w_back[i] += d_back[i];
