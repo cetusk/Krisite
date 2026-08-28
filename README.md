@@ -14,8 +14,9 @@
 
 `Krisite` は 3D データを扱う C++20 ヘッダオンリーライブラリです。
 最終目標は点群圧縮・メッシュ化・厳密ブール演算の統合です。
-**Phase 0（算術基盤）と Phase 1（出力抽出の最小検証）は完了し、Phase 1 の判断は「続行」です。**
-現在は **Phase 2（適応分割と構成点の保持）** を進めています。現在地は [`docs/ROADMAP.md`](docs/ROADMAP.md)。
+**Phase 0（算術基盤）・Phase 1（出力抽出の最小検証）・Phase 2（適応分割と意味論の確定）は
+完了しています。** Phase 1 の判断は「続行」でした。現在は **Phase 3（並列化）の仕様検討**です。
+現在地は [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ## いま提供しているもの
 
@@ -137,7 +138,21 @@ Linux(GCC/Clang) / macOS(Apple Silicon) / Windows(MSVC) × `b = 21, 26` のマ�
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) が正です（SPEC §9）。
 開発コンテナにこれらのツールチェーンを入れる必要はありません。
 
-CI は他に次のジョブを回します。
+**「検証されなければならない」と「全 PR で走る」は別です。** 仕様が要求するのは前者で、
+実行頻度は運用の裁量です。方針は [`docs/ROADMAP.md`](docs/ROADMAP.md)「CI の方針」が正で、
+段は 4 つあります。
+
+| 段 | いつ | 中身 |
+|---|---|---|
+| PR ゲート | 毎 PR | 書式 + 主要 1 構成の全テスト |
+| 影響トリガ | 該当パスが変わった PR | 変異テスト、プラットフォーム行列、Manifold |
+| **main ゲート** | main への push | **全ジョブ** |
+| **フェーズ完了** | 締めるとき | **全ジョブが green であることを、対象の SHA 付きで記録** |
+
+**フェーズを閉じる前に全ジョブが green であることは緩めていません。** 段分けが変えるのは
+頻度だけで、検査の中身は 1 件も減っていません。
+
+CI は次のジョブを回します。
 
 | ジョブ | 内容 |
 |---|---|
@@ -155,7 +170,7 @@ CI は他に次のジョブを回します。
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **現在地とフェーズの全体像。まずここを読む** |
 | [`docs/SPEC-phase2.md`](docs/SPEC-phase2.md) | Phase 2 の仕様。分割平面の絞り込み、適応分割、非多様体出力の意味論 |
-| [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) | Phase 2 の実装ノート（**CP1 到達時点**）。判断と根拠、開発環境のつまずき |
+| [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) | Phase 2 の実装ノート（**完了時点**）。判断と根拠、機構が検出器を動かした記録 |
 | [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 の仕様。縫合の可否判定、テストコーパス、中止条件 |
 | [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) | Phase 1 の実装ノート（**CP3 到達時点**）。判断と根拠、**つまずいた点と訂正** |
 | [`docs/SPEC-phase0.md`](docs/SPEC-phase0.md) | Phase 0 の仕様。ビット幅解析、述語一覧、テスト要件 |
@@ -164,6 +179,7 @@ CI は他に次のジョブを回します。
 | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | 第三者コンポーネントの扱いと、それを機構で保証する仕組み |
 | [`docs/STYLE.md`](docs/STYLE.md) | コーディング規約（命名、書式、算術コードの制約） |
 | [`assets/BRAND.md`](assets/BRAND.md) | ロゴとテーマカラーの定義 |
+| [`tools/README.md`](tools/README.md) | 文書を直す一度きりの改訂スクリプト（**ライブラリの一部ではありません**） |
 
 ## ライセンス
 
