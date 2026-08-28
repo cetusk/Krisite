@@ -75,6 +75,9 @@ krisite_add_test(cp3           csg/test_cp3.cpp)
 # 構成点の保持 × T 解決 / early-out × 分裂）。3 経路を踏んだ回数を数え、
 # 0 なら落とす。§9.4.2 の「分裂の有無で幾何が一致する」もここが常時見る
 krisite_add_test(cp5           csg/test_cp5.cpp)
+# SPEC-phase3 §3.1 / §2.1 の CP1。辺平面の構成（軸方向との外積）と、
+# 断片の相対内部の点。**両方の経路が使われることを固定する**（空回りの番人）
+krisite_add_test(interior      csg/test_interior.cpp)
 krisite_add_test(idempotence   csg/test_idempotence.cpp)
 krisite_add_test(depth_monotonic csg/test_depth_monotonic.cpp)
 
@@ -201,6 +204,7 @@ if(KRISITE_BUILD_MUTANTS)
     #   11 T を 1 個ずつ            位相（adaptive。次数 1）       mutation
     #   12 割り当てを閉領域に       位相（adaptive。C の破裂）     mutation
     #   13 退化三角形を捨てる       位相（adaptive。次数 1）       mutation
+    #   14 辺平面の軸選択を非正準に interior（正準性）★           mutation
     #
     # **CI で回らない登録はありません。** `mutation`（GMP OFF）と `mutation_gmp`
     # （§9.4.1）の 2 ジョブが、上のすべてを回します。
@@ -412,4 +416,16 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(9  KRISITE_MUTATION_SPLIT_BY_OWNER=1    cp5 FAIL)
     krisite_add_mutant(10 KRISITE_MUTATION_NO_TJUNCTION=1      cp5 FAIL)
     krisite_add_mutant(12 KRISITE_MUTATION_CLOSED_CELLS=1      cp5 FAIL)
+
+    # 変異 14: §3.1 の辺平面の軸選択を非正準にする（最小ではなく最大の k を選ぶ）。
+    #   **主検出器: interior（§3.1.3 の正準性の検査）**
+    #
+    # **幾何としては正しい平面が返ります。** 辺の直線を含み支持平面と一致しない、
+    # という条件は満たすので、位相も体積も変わりません。**壊れるのは決定性だけ**で、
+    # 位相・体積の検査はすべて素通りします。決定性を直接見ている検査が無ければ
+    # 誰も捕まえません。
+    krisite_add_mutant(14 KRISITE_MUTATION_EDGE_AXIS_LAST=1 interior        FAIL)
+    krisite_add_mutant(14 KRISITE_MUTATION_EDGE_AXIS_LAST=1 cp3             PASS)
+    krisite_add_mutant(14 KRISITE_MUTATION_EDGE_AXIS_LAST=1 adaptive        PASS)
+    krisite_add_mutant(14 KRISITE_MUTATION_EDGE_AXIS_LAST=1 split_semantics PASS)
 endif()

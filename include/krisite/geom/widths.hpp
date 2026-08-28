@@ -129,49 +129,55 @@ inline constexpr std::size_t kOrient2dH = 8 * b + 17;
 /// すなわち **Phase 0 で最大幅を要求するのは side() ではなく cmp_h()** である（§3.3）。
 inline constexpr std::size_t kCmpH = 13 * b + 27;
 
-/// 断片の 2 頂点の**中点**に対する述語（SPEC-phase1 §6.1 の代表点フォールバック）。
+/// **中点系・重心系の述語は Phase 3 の段 0 で削除しました**（`SPEC-phase3.md` §2.1）。
 ///
-/// 分類の代表点として頂点を使う設計は、CP2 のケース 2 で破れました。断片の 4 辺の
-/// うち 3 辺が相手の面に載る配置があり、**4 頂点すべてが $\partial B$ 上**になります。
-/// 相対内部の点が要るので、対角線の中点を使います。
+/// 代表点は「頂点 → 対角線の中点 → 3 頂点の重心」の 3 段で選んでいましたが、
+/// 2 段目と 3 段目は**点を組み合わせる**操作で、`kTriSide` が $21b{+}46$
+/// （b=21 で 487 ビット / 8 リム）に達していました。
 ///
-/// $v_i = (X_i : W_i)$ の中点は
-/// $$ m = (X_0 W_1 + X_1 W_0 \;:\; 2 W_0 W_1). $$
+/// 段 0 は EMBER §4.4 に倣い、**構成そのものを平面ベースに戻します。**
+/// 主経路が軸平行 2 枚 + 支持平面の交点（`kAxisPointXyz`）、
+/// 予備経路が辺平面を内側へずらした交点（`kOffsetShifted`）で、
+/// **どちらも一般の 3 平面交点の幅に収まります。**
 ///
-/// **$m$ は構成しません。** `side_value` も `orient2d_h_value` も同次座標について
-/// **線形**なので、被符号値 $F$ について
-/// $$ F(m) = W_1 F(v_0) + W_0 F(v_1) $$
-/// が厳密に成り立ちます。$m$ の $w = 2W_0W_1$ の符号は $\mathrm{sign}(W_0)\mathrm{sign}(W_1)$
-/// です。 これで新しい**点の型**を作らずに済み、`kHomoXyz` / `kHomoW` を広げる必要もありません。
-///
-///   side:       $(6b{+}12) + (9b{+}20) = 15b{+}32$、2 項の和で $15b{+}33$
-///   orient2d_h: $(6b{+}12) + (8b{+}17) = 14b{+}29$、2 項の和で $14b{+}30$
-///
-/// b = 21 で 348 ビット（6 リム）/ 324 ビット（6 リム）。
-inline constexpr std::size_t kMidSide = kHomoW + kSide + 1;
-inline constexpr std::size_t kMidOrient2dH = kHomoW + kOrient2dH + 1;
+/// これで Phase 0 / 1 の最大幅は `kCmpH`（13b+27）に戻ります。
 
-/// 断片の 3 頂点の**重心**に対する述語（同上のさらなるフォールバック）。
+// ---- Phase 3 で追加した量（SPEC-phase3.md §3.1 / §2.1）----------------------
+
+/// **辺平面の法線** $N_e = (p_2 - p_1) \times e_k$（`SPEC-phase3.md` §3.1.2 の案 B）。
 ///
-/// 中点は対角線を要求するので**三角形の断片では使えません。** 実際に CP2.5 の
-/// ケース 2T で、3 頂点すべてが $\partial B$ 上の三角形断片が出ました。
+/// 相手が軸方向の単位ベクトルなので**乗算が起きません。** 成分は座標差そのもの
+/// （符号反転を含む）なので、幅は座標差と同じ $b+1$ です。
 ///
-/// $v_i = (X_i : W_i)$ の重心は、$W_i > 0$ に正規化したうえで
-/// $$ c = (W_1W_2 X_0 + W_0W_2 X_1 + W_0W_1 X_2 \;:\; 3 W_0W_1W_2). $$
+/// $N_e = N_s \times (p_2 - p_1)$（案 A）だと $3b+5$ になり、`side` が $13b+28$、
+/// b=26 で 6 リムに増えます。**構成方式の選択が決定的です。**
+inline constexpr std::size_t kEdgeNormal = b + 1;
+
+/// **辺平面のオフセット** $d_e = -N_e \cdot p_1$。
 ///
-/// **凸多角形の 3 頂点が張る三角形の内部は、多角形の相対内部に含まれます。**
-/// したがって共線でない 3 頂点を選べば必ず境界から外れます。
+///   $N_{e,i} \cdot p_{1,i}$ : $(b+1) + b = 2b+1$
+///   3 項の和（うち 1 つは 0）  : $2b+2$
+inline constexpr std::size_t kEdgeOffset = 2 * b + 2;
+
+/// 辺平面を**内側へずらした**オフセット $d' = d - i\,\sigma$（`SPEC-phase3.md` §2.1.2）。
 ///
-/// ここでも $c$ は構成せず、線形性から
-/// $$ F(c) = W_1W_2 F(v_0) + W_0W_2 F(v_1) + W_0W_1 F(v_2) $$
-/// で評価します。符号は $\mathrm{sign}(W_0)\mathrm{sign}(W_1)\mathrm{sign}(W_2)$ 倍。
+/// $\sigma$ は内側の符号、$i \ge 1$ は小さなオフセット。**`kOffset` と同じリム数に
+/// 収める**ので、ずらし幅の上限を $2^{kShiftLog2}$ に制限します。
+inline constexpr std::size_t kShiftLog2 = 16;
+inline constexpr std::size_t kOffsetShifted = kOffset + 1;
+
+/// 軸平行 2 枚 + 支持平面の交点（`SPEC-phase3.md` §2.1.1 の主経路）。
 ///
-///   side:       $2(6b{+}12) + (9b{+}20) = 21b{+}44$、3 項の和で $21b{+}46$
-///   orient2d_h: $2(6b{+}12) + (8b{+}17) = 20b{+}41$、3 項の和で $20b{+}43$
+/// 軸平行平面は $N$ が単位ベクトル、$d$ が $b+1$。支持平面は $N_s$ が $2b+3$、
+/// $d_s$ が $3b+5$。3x3 行列式の各項は行と列を 1 つずつ選ぶので、
 ///
-/// b = 21 で 487 ビット / 463 ビット（ともに 8 リム）。
-inline constexpr std::size_t kTriSide = 2 * kHomoW + kSide + 2;
-inline constexpr std::size_t kTriOrient2dH = 2 * kHomoW + kOrient2dH + 2;
+///   $w$   : 単位 x 単位 x 法線 = $2b+3$、和で $2b+6$
+///   $xyz$ : 最大項は 単位 x 単位 x $d_s$ = $3b+5$、和で $3b+8$
+///
+/// **一般の構成点（$6b+12$ / $7b+14$）より小さいので、`HPointD` にそのまま入ります。**
+/// 新しい点の型は要りません。
+inline constexpr std::size_t kAxisPointW = 2 * b + 6;
+inline constexpr std::size_t kAxisPointXyz = 3 * b + 8;
 
 }  // namespace bits
 
@@ -195,13 +201,15 @@ inline constexpr std::size_t kPlaneMinor = limbs_for(bits::kPlaneMinor);
 inline constexpr std::size_t kPlaneOrder = limbs_for(bits::kPlaneOrder);
 inline constexpr std::size_t kInputVolume6 = limbs_for(bits::kInputVolume6);
 inline constexpr std::size_t kOrient2dH = limbs_for(bits::kOrient2dH);
-inline constexpr std::size_t kMidSide = limbs_for(bits::kMidSide);
-inline constexpr std::size_t kMidOrient2dH = limbs_for(bits::kMidOrient2dH);
-inline constexpr std::size_t kTriSide = limbs_for(bits::kTriSide);
-inline constexpr std::size_t kTriOrient2dH = limbs_for(bits::kTriOrient2dH);
 
 // Phase 2（SPEC-phase2.md §7）
 inline constexpr std::size_t kPlaneAabb = limbs_for(bits::kPlaneAabb);
+
+// Phase 3（SPEC-phase3.md §3.1 / §2.1）
+inline constexpr std::size_t kEdgeNormal = limbs_for(bits::kEdgeNormal);
+inline constexpr std::size_t kEdgeOffset = limbs_for(bits::kEdgeOffset);
+inline constexpr std::size_t kAxisPointW = limbs_for(bits::kAxisPointW);
+inline constexpr std::size_t kAxisPointXyz = limbs_for(bits::kAxisPointXyz);
 
 /// Phase 0 の述語が要求する最大リム数（SPEC §3.3 の表の最右列）。
 /// b = 21 → 5、b = 26 → 6。
@@ -215,11 +223,19 @@ static_assert(64 * limbs::kPlaneMinor >= bits::kPlaneMinor, "kPlaneMinor のリ�
 static_assert(64 * limbs::kPlaneOrder >= bits::kPlaneOrder, "kPlaneOrder のリム数不足");
 static_assert(64 * limbs::kInputVolume6 >= bits::kInputVolume6, "kInputVolume6 のリム数不足");
 static_assert(64 * limbs::kOrient2dH >= bits::kOrient2dH, "kOrient2dH のリム数不足");
-static_assert(64 * limbs::kMidSide >= bits::kMidSide, "kMidSide のリム数不足");
-static_assert(64 * limbs::kMidOrient2dH >= bits::kMidOrient2dH, "kMidOrient2dH のリム数不足");
 static_assert(64 * limbs::kPlaneAabb >= bits::kPlaneAabb, "kPlaneAabb のリム数不足");
-static_assert(64 * limbs::kTriSide >= bits::kTriSide, "kTriSide のリム数不足");
-static_assert(64 * limbs::kTriOrient2dH >= bits::kTriOrient2dH, "kTriOrient2dH のリム数不足");
+// Phase 3: 辺平面と代表点（SPEC-phase3 §3.1 / §2.1）
+static_assert(bits::kEdgeNormal <= bits::kNormal, "辺平面の法線が支持平面の法線を超える");
+static_assert(bits::kEdgeOffset <= bits::kOffset, "辺平面のオフセットが kOffset を超える");
+static_assert(limbs::kEdgeNormal <= limbs::kNormal && limbs::kEdgeOffset <= limbs::kOffset,
+              "辺平面は PlaneD にそのまま収まること");
+// ずらしたオフセットが同じリム数に収まること（型を変えずに済む条件）
+static_assert(limbs_for(bits::kOffsetShifted) == limbs::kOffset,
+              "ずらした d が kOffset のリム数を超える");
+static_assert(bits::kShiftLog2 + 1 <= bits::kOffset, "ずらし幅の上限が d の幅を超える");
+// 軸平行 2 枚を含む交点が一般の構成点に収まること（新しい点の型を作らない条件）
+static_assert(bits::kAxisPointW <= bits::kHomoW && bits::kAxisPointXyz <= bits::kHomoXyz,
+              "軸平行を含む交点が HPointD に収まらない");
 // 軸平行平面のオフセットは kOffset に収まること
 static_assert(bits::kAxisOffset <= bits::kOffset, "軸平行平面のオフセットが kOffset を超える");
 

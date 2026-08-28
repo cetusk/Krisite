@@ -26,12 +26,10 @@
 #include <cstdint>
 #include <map>
 #include <vector>
-#if defined(KRISITE_DEBUG_REPRESENTATIVE)
-#include <cstdio>
-#endif
 
 #include "krisite/csg/faces.hpp"
 #include "krisite/csg/fragment.hpp"
+#include "krisite/csg/interior.hpp"
 #include "krisite/csg/plane_table.hpp"
 #include "krisite/csg/raycast.hpp"
 #include "krisite/csg/tjunction.hpp"
@@ -95,8 +93,8 @@ struct BoolStats {
     std::size_t mesh_planes = 0;               ///< うちメッシュ由来
     std::size_t regions = 0;                   ///< 相異なる符号ベクトルの数（§6.1）
     std::size_t raycasts = 0;                  ///< レイキャスト回数
-    std::size_t midpoint_raycasts = 0;         ///< うち中点へのフォールバック（§6.1）
-    std::size_t centroid_raycasts = 0;         ///< うち 3 頂点の重心へのフォールバック
+    /// 代表点の構成（SPEC-phase3 §2.1 の段 0）。**どちらの経路で決まったか。**
+    InteriorStats interior{};
     /// `side` と `intersect3` の呼び出し数（SPEC-phase1 §12）。
     ///
     /// **`KRISITE_COUNT_PREDICATES` を定義したビルドでのみ埋まります。**
@@ -742,89 +740,22 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
             const auto key = std::make_pair(f.owner, sig);
             auto it = region_inside.find(key);
             if (it == region_inside.end()) {
-                // 領域の代表点: **相手の境界上に無い**頂点。
+                // 領域の代表点: **断片の相対内部の点**（SPEC-phase3 §2.1 の段 0）。
                 //
-                // CP1 では「相手の全平面に対して符号が非零」を条件にしていましたが、
-                // これは強すぎました。断片の頂点は隣接する切断平面に必ず載るので、
-                // 相手の平面が切断に使われていれば、どの頂点も条件を満たしません。
-                // ケース 2 で実際に破れました（4 辺のうち 3 辺が相手の平面上）。
+                // Phase 1 / 2 は「頂点 → 対角線の中点 → 3 頂点の重心」の 3 段でした。
+                // 2 段目以降は点を組み合わせる操作で、被符号値が 487 ビットに達します。
+                // 段 0 で構成を平面ベースに戻し、**相対内部の点を直接作ります。**
                 //
-                // 必要なのは「境界上に無いこと」だけです。相手の平面上にあっても、
-                // その平面上の面の外側なら境界からは外れています。
-                //
-                // 頂点の分類が断片全体の分類と一致することは保証されます。$\partial B$ は
-                // $B$ の平面の和集合に含まれ、断片は $B$ の平面配置のセルなので、
-                // $\partial B$ は断片の**内部を横切りません**。頂点から内部へ引いた線分は
-                // 途中で $\partial B$ を跨がないので、頂点が境界上に無ければ同じ側です。
+                // 相対内部の点は相手の平面配置のセルの内部にあるので、**$\partial B$ に
+                // 載りません**（$\partial B$ は $B$ の平面の和集合に含まれ、セルの内部は
+                // どの平面とも交わらない）。したがって境界判定が要りません。
                 const mesh::TriMesh& other = (f.owner == 0) ? B : A;
-                const std::size_t nv = vertex_count(f);
-                std::vector<geom::HPointD> vs(nv);
-                for (std::size_t vi = 0; vi < nv; ++vi)
-                    vs[vi] = fragment_vertex(table, f, vi, cache);
-
-                bool decided = false, inside = false;
-                for (std::size_t vi = 0; vi < nv && !decided; ++vi) {
-                    if (point_on_boundary(other, vs[vi])) continue;
-                    inside = point_inside(other, vs[vi]);
-                    decided = true;
-                    ++st.raycasts;
-                }
-                // 全頂点が境界上のときは対角線の中点に落とす。
-                //
-                // 凸多角形の対角線の中点は相対内部にあり、相対内部は相手の平面配置の
-                // セルの内側なので $\partial B$ から必ず外れます（$\partial B$ は
-                // $B$ の平面の和集合に含まれ、セルの内部はどの平面とも交わらない）。
-                // したがって頂点数 4 以上なら必ず決まります。
-                for (std::size_t i = 0; i < nv && !decided; ++i) {
-                    for (std::size_t j = i + 2; j < nv && !decided; ++j) {
-                        if (i == 0 && j + 1 == nv) continue;  // 隣接（巡回）
-                        const geom::HMidPointD m{vs[i], vs[j]};
-                        if (point_on_boundary(other, m)) continue;
-                        inside = point_inside(other, m);
-                        decided = true;
-                        ++st.raycasts;
-                        ++st.midpoint_raycasts;
-                    }
-                }
-                // **三角形の断片には対角線がありません。** 3 頂点の重心に落とします。
-                // 凸多角形の 3 頂点が張る三角形の内部は多角形の相対内部に含まれるので、
-                // 共線でない 3 つ組を選べば必ず境界から外れます。全 3 つ組を試します。
-                for (std::size_t i = 0; i < nv && !decided; ++i) {
-                    for (std::size_t j = i + 1; j < nv && !decided; ++j) {
-                        for (std::size_t k = j + 1; k < nv && !decided; ++k) {
-                            const geom::HTriPointD c{vs[i], vs[j], vs[k]};
-                            if (point_on_boundary(other, c)) continue;
-                            inside = point_inside(other, c);
-                            decided = true;
-                            ++st.raycasts;
-                            ++st.centroid_raycasts;
-                        }
-                    }
-                }
-#if defined(KRISITE_DEBUG_REPRESENTATIVE)
-                // 代表点が見つからないときに配置を吐く。CP2 で実際に必要になりました。
-                // ライブラリ本体の既定ビルドには入りません。
-                if (!decided) {
-                    std::fprintf(stderr, "代表点なし: owner=%d support=%u 頂点数=%zu 辺=[", f.owner,
-                                 f.support, vertex_count(f));
-                    for (PlaneId e : f.edge) std::fprintf(stderr, "%u ", e);
-                    std::fprintf(stderr, "] qs=[");
-                    for (PlaneId q : qs) std::fprintf(stderr, "%u ", q);
-                    std::fprintf(stderr, "]\n");
-                    for (std::size_t vi = 0; vi < vertex_count(f); ++vi) {
-                        const geom::HPointD v = fragment_vertex(table, f, vi, cache);
-                        std::fprintf(stderr, "  v%zu:", vi);
-                        for (PlaneId q : qs) {
-                            std::fprintf(stderr, " %u:%d", q, geom::side(table.at(q), v));
-                        }
-                        std::fprintf(stderr, "\n");
-                    }
-                }
-#endif
-                KRISITE_CHECK(
-                    decided,
-                    "boolean_op: "
-                    "領域の代表点が見つからない（全頂点・全対角線中点・全重心が相手の境界上）");
+                const geom::HPointD rep = interior_point(table, f, cache, &st.interior);
+                KRISITE_CHECK(!point_on_boundary(other, rep),
+                              "boolean_op: 相対内部の代表点が相手の境界上にある"
+                              "（SPEC-phase3 §2.1 の前提が破れている）");
+                const bool inside = point_inside(other, rep);
+                ++st.raycasts;
                 it = region_inside.emplace(key, inside).first;
                 ++st.regions;
             }

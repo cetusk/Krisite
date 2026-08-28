@@ -101,6 +101,133 @@ inline PlaneD plane_axis_aligned(Axis axis, std::int64_t coord) noexcept {
     return pl;
 }
 
+/// **辺平面**（`SPEC-phase3.md` §3.1）。辺 $(p_1, p_2)$ の直線を含み、支持平面と一致しない平面。
+///
+/// 支持平面上の点しか分類しないので、辺平面には自由度があります。**軸方向との外積を
+/// 使ってください**（同 §3.1.2 の案 B）。
+///
+///     N_e = (p2 - p1) x e_k        e_k は軸方向の単位ベクトル
+///     d_e = -N_e・p1
+///
+/// **相手が単位ベクトルなので乗算が起きず、幅が支持平面より小さくなります**
+/// （N が b+1、d が 2b+2。`widths.hpp` bits::kEdgeNormal / kEdgeOffset）。
+/// $N_s \times (p_2-p_1)$ を使うと $3b+5$ に伸び、`side` が b=26 で 6 リムに増えます。
+///
+/// **軸の選択は正準に決めます**（条件を満たす最小の k）。実行ごとに違う k を選ぶと
+/// 出力が非決定的になります（§3.1.3）。
+///
+/// 条件は 2 つ。どちらも厳密な整数演算で判定できます。
+///
+///   1. N != 0                （Δ が e_k と平行だと退化）
+///   2. N が N_s と平行でない  （支持平面と一致してはいけない）
+///
+/// **少なくとも 1 つの k が必ず成立します。** $(\Delta \times e_i) \times (\Delta \times e_j)
+/// = (\Delta \cdot (e_i \times e_j))\,\Delta$ なので、$\Delta$ の第 k 成分が 0 のときは
+/// i と j が平行になり候補方向は 2 つに減りますが、$N_s$ に平行になり得るのは
+/// そのうち高々 1 つです。
+///
+/// `ns` には支持平面の法線を渡します（条件 2 の判定に使う）。
+inline PlaneD plane_from_edge(const IPoint& p1, const IPoint& p2, const PlaneD& support,
+                              Axis* chosen = nullptr) noexcept {
+    const std::int64_t dx = static_cast<std::int64_t>(p2.x) - p1.x;
+    const std::int64_t dy = static_cast<std::int64_t>(p2.y) - p1.y;
+    const std::int64_t dz = static_cast<std::int64_t>(p2.z) - p1.z;
+    // Δ x e_x = (0, dz, -dy) / Δ x e_y = (-dz, 0, dx) / Δ x e_z = (dy, -dx, 0)
+    const std::int64_t cand[3][3] = {{0, dz, -dy}, {-dz, 0, dx}, {dy, -dx, 0}};
+
+    // 条件 2 の判定は **固定幅で行います。** N_e が b+1、N_s が 2b+3 なので
+    // 外積の項は 3b+4、差で 3b+5 → kOffset の幅にちょうど収まります。
+    // **int64 では溢れます**（b=26 で 82 ビット）。
+    using W = arith::fixed_int<limbs::kOffset>;
+    const W nsx = arith::resize<limbs::kOffset>(support.a);
+    const W nsy = arith::resize<limbs::kOffset>(support.b);
+    const W nsz = arith::resize<limbs::kOffset>(support.c);
+
+    int pick = -1;
+#if defined(KRISITE_MUTATION_EDGE_AXIS_LAST)
+    // SPEC-phase3 §10.5 の変異 14: 軸の選択を非正準にする（最小ではなく最大を選ぶ）。
+    //
+    // **幾何としては正しい平面が返ります。** 辺の直線を含み支持平面と一致しない、
+    // という条件は満たすので、位相も体積も変わりません。壊れるのは**決定性**だけです。
+    // 検出するのは `interior` の正準性の検査だけのはずです。
+    for (int k = 2; k >= 0; --k) {
+#else
+    for (int k = 0; k < 3 && pick < 0; ++k) {
+#endif
+        const std::int64_t* n = cand[k];
+        if (n[0] == 0 && n[1] == 0 && n[2] == 0) continue;  // 条件 1: N != 0
+        const W nx = arith::from_i64<limbs::kOffset>(n[0]);
+        const W ny = arith::from_i64<limbs::kOffset>(n[1]);
+        const W nz = arith::from_i64<limbs::kOffset>(n[2]);
+        // 条件 2: N x N_s != 0（支持平面と平行でない）
+        // det2(a, b, c, d) = a*d - b*c（幅は 2L+1）
+        // det2(a, b, c, d) = a*d - b*c。**引数の割り当てを間違えやすい**ので式を併記する。
+        const auto cx = arith::det2(ny, nz, nsy, nsz);  // ny*nsz - nz*nsy
+        const auto cy = arith::det2(nz, nx, nsz, nsx);  // nz*nsx - nx*nsz
+        const auto cz = arith::det2(nx, ny, nsx, nsy);  // nx*nsy - ny*nsx
+        if (arith::is_zero(cx) && arith::is_zero(cy) && arith::is_zero(cz)) continue;
+        pick = k;
+#if defined(KRISITE_MUTATION_EDGE_AXIS_LAST)
+        break;
+#endif
+    }
+    KRISITE_CHECK(pick >= 0, "plane_from_edge: 3 通りすべてが退化または支持平面と平行");
+    if (chosen != nullptr) *chosen = static_cast<Axis>(pick);
+
+    PlaneD pl{};
+    pl.a = arith::from_i64<limbs::kNormal>(cand[pick][0]);
+    pl.b = arith::from_i64<limbs::kNormal>(cand[pick][1]);
+    pl.c = arith::from_i64<limbs::kNormal>(cand[pick][2]);
+    // d = -N・p1。各項は (b+1) + b = 2b+1 なので int64 に収まる（b <= 31）
+    auto acc = arith::from_i64<limbs::kOffset>(0);
+    acc = arith::add(acc, arith::from_i64<limbs::kOffset>(cand[pick][0] * std::int64_t{p1.x}));
+    acc = arith::add(acc, arith::from_i64<limbs::kOffset>(cand[pick][1] * std::int64_t{p1.y}));
+    acc = arith::add(acc, arith::from_i64<limbs::kOffset>(cand[pick][2] * std::int64_t{p1.z}));
+    pl.d = arith::neg(acc);
+    return pl;
+}
+
+/// 平面係数を**桁上げ**する（`SPEC-phase3.md` §2.1.2 の刻みを細かくする操作）。
+///
+/// 平面 $(N, d)$ と $(2^s N, 2^s d)$ は同じ平面です。係数を上げてから $d$ を 1 動かすと、
+/// **幾何的な移動量が $2^{-s}$ になります。** `fine = false` なら何もしません。
+///
+/// 上げ幅は **`kNormal` / `kOffset` の余裕の範囲**に限ります（型を変えないため）。
+inline PlaneD plane_scaled_for_shift(const PlaneD& pl, bool fine) noexcept {
+    if (!fine) return pl;
+    const std::size_t na = arith::min_bits(pl.a), nb = arith::min_bits(pl.b),
+                      nc = arith::min_bits(pl.c), nd = arith::min_bits(pl.d);
+    const std::size_t nmax = na > nb ? (na > nc ? na : nc) : (nb > nc ? nb : nc);
+    if (nmax == 0 || nd == 0) return pl;
+    // 余裕の小さいほうに合わせる。ずらし幅（1）ぶんを 1 ビット残す
+    const std::size_t room_n = (bits::kNormal > nmax) ? bits::kNormal - nmax : 0;
+    const std::size_t room_d = (bits::kOffset > nd + 1) ? bits::kOffset - nd - 1 : 0;
+    const std::size_t s = room_n < room_d ? room_n : room_d;
+    if (s == 0) return pl;
+    PlaneD out{};
+    out.a = arith::shl_bits(pl.a, s);
+    out.b = arith::shl_bits(pl.b, s);
+    out.c = arith::shl_bits(pl.c, s);
+    out.d = arith::shl_bits(pl.d, s);
+    return out;
+}
+
+/// 平面を法線方向に**平行移動**する（`SPEC-phase3.md` §2.1.2 の予備経路）。
+///
+/// `N・x + d = 0` に対し `d' = d + delta`。**delta > 0 は「side が負の側」を狭めます。**
+/// 内側が負の辺平面なら、正の delta で平面が内側へ動きます。
+///
+/// ずらし幅は $2^{kShiftLog2}$ までに制限します（`widths.hpp` bits::kOffsetShifted）。
+inline PlaneD plane_shifted(const PlaneD& pl, std::int64_t delta) noexcept {
+    KRISITE_CHECK(delta != 0, "plane_shifted: delta == 0");
+    KRISITE_CHECK(delta > -(std::int64_t{1} << bits::kShiftLog2) &&
+                      delta < (std::int64_t{1} << bits::kShiftLog2),
+                  "plane_shifted: ずらし幅が上限を超える");
+    PlaneD out = pl;
+    out.d = arith::add(pl.d, arith::from_i64<limbs::kOffset>(delta));
+    return out;
+}
+
 /// 4 成分すべてが零か（退化三角形から作られた平面。比例判定で特別扱いが要る）。
 template <std::size_t NB, std::size_t DB>
 inline bool is_null(const Plane<NB, DB>& pl) noexcept {
