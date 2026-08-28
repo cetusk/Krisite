@@ -53,8 +53,9 @@ inline arith::fixed_int<2 * limbs::kDiff + 1> orient2d_value(std::int32_t ax, st
                                                              std::int32_t bx, std::int32_t by,
                                                              std::int32_t cx,
                                                              std::int32_t cy) noexcept {
-    return arith::det2(coord_diff(ax, cx), coord_diff(ay, cy), coord_diff(bx, cx),
-                       coord_diff(by, cy));
+    // **行ごとに区切ります。** 上のコメントの行列と 1 対 1 に対応します。
+    return arith::det2(arith::row2<limbs::kDiff>{coord_diff(ax, cx), coord_diff(ay, cy)},
+                       arith::row2<limbs::kDiff>{coord_diff(bx, cx), coord_diff(by, cy)});
 }
 
 inline int orient2d(std::int32_t ax, std::int32_t ay, std::int32_t bx, std::int32_t by,

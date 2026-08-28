@@ -2,9 +2,8 @@
 //
 //     boolean : PolySoup × PolySoup → PolySoup     ★ CSG について閉じる
 //
-// **CP2 の範囲**は「入口と出口の分離 + 分類の台の移動」です（§14）。
-// 分類は WNV ではなく**真偽値版**で、断片は各 source への内外ビットで分類します。
-// 局所 BSP はまだ入れず、過剰分割のままです（CP4）。
+// **CP2 で入口と出口を分離し、CP3 で分類を WNV（$\mathbb{Z}^n$）へ移しました。**
+// **CP4 で過剰分割を局所 BSP に置き換えます**（§5.4）。
 //
 // ---
 //
@@ -51,6 +50,28 @@ inline std::vector<PlaneRef> remap_planes(const PlaneTable& from, PlaneTable& to
     return m;
 }
 
+/// 三角形が平面に触れる（またはまたぐ）か。**厳密に片側なら false。**
+///
+/// 局所 BSP の切断条件です（`SPEC-phase3.md` §5.4）。平面 `pl` の上に載る断片 $t$ と
+/// 三角形 $v$ が交わるのは、$v$ が `pl` に触れるときだけです。厳密に片側に居る $v$ は
+/// $t$ と交わらないので、$t$ を $v$ の平面で切る必要がありません。
+///
+/// **新しい述語ではありません。** `geom::side` を整数点に対して呼ぶだけで、
+/// 幅は $3b+6$（`widths.hpp` の `kSide` に収まります）。
+inline bool tri_touches_plane(const geom::PlaneD& pl, const mesh::TriMesh& m, const mesh::Tri& t) {
+    int acc = 0;
+    for (int v = 0; v < 3; ++v) {
+        const int sg = geom::side(pl, geom::to_homogeneous(m.vertices[t[v]]));
+        if (sg == 0) return true;  // 平面上の頂点がある = 触れている
+        if (acc == 0) {
+            acc = sg;
+        } else if (acc != sg) {
+            return true;  // またいでいる
+        }
+    }
+    return false;
+}
+
 }  // namespace detail
 
 /// 2 つのスープのブール演算（CP2）。**出力もスープなので連鎖できます。**
@@ -94,16 +115,36 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // 前段で消えた面があるので、多角形から集めると平面が抜け、符号ベクトルが
     // 粗くなって別々の領域が同じキーに落ちます（**実際に踏みました**）。
     //
-    // 分類が断片上で一定であるためには、断片が**各 source の平面配置の 1 セル**に
-    // 収まっている必要があります。だから分割にも全 source の平面が要ります。
+    // **符号ベクトルは代表点で取ります**（CP4 で変更）。過剰分割の下では断片全体が
+    // 各 source の平面配置の 1 セルに収まっていたので、断片の頂点から取れました。
+    // 局所 BSP は**シートが横切らない**ことしか保証しないので、断片が平面をまたぎ得ます。
+    //
+    // **代表点で取れば、どちらの分割方式でも意味が変わりません。**
+    // 分類が断片上で一定であること（＝代表点 1 点で足りること）は、
+    // 「断片の相対内部をシートが横切らない」ことから従います。平面をまたいでも、
+    // その平面上にシートが無ければ巻き数は変わりません。
+    //
+    // キーとしての妥当性: 閉多様体なら三角形の辺は隣接三角形との共有辺なので、
+    // **平面配置は三角形分割を細分します。** よって同じ符号ベクトルの点は
+    // 「同じ三角形の内側／外側」まで一致し、$w$ も $c_{front}, c_{back}$ も一致します。
     std::vector<std::vector<PlaneId>> planes_of_src(n_src);
+    // 三角形ごとの平面 ID（退化は `kNoPlane`）。**局所 BSP の切断候補**（§5.4）。
+    // `planes_of_src` と違って**重複を潰しません。** どの三角形がどのセルに居るかで
+    // 切断候補が決まるので、三角形の添字で引ける必要があります。
+    std::vector<std::vector<PlaneId>> tri_plane(n_src);
     for (std::size_t i = 0; i < n_src; ++i) {
         const mesh::TriMesh& m = out.sources[i];
+        tri_plane[i].reserve(m.triangles.size());
         for (const mesh::Tri& t : m.triangles) {
             const geom::PlaneD pl =
                 geom::plane_from_triangle(m.vertices[t[0]], m.vertices[t[1]], m.vertices[t[2]]);
-            if (geom::is_degenerate(pl)) continue;
-            planes_of_src[i].push_back(out.table.intern(pl).id);
+            if (geom::is_degenerate(pl)) {
+                tri_plane[i].push_back(kNoPlane);
+                continue;
+            }
+            const PlaneId id = out.table.intern(pl).id;
+            tri_plane[i].push_back(id);
+            planes_of_src[i].push_back(id);
         }
     }
     for (std::vector<PlaneId>& v : planes_of_src) {
@@ -192,10 +233,19 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
         // **曲面が 1 枚も横切らない source は、セル全体で内外が一定です。**
         // 隅 1 点（整数点）で決まります（§3.2 の early-out の一般化）。
+        // **このセルに居る source の三角形**を、平面ごとに集めます。
+        // early-out の判定（`count`）と局所 BSP の切断候補（§5.4）の両方に使います。
         std::vector<std::size_t> count(n_src, 0);
+        std::map<PlaneId, std::vector<std::pair<std::uint32_t, std::uint32_t>>> cell_tri_by_plane;
         for (std::size_t i = 0; i < n_src; ++i) {
-            for (const octree::Aabb& r : src_aabb[i]) {
-                if (octree::assign_to_cell(r, cbox)) ++count[i];
+            for (std::size_t j = 0; j < src_aabb[i].size(); ++j) {
+                if (!octree::assign_to_cell(src_aabb[i][j], cbox)) continue;
+                ++count[i];
+                const PlaneId pid = tri_plane[i][j];
+                if (pid != kNoPlane) {
+                    cell_tri_by_plane[pid].push_back(
+                        {static_cast<std::uint32_t>(i), static_cast<std::uint32_t>(j)});
+                }
             }
         }
         std::vector<std::int8_t> forced(n_src, -1);
@@ -249,6 +299,55 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         st.split_planes_used += split_planes.size();
         st.max_planes_per_cell = std::max(st.max_planes_per_cell, split_planes.size());
 
+        // ---- 局所 BSP の切断集合（`SPEC-phase3.md` §5.4）★ ----------------------
+        //
+        // 断片 $t$ を切るのは、**このセルに実際に居る三角形**のうち
+        // $t$ の支持平面に触れるものの平面だけです。過剰分割は「箱を横切る全平面」で
+        // 切っていました（`SPEC-phase1.md` §4.3.1）。
+        //
+        // **多角形からではなく source の三角形から作ります。** 連鎖では前段で消えた面が
+        // あるので、多角形から集めると**共平面シートの境界を切り落とせません**
+        // （`planes_of_src` を source から作っているのと同じ理由）。共平面シートの境界は
+        // 隣接三角形との共有辺なので、その隣接三角形の平面で切られます。
+        //
+        // **保守的に平面まるごとで切ります**（EMBER Fig. 7）。交差線分だけを入れると
+        // 断片が凸でなくなります。
+        //
+        // 切断集合は**支持平面だけで決まります。** セル内でメモ化することで、
+        // 同じ平面に載る別々の多角形が必ず同じ切り方をすることが保証されます
+        // （`region_key` で潰すために要ります）。
+        std::map<PlaneId, std::vector<PlaneId>> cuts_memo;
+        auto cuts_for = [&](PlaneId sup) -> const std::vector<PlaneId>& {
+            const auto it = cuts_memo.find(sup);
+            if (it != cuts_memo.end()) return it->second;
+            const geom::PlaneD& sp = out.table.at(sup);
+            std::vector<PlaneId> cs;
+            for (const auto& kv : cell_tri_by_plane) {
+                if (kv.first == sup) continue;  // 共平面は §5.4.1（全順序）の担当
+                ++st.bsp_cut_slots;
+                bool touch = false;
+#if defined(KRISITE_MUTATION_BSP_NEVER_CUT)
+                // 変異 16: **局所 BSP の切断条件を常に偽にする**（1 枚も切らない）。
+                // 断片の相対内部をシートが横切るので、代表点 1 点の分類が壊れます。
+#else
+                for (const auto& ref : kv.second) {
+                    const mesh::TriMesh& m = out.sources[ref.first];
+                    if (detail::tri_touches_plane(sp, m, m.triangles[ref.second])) {
+                        touch = true;
+                        break;
+                    }
+                }
+#endif
+                if (touch) {
+                    cs.push_back(kv.first);
+                    ++st.bsp_cuts_used;
+                } else {
+                    ++st.bsp_cuts_skipped;
+                }
+            }
+            return cuts_memo.emplace(sup, std::move(cs)).first->second;
+        };
+
         for (std::size_t idx : here) {
             Fragment frag = polys[idx].frag;
             bool alive = true;
@@ -261,9 +360,12 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
             if (!alive) continue;
 
-            // 【全支持平面】で分割（過剰分割。§4.3.1。CP4 で局所 BSP に置き換わる）
+            // **局所 BSP**（§5.4）。`local_bsp` を切ると過剰分割に戻ります
+            // （CP3 までの挙動 = §10.1 の正解器）。
+            const std::vector<PlaneId>& cut_planes =
+                opt.local_bsp ? cuts_for(frag.support) : split_planes;
             std::vector<Fragment> pieces{frag};
-            for (PlaneId q : split_planes) {
+            for (PlaneId q : cut_planes) {
                 std::vector<Fragment> next;
                 next.reserve(pieces.size());
                 for (const Fragment& p : pieces) {
@@ -468,8 +570,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
             std::vector<std::int8_t> sig(planes_of_src[i2].size());
             for (std::size_t k = 0; k < planes_of_src[i2].size(); ++k) {
-                sig[k] = static_cast<std::int8_t>(
-                    fragment_sign(out.table, f, planes_of_src[i2][k], cache));
+                sig[k] =
+                    static_cast<std::int8_t>(geom::side(out.table.at(planes_of_src[i2][k]), rep));
             }
             const auto key = std::make_pair(static_cast<std::uint32_t>(i2), std::move(sig));
             auto it = wcache.find(key);
@@ -501,7 +603,22 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
         Poly q;
         q.frag = f;
-        q.frag.flipped = false;  // 基準は支持平面の法線
+        // **断片の巻き順は「元の三角形の法線」基準**で、`f.flipped` がそれが支持平面の
+        // 法線と逆かを記録しています（`from_mesh` が設定し、切断は保存します）。
+        // 出力の巻き順は**外向き法線**基準にしたいので、
+        //
+        //     反転が要るのは (目標 = in_front) と (現在 = f.flipped) が食い違うとき
+        //
+        // です。**`in_front` だけで判定すると `f.flipped` が真の面で向きが狂います。**
+        // (C, χ) は向きの反転で変わらないので、**体積でしか出ません**（§10.1）。
+#if defined(KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED)
+        // 変異 15: **`f.flipped` を見ずに `in_front` だけで反転する**（実際の誤り）。
+        // 位相は (C, χ) が向きの反転で変わらないので素通りします。**体積でしか出ません。**
+        const bool need_reverse = in_front;
+#else
+        const bool need_reverse = (in_front != f.flipped);
+#endif
+        q.frag.flipped = in_front;  // 外向き法線が支持平面の法線と逆か
         q.src = frag_src[pick];
         q.tag = frag_tag[pick];
         const octree::CellBox cb2 = octree::box_of(frag_cell[pick]);
@@ -510,13 +627,12 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             q.aabb.hi[k] = cb2.hi[k];
         }
         // **立体は in の側にあります。** 外向き法線は立体から外を向くので、
-        // +N 側が in なら法線は -N、つまり反転して出力します（§5.2）。
-        if (in_front) {
+        // +N 側が in なら外向き法線は -N です（§5.2）。
+        if (need_reverse) {
             std::vector<std::uint32_t> dummy(vertex_count(q.frag), 0);
             std::vector<PlaneId> e = q.frag.edge;
             detail::reverse_polygon(dummy, e);
             q.frag.edge = std::move(e);
-            q.frag.flipped = true;
         }
         out.polys.push_back(std::move(q));
     }

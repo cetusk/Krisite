@@ -60,11 +60,13 @@ inline PlaneD plane_from_triangle(const IPoint& p1, const IPoint& p2, const IPoi
     const auto vy = coord_diff(p3.y, p1.y);
     const auto vz = coord_diff(p3.z, p1.z);
 
-    // N = u x v。det2(a,b,c,d) = a*d - b*c。ビット幅 2b+3 → §3.1
+    // N = u x v。ビット幅 2b+3 → §3.1
+    const auto n =
+        arith::cross(arith::vec3<limbs::kDiff>{ux, uy, uz}, arith::vec3<limbs::kDiff>{vx, vy, vz});
     PlaneD pl{};
-    pl.a = resize<limbs::kNormal>(det2(uy, uz, vy, vz));  // uy*vz - uz*vy
-    pl.b = resize<limbs::kNormal>(det2(uz, ux, vz, vx));  // uz*vx - ux*vz
-    pl.c = resize<limbs::kNormal>(det2(ux, uy, vx, vy));  // ux*vy - uy*vx
+    pl.a = resize<limbs::kNormal>(n.x);
+    pl.b = resize<limbs::kNormal>(n.y);
+    pl.c = resize<limbs::kNormal>(n.z);
 
     // d = -N・p1。ビット幅 3b+5 → §3.1
     const auto px = from_i64<limbs::kCoord>(p1.x);
@@ -159,13 +161,11 @@ inline PlaneD plane_from_edge(const IPoint& p1, const IPoint& p2, const PlaneD& 
         const W nx = arith::from_i64<limbs::kOffset>(n[0]);
         const W ny = arith::from_i64<limbs::kOffset>(n[1]);
         const W nz = arith::from_i64<limbs::kOffset>(n[2]);
-        // 条件 2: N x N_s != 0（支持平面と平行でない）
-        // det2(a, b, c, d) = a*d - b*c（幅は 2L+1）
-        // det2(a, b, c, d) = a*d - b*c。**引数の割り当てを間違えやすい**ので式を併記する。
-        const auto cx = arith::det2(ny, nz, nsy, nsz);  // ny*nsz - nz*nsy
-        const auto cy = arith::det2(nz, nx, nsz, nsx);  // nz*nsx - nx*nsz
-        const auto cz = arith::det2(nx, ny, nsx, nsy);  // nx*nsy - ny*nsx
-        if (arith::is_zero(cx) && arith::is_zero(cy) && arith::is_zero(cz)) continue;
+        // 条件 2: N x N_s != 0（支持平面と平行でない）。**固定幅で書くこと** —
+        // 2b+3 と b+1 の積は b=26 で 82 ビットあり、`int64` では溢れます。
+        const auto c = arith::cross(arith::vec3<limbs::kOffset>{nx, ny, nz},
+                                    arith::vec3<limbs::kOffset>{nsx, nsy, nsz});
+        if (arith::is_zero(c.x) && arith::is_zero(c.y) && arith::is_zero(c.z)) continue;
         pick = k;
 #if defined(KRISITE_MUTATION_EDGE_AXIS_LAST)
         break;

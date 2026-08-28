@@ -73,6 +73,70 @@ auto t = mesh::check_topology(r.triangles);
 assert(t.ok());  // edge-manifold, vertex-manifold, consistently oriented, non-degenerate
 ```
 
+Combining three or more meshes with that binary API would force the intermediate
+result back through a mesh. The `PolySoup` path below closes the type under CSG instead.
+
+### $n$-ary CSG trees — intermediate results are never rounded
+
+**Booleans are normally used in chains.** With a binary API, writing
+$(A \cup B) \setminus C$ forces you to turn the intermediate result back into a mesh,
+which means either rounding its vertices to integers or rebuilding the plane table.
+Krisite makes both the input and the output a `PolySoup`, so **the type is closed
+under CSG.**
+
+```cpp
+#include <krisite/csg/polysoup.hpp>
+#include <krisite/csg/soup_boolean.hpp>
+#include <krisite/csg/to_mesh.hpp>
+
+using namespace krisite;
+
+mesh::TriMesh A = /* … */, B = /* … */, C = /* … */, D = /* … */;
+csg::BoolOptions opt;
+opt.depth = 2;
+
+// Entry: quantisation and edge-plane construction happen only here
+const csg::PolySoup a = csg::from_mesh(A);
+const csg::PolySoup b = csg::from_mesh(B);
+const csg::PolySoup c = csg::from_mesh(C);
+const csg::PolySoup d = csg::from_mesh(D);
+
+// ((A ∪ B) \ C) ∪ D — no TriMesh appears in between
+csg::PolySoup r = csg::boolean(a, b, csg::BoolOp::Union, opt);
+r = csg::boolean(r, c, csg::BoolOp::Difference, opt);
+r = csg::boolean(r, d, csg::BoolOp::Union, opt);
+
+assert(r.source_count() == 4);                // all four inputs are still there
+assert(r.sources[0].vertices == A.vertices);  // untouched, not rounded
+
+// Exit: stitching, T-vertex resolution, contact splitting and triangulation
+// happen only here
+const csg::SoupMesh out = csg::to_mesh(r);
+```
+
+A `PolySoup` carries **the generation-0 input meshes themselves** (`sources`) plus
+**an expression tree for the indicator function** (`indicator`). Chaining only ever
+appends to `sources`; not one bit of an input vertex changes. Classification applies
+the indicator to each point's **winding number vector** $\mathbf{w} \in \mathbb{Z}^n$.
+
+```cpp
+// The indicator is an expression tree, not a truth table: its domain is Z^n rather
+// than {0,1}^n, so a table does not exist (crossing the same surface twice gives w = 2).
+assert(r.indicator.eval(std::vector<std::int32_t>{1, 0, 0, 0}));  // inside A → in
+```
+
+**A consequence: you can reuse the same mesh inside a chain.** $(A \cup B) \setminus B$
+agrees with $A \setminus B$ — a configuration a single inside/outside bit cannot express.
+
+```cpp
+csg::PolySoup ub = csg::boolean(csg::boolean(a, b, csg::BoolOp::Union, opt), b,
+                                csg::BoolOp::Difference, opt);
+```
+
+**Bit widths do not grow along a chain.** CSG introduces no new planes, so a constructed
+point stays "the intersection of three planes chosen from the input", however many
+stages you add (measured: 142 bits at 1, 2 and 3 stages).
+
 Because every predicate reduces to the sign of a fixed-width integer, and because
 there is no allocation, no exception and no global state, the whole thing
 parallelises as-is.
@@ -245,6 +309,8 @@ to_mesh   : PolySoup → TriMesh              exit: stitch, resolve T-vertices, 
 ```
 
 Classification moved from sign vectors to **generalized winding number vectors (WNV)**.
+Fragment subdivision moved from over-subdivision by every support plane to a **local BSP**
+(raw fragments down to 80.0%, canonicalised fragments to 78.2%).
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) (Japanese).
 
 ### Measurements (Phase 1 → Phase 2)

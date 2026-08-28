@@ -218,11 +218,44 @@ inline fixed_int<N> shr_bits(const fixed_int<N>& x, std::size_t s) noexcept {
 // 述語で繰り返し現れる 2x2 / 3x3 の行列式。列ごとに幅が違う場合は、
 // 呼び出し側で最大幅に widen してから渡す（正しさ優先。SPEC §0）。
 
-/// a*d - b*c。|結果| <= 2^(128L-1) なので 2L+1 リムに必ず収まる。
+/// 2x2 行列式の 1 行。**`det2` に同じ型の引数を 4 つ並べさせないための器**です。
+///
+/// > 位置引数が多く型が同じ小関数は、規律ではなく設計で守ること（`CLAUDE.md`）。
+///
+/// 旧 `det2(a, b, c, d)` は取り違えてもコンパイルが通り、**実際に 2 度間違えました**
+/// （`plane_from_triangle` と `plane_from_edge`。どちらも外積の成分）。
+/// 行に区切ると、行をまたぐ取り違えは書けなくなります。
 template <std::size_t L>
-inline fixed_int<2 * L + 1> det2(const fixed_int<L>& a, const fixed_int<L>& b,
-                                 const fixed_int<L>& c, const fixed_int<L>& d) noexcept {
-    return sub_widen(mul(a, d), mul(b, c));
+struct row2 {
+    fixed_int<L> a, b;
+};
+
+/// 3 成分ベクトル。**外積の引数を 6 つ並べさせないための器**です。
+template <std::size_t L>
+struct vec3 {
+    fixed_int<L> x, y, z;
+};
+
+/// 行列式
+///
+///     | r0.a  r0.b |
+///     | r1.a  r1.b |  =  r0.a * r1.b - r0.b * r1.a
+///
+/// |結果| <= 2^(128L-1) なので 2L+1 リムに必ず収まる。
+template <std::size_t L>
+inline fixed_int<2 * L + 1> det2(const row2<L>& r0, const row2<L>& r1) noexcept {
+    return sub_widen(mul(r0.a, r1.b), mul(r0.b, r1.a));
+}
+
+/// 外積 $u \times v$。
+///
+/// **成分ごとに `det2` を書かないでください。** 外積は本プロジェクトで最も頻出する
+/// 構成（法線・辺平面・平行判定）で、取り違えの実績が 2 件あります。
+template <std::size_t L>
+inline vec3<2 * L + 1> cross(const vec3<L>& u, const vec3<L>& v) noexcept {
+    return {det2(row2<L>{u.y, u.z}, row2<L>{v.y, v.z}),   // u.y*v.z - u.z*v.y
+            det2(row2<L>{u.z, u.x}, row2<L>{v.z, v.x}),   // u.z*v.x - u.x*v.z
+            det2(row2<L>{u.x, u.y}, row2<L>{v.x, v.y})};  // u.x*v.y - u.y*v.x
 }
 
 /// 3x3 行列式（余因子展開）。
@@ -234,9 +267,12 @@ inline fixed_int<2 * L + 1> det2(const fixed_int<L>& a, const fixed_int<L>& b,
 template <std::size_t L>
 inline fixed_int<3 * L + 1> det3(const fixed_int<L> m[3][3]) noexcept {
     constexpr std::size_t R = 3 * L + 1;
-    const fixed_int<R> t0 = mul(m[0][0], det2(m[1][1], m[1][2], m[2][1], m[2][2]));
-    const fixed_int<R> t1 = mul(m[0][1], det2(m[1][0], m[1][2], m[2][0], m[2][2]));
-    const fixed_int<R> t2 = mul(m[0][2], det2(m[1][0], m[1][1], m[2][0], m[2][1]));
+    const fixed_int<R> t0 =
+        mul(m[0][0], det2(row2<L>{m[1][1], m[1][2]}, row2<L>{m[2][1], m[2][2]}));
+    const fixed_int<R> t1 =
+        mul(m[0][1], det2(row2<L>{m[1][0], m[1][2]}, row2<L>{m[2][0], m[2][2]}));
+    const fixed_int<R> t2 =
+        mul(m[0][2], det2(row2<L>{m[1][0], m[1][1]}, row2<L>{m[2][0], m[2][1]}));
     return add(sub(t0, t1), t2);
 }
 

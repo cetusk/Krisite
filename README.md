@@ -48,7 +48,7 @@ int s2 = side(pl, v);          // 除算なしで厳密に判定
 bool lt = lex_less(v, other_v);
 ```
 
-ブール演算も同じ厳密性の上に乗っています。
+ブール演算も同じ厳密性の上に乗っています。まず 2 枚の場合（`boolean_op`）から。
 
 ```cpp
 #include <krisite/csg/boolean.hpp>
@@ -66,6 +66,66 @@ csg::BoolMesh r = csg::boolean_op(A, B, csg::BoolOp::Union, /*depth=*/2, &st);
 auto t = mesh::check_topology(r.triangles);
 assert(t.ok());                  // 辺多様体・頂点多様体・向きの整合・退化なし
 ```
+
+3 枚以上を組み合わせるとき、この二項 API では中間結果をメッシュに戻す必要があります。
+そこで型を CSG について閉じさせたのが次の `PolySoup` 経路です。
+
+### $n$ 項の CSG ツリー — 中間結果を丸めません
+
+**ブール演算は連鎖して使うのが常態です。** 二項の API で $(A \cup B) \setminus C$ を書くと、
+中間結果をメッシュに戻す必要があり、そこで頂点を整数に丸めるか、平面表を作り直すことに
+なります。Krisite は入出力をどちらも `PolySoup` にして**型を CSG について閉じさせます。**
+
+```cpp
+#include <krisite/csg/polysoup.hpp>
+#include <krisite/csg/soup_boolean.hpp>
+#include <krisite/csg/to_mesh.hpp>
+
+using namespace krisite;
+
+mesh::TriMesh A = /* … */, B = /* … */, C = /* … */, D = /* … */;
+csg::BoolOptions opt;
+opt.depth = 2;
+
+// 入口: 量子化・辺平面の構成はここだけ
+const csg::PolySoup a = csg::from_mesh(A);
+const csg::PolySoup b = csg::from_mesh(B);
+const csg::PolySoup c = csg::from_mesh(C);
+const csg::PolySoup d = csg::from_mesh(D);
+
+// ((A ∪ B) \ C) ∪ D — 中間に TriMesh は現れない
+csg::PolySoup r = csg::boolean(a, b, csg::BoolOp::Union, opt);
+r = csg::boolean(r, c, csg::BoolOp::Difference, opt);
+r = csg::boolean(r, d, csg::BoolOp::Union, opt);
+
+assert(r.source_count() == 4);   // 入力 4 枚がそのまま残っている
+assert(r.sources[0].vertices == A.vertices);  // 丸められていない
+
+// 出口: 縫合・T 頂点の解決・接触の分裂・三角形化はここだけ
+const csg::SoupMesh out = csg::to_mesh(r);
+```
+
+`PolySoup` が持つのは **第 0 世代の入力メッシュそのもの**（`sources`）と、
+**指示関数の式木**（`indicator`）です。段を重ねても `sources` は増えるだけで、
+入力の頂点は 1 ビットも変わりません。分類は各点の**巻き数ベクトル**
+$\mathbf{w} \in \mathbb{Z}^n$ に指示関数を適用して行います。
+
+```cpp
+// 指示関数は真理値表ではなく式木です。定義域が {0,1}^n ではなく Z^n なので、
+// 表という形が存在しません（同じ曲面を 2 度跨ぐと w = 2 になります）。
+assert(r.indicator.eval(std::vector<std::int32_t>{1, 0, 0, 0}));  // A の内側 → in
+```
+
+**その帰結として、同じメッシュを 2 度使う連鎖が書けます。** $(A \cup B) \setminus B$ は
+$A \setminus B$ と一致します — 内外の 1 ビットでは表せない配置です。
+
+```cpp
+csg::PolySoup ub = csg::boolean(csg::boolean(a, b, csg::BoolOp::Union, opt), b,
+                                csg::BoolOp::Difference, opt);
+```
+
+**ビット幅は連鎖で伸びません。** CSG は新しい平面を作らないので、構成点は何段重ねても
+「入力平面から 3 枚を選んだ交点」のままです（実測: 1 段 / 2 段 / 3 段とも 142 ビット）。
 
 浮動小数点は一切使いません。すべての述語は固定幅整数の符号だけで決まり、
 動的メモリ確保・例外・グローバル状態がないため、そのまま並列化できます。
@@ -227,7 +287,9 @@ boolean   : PolySoup × … → PolySoup       ★ CSG について閉じる。n
 to_mesh   : PolySoup → TriMesh            出口。縫合・T 解決・再併合・三角形化
 ```
 
-分類は符号ベクトルから**一般化巻き数ベクトル（WNV）**に変わりました。詳細は
+分類は符号ベクトルから**一般化巻き数ベクトル（WNV）**に変わりました。
+断片の分割も、全支持平面による過剰分割から**局所 BSP**に置き換わっています
+（生の断片が 80.0%、正準化後が 78.2% に減りました）。詳細は
 [`docs/ROADMAP.md`](docs/ROADMAP.md)。
 
 ### 実測値（Phase 1 → Phase 2）

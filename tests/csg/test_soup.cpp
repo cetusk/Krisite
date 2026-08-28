@@ -132,6 +132,79 @@ void test_classification_is_order_independent() {
     std::printf("    順序非依存 %zu 件（並列化の前提。§14 の CP3 の判定）\n", n);
 }
 
+/// **CP4: 局所 BSP ↔ 過剰分割**（`SPEC-phase3.md` §5.4 / §10.1 / §14 の CP4）。
+///
+/// **一致するのは $(C, \chi)$ と体積で、三角形の集合と断片数は一致しません。**
+/// 断片数が減ることが目的なので、**減っていること自体も検査します。**
+///
+/// 体積は GMP を要するので `csg/test_volume_gmp.cpp` の担当です。ここでは位相と
+/// 断片数、そして**判定が空回りしていないこと**を見ます。
+void test_local_bsp_vs_over_subdivision() {
+    std::size_t n = 0, differ = 0;
+    std::size_t raw_over = 0, raw_bsp = 0, out_over = 0, out_bsp = 0;
+    std::size_t cuts_used = 0, cuts_skipped = 0, slots = 0;
+    for (const kritest::Case& c : kritest::corpus()) {
+        const TriMesh a = c.make_a(), b = c.make_b();
+        for (csg::BoolOp op :
+             {csg::BoolOp::Union, csg::BoolOp::Intersection, csg::BoolOp::Difference}) {
+            for (unsigned d = 0; d <= kMaxDepth; ++d) {
+                // **両側を明示します。** 既定に依存させると、既定が変わったときに
+                // 自分自身との比較になります（`CLAUDE.md`）。
+                csg::BoolOptions oo = kritest::phase1_options(d);
+                oo.local_bsp = false;
+                csg::BoolOptions ob = oo;
+                ob.local_bsp = true;
+                csg::ToMeshOptions tm;
+                tm.split_contacts = false;
+                csg::BoolStats so{}, sb{};
+                const csg::SoupMesh mo = csg::to_mesh(
+                    csg::boolean(csg::from_mesh(a), csg::from_mesh(b), op, oo, &so), tm);
+                const csg::SoupMesh mb = csg::to_mesh(
+                    csg::boolean(csg::from_mesh(a), csg::from_mesh(b), op, ob, &sb), tm);
+                const TopologyReport t0 = check_topology(mo.triangles);
+                const TopologyReport t1 = check_topology(mb.triangles);
+                const std::string tag = std::string("ケース ") + c.id + " " + op_name(op) +
+                                        "（深度 " + std::to_string(d) + "）";
+                KRI_CHECK_MSG(t0.components == t1.components,
+                              tag + ": 局所 BSP で C が変わった" +
+                                  kritest::pair_msg(t0.components, t1.components));
+                KRI_CHECK_MSG(t0.chi == t1.chi, tag + ": 局所 BSP で χ が変わった" +
+                                                    kritest::pair_msg(t0.chi, t1.chi));
+                KRI_CHECK_MSG(t1.empty || t1.oriented,
+                              tag + ": 局所 BSP の出力の向きが整合していない");
+                KRI_CHECK_MSG(sb.raw_fragments <= so.raw_fragments,
+                              tag + ": **局所 BSP のほうが生の断片が多い**" +
+                                  kritest::pair_msg(so.raw_fragments, sb.raw_fragments));
+                if (geometric_key(mo) != geometric_key(mb)) ++differ;
+                raw_over += so.raw_fragments;
+                raw_bsp += sb.raw_fragments;
+                out_over += so.fragments;
+                out_bsp += sb.fragments;
+                slots += sb.bsp_cut_slots;
+                cuts_used += sb.bsp_cuts_used;
+                cuts_skipped += sb.bsp_cuts_skipped;
+                KRI_CHECK_MSG(so.bsp_cut_slots == 0,
+                              tag + ": 過剰分割の側で局所 BSP の判定が走っている");
+                ++n;
+            }
+        }
+    }
+    // **空回りの検査。** どちらかが 0 なら判定が一方に倒れていて、機構が働いていません。
+    KRI_CHECK_MSG(cuts_used > 0, "局所 BSP が 1 枚も切っていない（判定が空回り）");
+    KRI_CHECK_MSG(cuts_skipped > 0,
+                  "局所 BSP が 1 枚も省いていない（過剰分割と同じ。判定が空回り）");
+    KRI_CHECK_MSG(slots == cuts_used + cuts_skipped, "候補の総数が使用 + 省略と合わない");
+    // **三角形の集合は一致しないはず**（それが目的）。すべて一致したら置き換えが no-op。
+    KRI_CHECK_MSG(differ > 0, "**局所 BSP と過剰分割で出力が 1 件も変わらない**（no-op）");
+    KRI_CHECK_MSG(raw_bsp < raw_over, "**生の断片が減っていない**（§14 の CP4 の目的）");
+    std::printf("    局所 BSP %zu 件: 生の断片 %zu → %zu（%.1f%%）, 正準化後 %zu → %zu（%.1f%%）\n",
+                n, raw_over, raw_bsp,
+                100.0 * static_cast<double>(raw_bsp) / static_cast<double>(raw_over), out_over,
+                out_bsp, 100.0 * static_cast<double>(out_bsp) / static_cast<double>(out_over));
+    std::printf("    切断候補 %zu（切った %zu / 省いた %zu）, 出力が変わった %zu / %zu 件\n", slots,
+                cuts_used, cuts_skipped, differ, n);
+}
+
 /// 1. 往復。**入口と出口だけで閉じる検査**なので、中核の誤りが混ざりません。
 void test_round_trip() {
     std::size_t n = 0;
@@ -177,6 +250,12 @@ void test_matches_binary_oracle() {
                     tag + ": C が正解器と違う" + kritest::pair_msg(t0.components, t1.components));
                 KRI_CHECK_MSG(t0.chi == t1.chi,
                               tag + ": χ が正解器と違う" + kritest::pair_msg(t0.chi, t1.chi));
+                // **(C, χ) は面の向きを反転しても変わりません。**
+                // 向きの誤りはここでしか出ないので、別に固定します（変異 15）。
+                // 接触の分裂を切っているので `ok()` は使えません（次数 4 の辺が残る）。
+                // `oriented` は各辺で #(u,v) = #(v,u) を見るので次数 4 でも有効です。
+                // **空の出力（交わらない立体の ∩ など）では向きは定義されません。**
+                KRI_CHECK_MSG(t1.empty || t1.oriented, tag + ": **出力の向きが整合していない**");
                 ++n;
             }
         }
@@ -266,11 +345,12 @@ void test_chain_is_exact() {
 }  // namespace
 
 int main() {
-    std::printf("\n  入口・中核・出口の分離 — SPEC-phase3 §14 の CP2\n");
+    std::printf("\n  入口・中核・出口の分離 — SPEC-phase3 §14 の CP2 / CP3 / CP4\n");
     test_round_trip();
     test_matches_binary_oracle();
     test_chain_is_exact();
     test_classification_is_order_independent();
+    test_local_bsp_vs_over_subdivision();
     std::printf("\n");
     return kritest::finish("csg/soup");
 }
