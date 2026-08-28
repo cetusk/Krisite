@@ -48,6 +48,11 @@ struct TJunctionStats {
     std::size_t degenerate_kept = 0;
     std::size_t apex_fallback = 0;  ///< 起点を選べなかった多角形の数
     std::size_t edges_scanned = 0;  ///< 走査した辺の数（候補数の分母）
+    /// **保持された構成点が T 頂点として挿入された回数**（§13 の CP5）。
+    ///
+    /// CP5 の相互作用「構成点の保持 × T 解決」が**実際に通ったこと**の指標です。
+    /// 0 のままなら、その経路を 1 度も踏まずに CP5 が緑になっています。
+    std::size_t inserted_from_cache = 0;
 };
 
 /// **平面 → その平面上にある大域頂点 ID** の索引（§2.4.3 の手順 1）。
@@ -149,7 +154,8 @@ inline TPolygon insert_t_vertices(const PlaneTable& table, const std::vector<geo
                                   const PlaneVertexIndex& index, PlaneId support,
                                   const std::vector<PlaneId>& edge,
                                   const std::vector<std::uint32_t>& poly,
-                                  TJunctionStats* stats = nullptr) {
+                                  TJunctionStats* stats = nullptr,
+                                  const std::vector<char>* from_cache = nullptr) {
     KRISITE_CHECK(poly.size() == edge.size(), "insert_t_vertices: 頂点数と辺数が違う");
     const std::size_t n = poly.size();
 
@@ -179,6 +185,7 @@ inline TPolygon insert_t_vertices(const PlaneTable& table, const std::vector<geo
     (void)support;
     (void)edge;
     (void)stats;
+    (void)from_cache;
     return out;
 #endif
 
@@ -229,6 +236,11 @@ inline TPolygon insert_t_vertices(const PlaneTable& table, const std::vector<geo
             out.vertex.push_back(v);
             out.is_corner.push_back(0);
             out.orig.push_back(static_cast<std::uint32_t>(j));
+            // §13 の CP5:「構成点の保持 × T 解決」を通った回数
+            if (stats != nullptr && from_cache != nullptr && v < from_cache->size() &&
+                (*from_cache)[v] != 0) {
+                ++stats->inserted_from_cache;
+            }
         }
         if (stats) {
             stats->inserted += on_edge.size();
