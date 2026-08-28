@@ -97,6 +97,52 @@ inline bool point_on_boundary(const mesh::TriMesh& m, const Point& p) {
     return false;
 }
 
+/// 点 `p` が `m` の表面上にあるとき、その面の外向き法線が基準平面 `ref` の法線と
+/// **同じ向きなら +1、逆向きなら -1**。表面上に無ければ 0（`SPEC-phase3.md` §5）。
+///
+/// **連鎖で要ります。** スープに面が残っていなくても、source の曲面はそこにあります。
+/// 「多角形が無い = 曲面が無い」ではありません。
+///
+/// ビット幅: 法線の内積 4b+8 → `widths.hpp` bits::kNormalDot
+template <class Point>
+inline int boundary_orientation(const mesh::TriMesh& m, const Point& p, const geom::PlaneD& ref) {
+    int found = 0;
+    for (const mesh::Tri& t : m.triangles) {
+        const geom::IPoint& a = m.vertices[t[0]];
+        const geom::IPoint& b = m.vertices[t[1]];
+        const geom::IPoint& c = m.vertices[t[2]];
+        const geom::PlaneD pl = geom::plane_from_triangle(a, b, c);
+        if (geom::is_degenerate(pl)) continue;
+        if (geom::side(pl, p) != 0) continue;
+        const geom::Axis ax = (arith::sign(pl.a) != 0)   ? geom::Axis::X
+                              : (arith::sign(pl.b) != 0) ? geom::Axis::Y
+                                                         : geom::Axis::Z;
+        const int o1 = geom::orient2d_h(a, b, p, ax);
+        const int o2 = geom::orient2d_h(b, c, p, ax);
+        const int o3 = geom::orient2d_h(c, a, p, ax);
+        if (((o1 < 0) || (o2 < 0) || (o3 < 0)) && ((o1 > 0) || (o2 > 0) || (o3 > 0))) continue;
+        // 法線の向きを比べる（内積の符号）
+        using W = arith::fixed_int<geom::limbs::kNormalDot>;
+        const W ax0 = arith::resize<geom::limbs::kNormalDot>(pl.a);
+        const W ay0 = arith::resize<geom::limbs::kNormalDot>(pl.b);
+        const W az0 = arith::resize<geom::limbs::kNormalDot>(pl.c);
+        const W bx0 = arith::resize<geom::limbs::kNormalDot>(ref.a);
+        const W by0 = arith::resize<geom::limbs::kNormalDot>(ref.b);
+        const W bz0 = arith::resize<geom::limbs::kNormalDot>(ref.c);
+        const auto dot =
+            arith::add(arith::add(arith::resize<2 * geom::limbs::kNormalDot>(arith::mul(ax0, bx0)),
+                                  arith::resize<2 * geom::limbs::kNormalDot>(arith::mul(ay0, by0))),
+                       arith::resize<2 * geom::limbs::kNormalDot>(arith::mul(az0, bz0)));
+        const int s = arith::sign(dot);
+        KRISITE_CHECK(s != 0, "boundary_orientation: 重なる面の法線が直交している");
+        KRISITE_CHECK(found == 0 || found == s,
+                      "boundary_orientation: 同じ点で向きの違う面が重なっている"
+                      "（自己接触した source。CP3 の WNV が要る）");
+        found = s;
+    }
+    return found;
+}
+
 /// 点が閉じた立体 `m` の内部にあるか。
 ///
 /// **`p` が `m` の境界上に無いことを呼び出し側が保証すること**（`point_on_boundary`）。
