@@ -35,7 +35,7 @@
 #include "krisite/csg/boolean.hpp"  // BoolOp / BoolOptions / BoolStats
 #include "krisite/csg/interior.hpp"
 #include "krisite/csg/polysoup.hpp"
-#include "krisite/csg/raycast.hpp"
+#include "krisite/csg/trace.hpp"
 #include "krisite/octree/adaptive.hpp"
 
 namespace krisite::csg {
@@ -53,99 +53,128 @@ inline std::vector<PlaneRef> remap_planes(const PlaneTable& from, PlaneTable& to
 
 }  // namespace detail
 
-/// 2 つのスープのブール演算（CP2）。**出力もスープなので連鎖できます。**
-inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const BoolOptions& opt,
-                        BoolStats* stats = nullptr) {
+/// $n$ 項のブール演算（`SPEC-phase3.md` §1 の契約）。**出力もスープなので連鎖できます。**
+///
+/// 入力スープ $i$ の多角形は **WNV の成分 $i$** を動かします（§5.1）。
+/// 出力は再び **1 成分**のスープです（自分の多角形が自分の曲面）。
+inline PolySoup boolean_nary(const std::vector<const PolySoup*>& inputs, const Indicator& ind,
+                             const BoolOptions& opt, BoolStats* stats = nullptr) {
+    KRISITE_CHECK(!inputs.empty(), "boolean_nary: 入力が空");
     BoolStats st;
     PointCache point_cache;
     PointCache* const cache = opt.cache_points ? &point_cache : nullptr;
 
     PolySoup out;
-    // ---- 1. sources と指示関数の合成（§5.2）----------------------------------
-    out.sources = X.sources;
-    out.sources.insert(out.sources.end(), Y.sources.begin(), Y.sources.end());
-    const auto off = static_cast<std::uint32_t>(X.sources.size());
-    const Compose how = (op == BoolOp::Union)          ? Compose::Union
-                        : (op == BoolOp::Intersection) ? Compose::Intersection
-                                                       : Compose::Difference;
-    out.indicator = compose(X.indicator, Y.indicator, off, how);
+    out.components = 1;
+    out.indicator = indicator_source(0);
+    const std::size_t n_comp = inputs.size();
 
-    // ---- 2. 平面表を 1 つにまとめ、多角形を移す ------------------------------
+    // ---- 1. 平面表をまとめ、多角形を移す ------------------------------------
     std::vector<Poly> polys;
-    polys.reserve(X.polys.size() + Y.polys.size());
-    for (int which = 0; which < 2; ++which) {
-        const PolySoup& s = (which == 0) ? X : Y;
+    for (std::size_t i = 0; i < n_comp; ++i) {
+        const PolySoup& s = *inputs[i];
         const std::vector<PlaneRef> m = detail::remap_planes(s.table, out.table);
         for (const Poly& q : s.polys) {
             Poly r = q;
             r.frag.support = m[q.frag.support].id;
             r.frag.flipped = (q.frag.flipped != m[q.frag.support].flipped);
             for (PlaneId& e : r.frag.edge) e = m[e].id;
-            r.src = q.src + (which == 0 ? 0u : off);
-            r.frag.owner = which;
+            r.comp = static_cast<std::uint32_t>(i);
+            r.frag.owner = static_cast<int>(i);
             polys.push_back(std::move(r));
         }
     }
-    const std::size_t n_src = out.sources.size();
 
-    // source ごとの支持平面（分類のキーに使う。§4.3.2 の符号ベクトルの一般化）。
-    //
-    // **残った多角形からではなく、source のメッシュ全体から作ります。** 連鎖では
-    // 前段で消えた面があるので、多角形から集めると平面が抜け、符号ベクトルが
-    // 粗くなって別々の領域が同じキーに落ちます（**実際に踏みました**）。
-    //
-    // 分類が断片上で一定であるためには、断片が**各 source の平面配置の 1 セル**に
-    // 収まっている必要があります。だから分割にも全 source の平面が要ります。
-    std::vector<std::vector<PlaneId>> planes_of_src(n_src);
-    for (std::size_t i = 0; i < n_src; ++i) {
-        const mesh::TriMesh& m = out.sources[i];
-        for (const mesh::Tri& t : m.triangles) {
-            const geom::PlaneD pl =
-                geom::plane_from_triangle(m.vertices[t[0]], m.vertices[t[1]], m.vertices[t[2]]);
-            if (geom::is_degenerate(pl)) continue;
-            planes_of_src[i].push_back(out.table.intern(pl).id);
-        }
-    }
-    for (std::vector<PlaneId>& v : planes_of_src) {
-        std::sort(v.begin(), v.end());
-        v.erase(std::unique(v.begin(), v.end()), v.end());
-    }
+    // 分割に使う平面（過剰分割。CP4 で局所 BSP に置き換わる）
     std::vector<PlaneId> all_split;
-    for (const std::vector<PlaneId>& v : planes_of_src) {
-        all_split.insert(all_split.end(), v.begin(), v.end());
-    }
+    for (const Poly& q : polys) all_split.push_back(q.frag.support);
     std::sort(all_split.begin(), all_split.end());
     all_split.erase(std::unique(all_split.begin(), all_split.end()), all_split.end());
 
-    // source ごとの三角形の AABB。**early-out の判定に使います。**
-    //
-    // **多角形の有無で判定してはいけません。** 連鎖では前段で消えた面があるので、
-    // 「この source の多角形が無い = この source の曲面が無い」は成り立ちません。
-    // 曲面が横切っているのに「内外が一定」と決めつけると分類が壊れます
-    // （**実際に踏みました**）。
-    std::vector<std::vector<octree::Aabb>> src_aabb(n_src);
-    for (std::size_t i = 0; i < n_src; ++i) {
-        const mesh::TriMesh& m = out.sources[i];
-        src_aabb[i].reserve(m.triangles.size());
-        for (const mesh::Tri& t : m.triangles) {
-            octree::Aabb r{};
-            for (int k = 0; k < 3; ++k) {
-                r.lo[k] = krisite::kCoordMax;
-                r.hi[k] = krisite::kCoordMin;
-            }
-            for (int v = 0; v < 3; ++v) {
-                const geom::IPoint& p = m.vertices[t[v]];
-                const std::int64_t cc[3] = {p.x, p.y, p.z};
-                for (int k = 0; k < 3; ++k) {
-                    r.lo[k] = std::min(r.lo[k], cc[k]);
-                    r.hi[k] = std::max(r.hi[k], cc[k]);
+    // ---- 2. トレースの対象（多角形そのものが曲面）----------------------------
+    std::vector<TracePoly> tps;
+    tps.reserve(polys.size());
+    for (const Poly& q : polys) {
+        TracePoly tp;
+        tp.support = q.frag.support;
+        tp.edge = q.frag.edge;
+        tp.comp = q.comp;
+        tp.orient = q.frag.flipped ? -1 : +1;
+        // 辺ごとの内側の符号（載っていない頂点の符号）
+        const std::size_t nv = vertex_count(q.frag);
+        std::vector<geom::HPointD> vs(nv);
+        for (std::size_t i = 0; i < nv; ++i) vs[i] = fragment_vertex(out.table, q.frag, i, cache);
+        tp.inward.resize(q.frag.edge.size());
+        for (std::size_t k = 0; k < q.frag.edge.size(); ++k) {
+            std::int8_t sgn = 0;
+            for (const geom::HPointD& v : vs) {
+                const int sv = geom::side(out.table.at(q.frag.edge[k]), v);
+                if (sv != 0) {
+                    sgn = static_cast<std::int8_t>(sv);
+                    break;
                 }
             }
-            src_aabb[i].push_back(r);
+            tp.inward[k] = sgn;
         }
+        tps.push_back(std::move(tp));
     }
 
-    // ---- 3. 葉の列挙（§3.1。固定深度は「常に最大深度」の特別な場合）----------
+    // ---- 3. 参照点（**全多角形の外**。だから WNV は 0）--------------------------
+    //
+    // **点は平面 3 つ組で持ちます**（経路の構成に要る。§3.3）。
+    //
+    // 外接箱の外に取れば「すべての立体の外」が保証され、巻き数は 0 です。
+    // **座標は奇数ずらしにします。** 入力が軸平行だと、整列した参照点への経路が
+    // 他の面の辺をちょうど通り、経路が退化します（実際に踏みました）。
+    std::vector<PPoint> ref_candidates;
+    const std::vector<std::int32_t> w_ref(n_comp, 0);
+    {
+        octree::Aabb all{};
+        for (int k = 0; k < 3; ++k) {
+            all.lo[k] = krisite::kCoordMax;
+            all.hi[k] = krisite::kCoordMin;
+        }
+        for (const Poly& q : polys) {
+            for (int k = 0; k < 3; ++k) {
+                all.lo[k] = std::min(all.lo[k], q.aabb.lo[k]);
+                all.hi[k] = std::max(all.hi[k], q.aabb.hi[k]);
+            }
+        }
+        const std::int64_t lim = -static_cast<std::int64_t>(krisite::kCoordMin);
+        const std::int64_t odd[3] = {1, 3, 5};
+        for (int axis = 0; axis < 3; ++axis) {
+            for (int sidek = 0; sidek < 2; ++sidek) {
+                std::int64_t c[3];
+                bool ok = true;
+                for (int k = 0; k < 3; ++k) {
+                    if (k == axis) {
+                        c[k] = (sidek == 0) ? all.lo[k] - 1 : all.hi[k] + 1;
+                        if (c[k] < krisite::kCoordMin || c[k] > lim) ok = false;
+                    } else {
+                        // 箱の中央から奇数ぶんずらす（整列を崩す）
+                        c[k] = (all.lo[k] + all.hi[k]) / 2 + odd[k];
+                        if (c[k] < krisite::kCoordMin) c[k] = krisite::kCoordMin;
+                        if (c[k] > lim) c[k] = lim;
+                    }
+                }
+                if (!ok) continue;
+                // **斜めの平面で定義します。** 軸平行だと、軸平行な入力との組で
+                // 平面が平行になり、経路の点が作れません（実際に踏みました）。
+                // 法線 (1,1,0),(0,1,1),(1,0,1) は行列式 2 で独立です。
+                const geom::IPoint rp{static_cast<std::int32_t>(c[0]),
+                                      static_cast<std::int32_t>(c[1]),
+                                      static_cast<std::int32_t>(c[2])};
+                ref_candidates.push_back(
+                    {out.table.intern(geom::plane_with_normal(1, 1, 0, rp)).id,
+                     out.table.intern(geom::plane_with_normal(0, 1, 1, rp)).id,
+                     out.table.intern(geom::plane_with_normal(1, 0, 1, rp)).id});
+            }
+        }
+        KRISITE_CHECK(!ref_candidates.empty(),
+                      "boolean_nary: 参照点を外接箱の外に取れない（領域全体を覆う入力）");
+    }
+
+    // ---- 4. セルごとの arrangement（過剰分割。CP2 と同じ）--------------------
     const octree::SubdivisionPolicy policy{opt.depth, !opt.adaptive, opt.leaf_threshold};
     const std::vector<octree::Cell> leaves =
         octree::build_leaves(policy, [&](const octree::Cell& c, std::size_t* na, std::size_t* nb) {
@@ -154,7 +183,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             *nb = 0;
             for (const Poly& q : polys) {
                 if (!octree::assign_to_cell(q.aabb, cb)) continue;
-                if (q.frag.owner == 0) {
+                if (q.comp == 0) {
                     ++*na;
                 } else {
                     ++*nb;
@@ -168,18 +197,15 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     }
     st.total_cells = leaves.size();
 
-    // ---- 4. セルごとの arrangement -------------------------------------------
     std::vector<Fragment> frags;
     std::vector<octree::Cell> frag_cell;
-    std::vector<std::uint32_t> frag_src, frag_tag;
-    /// セルで「多角形が 1 枚も無かった source」の内外（-1 = 未確定）。§3.2 の early-out
-    std::vector<std::vector<std::int8_t>> frag_forced;
+    std::vector<std::uint32_t> frag_comp, frag_tag;
 
     for (const octree::Cell& cell : leaves) {
         const octree::CellBox cbox = octree::box_of(cell);
         const std::size_t frags_before = frags.size();
         std::vector<Fragment> local;
-        std::vector<std::uint32_t> local_src, local_tag;
+        std::vector<std::uint32_t> local_comp, local_tag;
 
         std::vector<std::size_t> here;
         for (std::size_t i = 0; i < polys.size(); ++i) {
@@ -190,37 +216,6 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             continue;
         }
 
-        // **曲面が 1 枚も横切らない source は、セル全体で内外が一定です。**
-        // 隅 1 点（整数点）で決まります（§3.2 の early-out の一般化）。
-        std::vector<std::size_t> count(n_src, 0);
-        for (std::size_t i = 0; i < n_src; ++i) {
-            for (const octree::Aabb& r : src_aabb[i]) {
-                if (octree::assign_to_cell(r, cbox)) ++count[i];
-            }
-        }
-        std::vector<std::int8_t> forced(n_src, -1);
-        if (opt.early_out) {
-            const geom::IPoint corner{static_cast<std::int32_t>(cbox.lo[0]),
-                                      static_cast<std::int32_t>(cbox.lo[1]),
-                                      static_cast<std::int32_t>(cbox.lo[2])};
-            bool any = false;
-            for (std::size_t i = 0; i < n_src; ++i) {
-                if (count[i] > 0) continue;
-                int wo = 0, cf = 0, cb = 0;
-                winding_split(out.sources[i], geom::to_homogeneous(corner),
-                              out.table.at(all_split.empty() ? PlaneId{0} : all_split.front()), &wo,
-                              &cf, &cb);
-                KRISITE_CHECK(cf == 0 && cb == 0,
-                              "early-out: セルの隅が source の曲面に載っている"
-                              "（曲面が無いはずのセル）");
-                forced[i] = static_cast<std::int8_t>(wo);
-                ++st.early_out_raycasts;
-                any = true;
-            }
-            if (any) ++st.early_out_cells;
-        }
-
-        // セル面の平面（保持側つき）: lo 面は +、hi 面は -
         struct CellPlane {
             PlaneId id;
             int keep;
@@ -235,13 +230,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
         }
 
-        // 分割平面の絞り込み（`SPEC-phase2.md` §2.3）
         std::vector<PlaneId> culled;
         if (opt.cull_planes) {
-            const std::int64_t* clo = cbox.lo;
-            const std::int64_t* chi = cbox.hi;
             for (PlaneId q : all_split) {
-                if (geom::plane_crosses_box(out.table.at(q), clo, chi)) culled.push_back(q);
+                if (geom::plane_crosses_box(out.table.at(q), cbox.lo, cbox.hi)) culled.push_back(q);
             }
         }
         const std::vector<PlaneId>& split_planes = opt.cull_planes ? culled : all_split;
@@ -260,8 +252,6 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 }
             }
             if (!alive) continue;
-
-            // 【全支持平面】で分割（過剰分割。§4.3.1。CP4 で局所 BSP に置き換わる）
             std::vector<Fragment> pieces{frag};
             for (PlaneId q : split_planes) {
                 std::vector<Fragment> next;
@@ -279,31 +269,21 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
             for (Fragment& p : pieces) {
                 local.push_back(std::move(p));
-                local_src.push_back(polys[idx].src);
+                local_comp.push_back(polys[idx].comp);
                 local_tag.push_back(polys[idx].tag);
             }
         }
 
-        // ---- 共平面重複を【互いの辺平面で切って揃える】（EMBER §4.3 の C4）------
-        //
-        // **面併合をやめた代償です**（§3.1.4）。同じ平面に載る面が別々の三角形分割を
-        // 持つと、重なりの領域が一致せず、`region_key` で潰せません。
-        //
-        // 支持平面が同じ断片どうしを、**相手の辺平面**で切ると領域が揃います。
-        // 自分の辺平面で切っても no-op なので、まとめて適用して構いません。
+        // 共平面重複を互いの辺平面で揃える（EMBER §4.3 の C4。CP2 と同じ）
         {
             std::map<PlaneId, std::vector<std::size_t>> by_sup;
             for (std::size_t i = 0; i < local.size(); ++i) by_sup[local[i].support].push_back(i);
-
-            // **新しい配列を組み立てます。** 元の配列を消しながら回すと、
-            // 2 つ目のグループ以降で添字が無効になります（実際に踏みました）。
             std::vector<Fragment> nl;
-            std::vector<std::uint32_t> ns, nt;
+            std::vector<std::uint32_t> nc, nt;
             for (const auto& g : by_sup) {
-                // 由来が 1 つだけなら、同じ多角形の断片どうしなので揃っています
                 bool multi = false;
                 for (std::size_t i : g.second) {
-                    if (local_src[i] != local_src[g.second.front()] ||
+                    if (local_comp[i] != local_comp[g.second.front()] ||
                         local_tag[i] != local_tag[g.second.front()]) {
                         multi = true;
                         break;
@@ -312,7 +292,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 if (g.second.size() < 2 || !multi) {
                     for (std::size_t i : g.second) {
                         nl.push_back(local[i]);
-                        ns.push_back(local_src[i]);
+                        nc.push_back(local_comp[i]);
                         nt.push_back(local_tag[i]);
                     }
                     continue;
@@ -323,7 +303,6 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 }
                 std::sort(es.begin(), es.end());
                 es.erase(std::unique(es.begin(), es.end()), es.end());
-
                 for (std::size_t i : g.second) {
                     std::vector<Fragment> pieces{local[i]};
                     for (PlaneId q : es) {
@@ -341,36 +320,35 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                     }
                     for (Fragment& p : pieces) {
                         nl.push_back(std::move(p));
-                        ns.push_back(local_src[i]);
+                        nc.push_back(local_comp[i]);
                         nt.push_back(local_tag[i]);
                     }
                 }
             }
             local.swap(nl);
-            local_src.swap(ns);
+            local_comp.swap(nc);
             local_tag.swap(nt);
         }
 
         for (std::size_t i = 0; i < local.size(); ++i) {
             frags.push_back(std::move(local[i]));
             frag_cell.push_back(cell);
-            frag_src.push_back(local_src[i]);
+            frag_comp.push_back(local_comp[i]);
             frag_tag.push_back(local_tag[i]);
-            frag_forced.push_back(forced);
         }
         if (frags.size() != frags_before) ++st.active_cells;
     }
     st.raw_fragments = frags.size();
 
-    // ---- 5. 縫合（重複の仕分けに要る）----------------------------------------
+    // ---- 5. 縫合（重複の仕分けに要る。CP2 と同じ）----------------------------
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
     std::vector<geom::HPointD> points;
     std::vector<std::vector<std::uint32_t>> raw(frags.size());
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
         const Fragment& f = frags[fi];
-        const std::size_t n = vertex_count(f);
-        raw[fi].reserve(n);
-        for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t nv = vertex_count(f);
+        raw[fi].reserve(nv);
+        for (std::size_t i = 0; i < nv; ++i) {
             const auto k = detail::vertex_key(f, i);
             auto it = by_key.find(k);
             if (it == by_key.end()) {
@@ -401,10 +379,6 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     }
     st.merged_points = merged_count;
 
-    // ---- 6. 重複の仕分け（§4.3.3 / §5.5）-------------------------------------
-    //
-    // 同じ領域の断片は、(支持平面, 頂点集合) が一致します。**共平面重複は
-    // 全順序で 1 枚だけ残します**（`SPEC-phase3.md` §5.4.1 / EMBER §4.3 の C4）。
     std::map<detail::RegionKey, std::vector<std::size_t>> regions;
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
         if (raw[fi].size() < 3) continue;
@@ -414,95 +388,81 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
     }
 
-    // ---- 7. 分類（WNV。`SPEC-phase3.md` §5.1 / §14 の CP3 の変更 1）--------------
+    // ---- 6. 分類（セグメントトレース。§5.5）----------------------------------
     //
-    // **内外の 1 ビットではなく巻き数で持ちます。** 同じ曲面を 2 度跨ぐ配置
-    // （同じメッシュを 2 度使う連鎖、入れ子、自己交差）は、真偽値では表せません。
-    //
-    // 断片の表裏の巻き数は `winding_split` が 3 つに分けて返します。
-    //
-    //   w_other  断片に載っていない面から決まる分（表裏で共通）
-    //   c_front  法線の側（+N）で、載っている面が寄与する分
-    //   c_back   反対側（-N）で寄与する分
-    //
-    // **載っている面を除いてからレイキャストする**のが要点です。境界上から飛ばすと
-    // 契約（`point_on_boundary` でないこと）が破れます。
-    struct Wnd {
-        int w_other, c_front, c_back;
-    };
-    std::map<std::pair<std::uint32_t, std::vector<std::int8_t>>, Wnd> wcache;
-
+    // **参照点から断片の内部点まで経路を張り、跨いだ多角形の Δw を足します。**
+    // レイキャストと違い、無限遠まで数える必要がありません。
     for (const auto& kv : regions) {
-        // 同じ領域に複数の断片が載っていても、出力するのは 1 枚です（§5.4.1）。
-        // **巻き数は source のメッシュから決まる**ので、どの断片を代表に取っても同じです。
         const std::size_t pick = *std::min_element(
             kv.second.begin(), kv.second.end(), [&](std::size_t a, std::size_t b) {
-                return std::make_tuple(frag_src[a], frag_tag[a], a) <
-                       std::make_tuple(frag_src[b], frag_tag[b], b);
+                return std::make_tuple(frag_comp[a], frag_tag[a], a) <
+                       std::make_tuple(frag_comp[b], frag_tag[b], b);
             });
         const Fragment& f = frags[pick];
-        const geom::PlaneD& refpl = out.table.at(f.support);
 
-        bool need_point = false;
-        for (std::size_t i2 = 0; i2 < n_src; ++i2) {
-            if (frag_forced[pick][i2] < 0) need_point = true;
-        }
-        geom::HPointD rep{};
-        if (need_point) rep = interior_point(out.table, f, cache, &st.interior);
-
-        std::vector<std::int32_t> w_front(n_src, 0), w_back(n_src, 0);
-        for (std::size_t i2 = 0; i2 < n_src; ++i2) {
-            if (frag_forced[pick][i2] >= 0) {
-                // セルに曲面が無い source。隅で決めた巻き数が全体で一定
-                w_front[i2] = frag_forced[pick][i2];
-                w_back[i2] = frag_forced[pick][i2];
-                continue;
-            }
-            std::vector<std::int8_t> sig(planes_of_src[i2].size());
-            for (std::size_t k = 0; k < planes_of_src[i2].size(); ++k) {
-                sig[k] = static_cast<std::int8_t>(
-                    fragment_sign(out.table, f, planes_of_src[i2][k], cache));
-            }
-            const auto key = std::make_pair(static_cast<std::uint32_t>(i2), std::move(sig));
-            auto it = wcache.find(key);
-            if (it == wcache.end()) {
-                Wnd v{};
-                winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back);
-                ++st.raycasts;
-                ++st.regions;
-                it = wcache.emplace(key, v).first;
-            }
-            w_front[i2] = it->second.w_other + it->second.c_front;
-            w_back[i2] = it->second.w_other + it->second.c_back;
-        }
-
-        const bool in_front = out.indicator.eval(w_front);
-        const bool in_back = out.indicator.eval(w_back);
-#if defined(KRISITE_DEBUG_SOUP)
+        // **この領域に載っている面（シート）の寄与。**
+        //
+        // トレースは始点の面を跨がないので、得られるのは**表裏に共通の分**です。
+        // シートの内部がどちら側にあるかで、表と裏に別々に足します。
+        //
+        //   外向き法線が $+N$（orient = +1）→ 内部は $-N$ 側 → **裏**に +1
+        //   外向き法線が $-N$（orient = -1）→ **表**に +1
+        std::vector<std::int32_t> d_front(n_comp, 0), d_back(n_comp, 0);
         {
-            std::fprintf(stderr, "region src=%u tag=%u n=%zu wF=[", frag_src[pick], frag_tag[pick],
-                         kv.second.size());
-            for (std::int32_t v : w_front) std::fprintf(stderr, "%d ", v);
-            std::fprintf(stderr, "] wB=[");
-            for (std::int32_t v : w_back) std::fprintf(stderr, "%d ", v);
-            std::fprintf(stderr, "] → %d/%d %s\n", (int)in_front, (int)in_back,
-                         in_front == in_back ? "捨てる" : "出力");
+            // **同じ入力多角形の断片を二重に数えないこと。** 同一領域が複数のセルに
+            // 割り当てられると、同じ多角形の断片が複数回現れます（重複割り当て）。
+            // 真偽値なら代入なので無害でしたが、**巻き数では足し算なので効きます。**
+            std::vector<std::pair<std::uint32_t, std::uint32_t>> seen;
+            for (std::size_t fi : kv.second) {
+                const auto key = std::make_pair(frag_comp[fi], frag_tag[fi]);
+                if (std::find(seen.begin(), seen.end(), key) != seen.end()) continue;
+                seen.push_back(key);
+                if (frags[fi].flipped) {
+                    ++d_front[frag_comp[fi]];
+                } else {
+                    ++d_back[frag_comp[fi]];
+                }
+            }
         }
-#endif
-        if (in_front == in_back) continue;  // (in,in) / (out,out) は捨てる（§5.2）
+
+        // **経路が退化したら、別の内部点で試します**（§3.3 の順序 6 通り x 内部点）。
+        //
+        // 軸平行な入力では、内部点を通る軸平行線が他の面の辺をちょうど通ることが
+        // あります。順序を変えても直らないので、**点そのものを変えます**。
+        TraceResult tr;
+        const std::size_t nv_f = vertex_count(f);
+        for (unsigned variant = 0; variant <= nv_f && !tr.ok; ++variant) {
+            PPoint xp{};
+            interior_point(out.table, f, cache, &st.interior, &xp, variant);
+            for (const PPoint& xr : ref_candidates) {
+                tr = trace_path(out.table, tps, xp, xr, w_ref, cache);
+                if (tr.ok) break;
+                ++st.midpoint_retries;
+            }
+        }
+        KRISITE_CHECK(tr.ok, "boolean_nary: 経路がすべて退化した（内部点も順序も尽きた）");
+        ++st.raycasts;
+
+        std::vector<std::int32_t> w_front = tr.dw, w_back = tr.dw;
+        for (std::size_t i = 0; i < n_comp; ++i) {
+            w_front[i] += d_front[i];
+            w_back[i] += d_back[i];
+        }
+
+        const bool in_front = ind.eval(w_front);
+        const bool in_back = ind.eval(w_back);
+        if (in_front == in_back) continue;
 
         Poly q;
         q.frag = f;
-        q.frag.flipped = false;  // 基準は支持平面の法線
-        q.src = frag_src[pick];
+        q.frag.flipped = false;
+        q.comp = 0;
         q.tag = frag_tag[pick];
         const octree::CellBox cb2 = octree::box_of(frag_cell[pick]);
         for (int k = 0; k < 3; ++k) {
             q.aabb.lo[k] = cb2.lo[k];
             q.aabb.hi[k] = cb2.hi[k];
         }
-        // **立体は in の側にあります。** 外向き法線は立体から外を向くので、
-        // +N 側が in なら法線は -N、つまり反転して出力します（§5.2）。
         if (in_front) {
             std::vector<std::uint32_t> dummy(vertex_count(q.frag), 0);
             std::vector<PlaneId> e = q.frag.edge;
@@ -519,6 +479,16 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     st.cache_bytes = point_cache.bytes();
     if (stats != nullptr) *stats = st;
     return out;
+}
+
+/// 二項の呼び出し形（$n = 2$ の特殊ケース）。
+inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const BoolOptions& opt,
+                        BoolStats* stats = nullptr) {
+    const Compose how = (op == BoolOp::Union)          ? Compose::Union
+                        : (op == BoolOp::Intersection) ? Compose::Intersection
+                                                       : Compose::Difference;
+    const Indicator ind = compose(indicator_source(0), indicator_source(0), 1, how);
+    return boolean_nary({&X, &Y}, ind, opt, stats);
 }
 
 }  // namespace krisite::csg

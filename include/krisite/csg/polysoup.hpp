@@ -11,18 +11,19 @@
 //
 // ---
 //
-// ## 分類の台は【生成 0 の整数メッシュ】です
+// ## スープは自分で自分を説明します（CP3 段 2）
 //
-// スープは、自分が**どの入力メッシュから作られたか**（`sources`）と、
-// **各入力の内外からどう決まるか**（`indicator`）を持ちます。
+// **多角形そのものが曲面です。** 巻き数は、参照点からの経路が跨いだ多角形を数えれば
+// 求まります（§5.5 のセグメントトレース）。**分類のために入力メッシュを持ち歩く必要は
+// ありません。**
 //
-// 断片の分類は「相手のスープの内側か」ではなく「各入力メッシュの内側か」で行い、
-// その真偽ベクトルに指示関数を適用します。**入力メッシュは整数座標なので、
-// 何段連鎖してもレイキャストが厳密に行えます。**
+// スープ 1 つは **WNV の 1 成分**です（§5.1.1「次元はメッシュ数ではない」）。
+// $n$ 項演算は $n$ 個のスープを受け取り、$i$ 番目の多角形が成分 $i$ を動かします。
+// 出力は再び 1 成分のスープなので、**連鎖しても次元が増えません。**
 //
-// > **これは WNV（`SPEC-phase3.md` §5.1）の真偽値版です。** WNV は $\mathbb{Z}^n$ で
-// > 巻き数を数えますが、閉多様体入力なら内外の 1 ビットで足ります。**CP3 で
-// > $\mathbb{Z}^n$ に一般化します。** 指示関数（§5.2）はそのまま使えます。
+// > **CP2 は「生成 0 の整数メッシュ」を台にしていました。** 連鎖のたびに台が増え、
+// > 分類が段数に比例して重くなる代償がありました（`SPEC-phase3.md` §14）。
+// > **セグメントトレースがこれを解消します。**
 #ifndef KRISITE_CSG_POLYSOUP_HPP
 #define KRISITE_CSG_POLYSOUP_HPP
 
@@ -41,7 +42,7 @@ namespace krisite::csg {
 struct Poly {
     Fragment frag;          ///< 支持平面・辺平面・向き（`owner` は使わない）
     octree::Aabb aabb{};    ///< **保守的な**外接箱（セル割り当てに使う）
-    std::uint32_t src = 0;  ///< どの入力メッシュの面か（`sources` の添字）
+    std::uint32_t comp = 0;  ///< どの WNV 成分を動かす面か（§5.1）
     std::uint32_t tag = 0;  ///< 由来のタグ（§4.3。元の多角形 ID）
 };
 
@@ -138,12 +139,13 @@ inline Indicator compose(const Indicator& x, const Indicator& y, std::uint32_t s
 struct PolySoup {
     PlaneTable table;
     std::vector<Poly> polys;
-    /// **生成 0 の整数メッシュ。** 分類の台であり、連鎖しても増えるだけで丸められない
-    std::vector<mesh::TriMesh> sources;
+    /// WNV の次元（§5.1.1）。**入力メッシュの数ではありません。**
+    /// スープ 1 つは 1 成分です。多角形はその成分の巻き数を ±1 動かします。
+    std::size_t components = 1;
     /// 指示関数（§5.2）。**表ではなく関数**
     Indicator indicator;
 
-    std::size_t source_count() const noexcept { return sources.size(); }
+    std::size_t source_count() const noexcept { return components; }
 };
 
 /// ビット列を「各 source の状態」に開く。`own` の面上の断片について、
@@ -163,8 +165,8 @@ inline std::vector<std::int32_t> to_membership(std::uint32_t bits, std::size_t n
 /// **PWN な polygon soup や自己交差する入力を受け入れる前提**がこれで整います。
 inline PolySoup from_mesh(const mesh::TriMesh& m) {
     PolySoup s;
-    s.sources.push_back(m);
-    s.indicator = indicator_source(0);  // 「source 0 の内側」
+    s.components = 1;
+    s.indicator = indicator_source(0);  // 「成分 0 の内側」
     s.polys.reserve(m.triangles.size());
     for (std::size_t ti = 0; ti < m.triangles.size(); ++ti) {
         const mesh::Tri& t = m.triangles[ti];
@@ -179,7 +181,7 @@ inline PolySoup from_mesh(const mesh::TriMesh& m) {
         q.frag.support = ref.id;
         q.frag.flipped = ref.flipped;
         q.frag.owner = 0;
-        q.src = 0;
+        q.comp = 0;
         q.tag = static_cast<std::uint32_t>(ti);
         // 頂点 i = support ∩ edge[i-1] ∩ edge[i] なので、辺 (p_{i-1}, p_i) の平面を
         // edge[i] に置く（`fragment.hpp` の規約）。

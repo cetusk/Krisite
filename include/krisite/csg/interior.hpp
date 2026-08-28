@@ -18,6 +18,7 @@
 #ifndef KRISITE_CSG_INTERIOR_HPP
 #define KRISITE_CSG_INTERIOR_HPP
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -71,8 +72,18 @@ inline int inward_sign(const PlaneTable& t, const std::vector<geom::HPointD>& vs
 /// 返す点は、支持平面上にあり、**すべての辺平面に対して内側（符号が非零で内側と一致）**
 /// です。相対内部の点は相手の平面配置のセルの内部にあるので、$\partial B$ には
 /// 決して載りません（`SPEC-phase1.md` §6.1 の論証）。
-inline geom::HPointD interior_point(const PlaneTable& t, const Fragment& f,
-                                    PointCache* cache = nullptr, InteriorStats* st = nullptr) {
+/// `variant` で**別の内部点**を求めます（`SPEC-phase3.md` §3.3 / §5.5）。
+///
+/// セグメントトレースの経路は、内部点が軸に整列していると退化しやすくなります
+/// （軸平行な入力では、内部点を通る軸平行線が他の面の辺をちょうど通る）。
+/// **経路が退化したら別の内部点で試す**ための引数です。
+///
+///   variant = 0        主経路（float ヒント + 軸平行直線）
+///   variant >= 1       予備経路（角ごと・刻みごと。順に別の角を使う）
+inline geom::HPointD interior_point(PlaneTable& t, const Fragment& f, PointCache* cache = nullptr,
+                                    InteriorStats* st = nullptr,
+                                    std::array<PlaneId, 3>* planes = nullptr,
+                                    unsigned variant = 0) {
     const std::size_t n = vertex_count(f);
     KRISITE_CHECK(n >= 3, "interior_point: 頂点が 3 未満");
 
@@ -94,7 +105,7 @@ inline geom::HPointD interior_point(const PlaneTable& t, const Fragment& f,
     const geom::PlaneD& sp = t.at(f.support);
 
     // ---- 主経路: float ヒント + 軸平行直線（EMBER §4.4）------------------------
-    {
+    if (variant == 0) {
         double cx = 0.0, cy = 0.0, cz = 0.0;
         for (const geom::HPointD& v : vs) {
             const double w = detail::approx(v.w);
@@ -134,9 +145,16 @@ inline geom::HPointD interior_point(const PlaneTable& t, const Fragment& f,
             const geom::PlaneD a1 =
                 geom::plane_axis_aligned(other[axis][1], ic[static_cast<int>(other[axis][1])]);
             // w = ±N_s[axis] != 0（最大成分を選んだので非零）
+            // 交わらない組は作れない（軸の選び方から起きないはずだが、安全側に）
+            if (!geom::planes_meet_at_point(a0, a1, sp)) return vs[0];
             const geom::HPointD x = geom::intersect3(a0, a1, sp);
             if (strictly_inside(x)) {
                 if (st != nullptr) ++st->axis_line;
+                if (planes != nullptr) {
+                    // **トレースの始点に要ります**（§3.3 の経路は平面 3 つ組で作る）。
+                    // 軸平行平面を表に登録します。幅は kAxisOffset <= kOffset で収まります。
+                    *planes = {t.intern(a0).id, t.intern(a1).id, f.support};
+                }
                 return x;
             }
         }
@@ -148,7 +166,10 @@ inline geom::HPointD interior_point(const PlaneTable& t, const Fragment& f,
     // 辺平面を内側へ動かすと、交点はその角の近傍の**内部**に入ります。
     // 動かす量は d の +-1 が最小ですが、平面係数をスケールアップすれば
     // 幾何的な移動量を細かくできます（EMBER §4.4）。**幅の余裕の範囲で行います。**
-    for (std::size_t i = 0; i < n; ++i) {
+    // variant >= 1 なら、その番号ぶんだけ後ろの角から試す（別の点になる）
+    const std::size_t start = (variant == 0) ? 0 : ((variant - 1) % n);
+    for (std::size_t ii = 0; ii < n; ++ii) {
+        const std::size_t i = (start + ii) % n;
         const PlaneId ea = f.edge[(i + n - 1) % n];
         const PlaneId eb = f.edge[i];
         const std::size_t ka = (i + n - 1) % n, kb = i;
@@ -164,9 +185,13 @@ inline geom::HPointD interior_point(const PlaneTable& t, const Fragment& f,
             // ずらしても平面の向きは変わらないので、元の 3 枚が一点で交わるなら
             // ずらした 3 枚も交わります（法線の行列式は同じ）。角の 2 辺は
             // 支持平面上で交わるので退化しません。
+            if (!geom::planes_meet_at_point(sp, sa, sb)) continue;
             const geom::HPointD x = geom::intersect3(sp, sa, sb);
             if (strictly_inside(x)) {
                 if (st != nullptr) ++st->corner_offset;
+                if (planes != nullptr) {
+                    *planes = {f.support, t.intern(sa).id, t.intern(sb).id};
+                }
                 return x;
             }
         }

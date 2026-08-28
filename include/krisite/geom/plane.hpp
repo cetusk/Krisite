@@ -234,6 +234,40 @@ inline bool is_null(const Plane<NB, DB>& pl) noexcept {
     return is_degenerate(pl) && arith::is_zero(pl.d);
 }
 
+/// 指定した法線で、点 `p` を通る平面（`SPEC-phase3.md` §3.3 の経路の構成）。
+///
+/// **参照点を軸平行平面で定義すると、軸平行な入力で経路が退化します**（平面が平行に
+/// なって交点が作れない）。法線を斜めに取ると避けられます。
+///
+/// ビット幅: 法線は与えた小さい整数、$d = -N \cdot p$ は $|N|$ が小さければ $b+2$ 程度で
+/// `kOffset`（$3b+5$）に収まります。**大きな法線を渡さないこと。**
+inline PlaneD plane_with_normal(std::int64_t nx, std::int64_t ny, std::int64_t nz,
+                                const IPoint& p) noexcept {
+    KRISITE_CHECK(nx != 0 || ny != 0 || nz != 0, "plane_with_normal: 法線が零");
+    KRISITE_CHECK(nx > -16 && nx < 16 && ny > -16 && ny < 16 && nz > -16 && nz < 16,
+                  "plane_with_normal: 法線が大きすぎる（d の幅が kOffset を超える）");
+    PlaneD pl{};
+    pl.a = arith::from_i64<limbs::kNormal>(nx);
+    pl.b = arith::from_i64<limbs::kNormal>(ny);
+    pl.c = arith::from_i64<limbs::kNormal>(nz);
+    const std::int64_t d = -(nx * std::int64_t{p.x} + ny * std::int64_t{p.y} + nz * std::int64_t{p.z});
+    pl.d = arith::from_i64<limbs::kOffset>(d);
+    return pl;
+}
+
+/// 3 平面が**一点で交わるか**（法線の行列式が非零か）。
+///
+/// `intersect3` は交わらない組を表明で弾くので、**呼ぶ前にここで確かめます。**
+/// 経路の構成（`SPEC-phase3.md` §3.3）では、置き換えた平面が平行になり得ます。
+///
+/// ビット幅: 法線 3 枚の行列式 = 構成点の w と同じ 6b+12 → `widths.hpp` bits::kHomoW
+inline bool planes_meet_at_point(const PlaneD& p1, const PlaneD& p2, const PlaneD& p3) noexcept {
+    using namespace arith;
+    constexpr std::size_t L = limbs::kNormal;
+    const fixed_int<L> m[3][3] = {{p1.a, p1.b, p1.c}, {p2.a, p2.b, p2.c}, {p3.a, p3.b, p3.c}};
+    return !is_zero(det3(m));
+}
+
 /// 3 平面の交点（Cramer）。
 ///
 /// 平面は N・x + d = 0 なので、連立は

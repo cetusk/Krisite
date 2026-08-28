@@ -141,7 +141,7 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
             fan_triangulate(tp, out.triangles, &st.t);
         }
         tri_src.insert(tri_src.end(), out.triangles.size() - before,
-                       static_cast<int>(s.polys[pi].src));
+                       static_cast<int>(s.polys[pi].comp));
     }
 
     // ---- 4. 接触の分裂（§6.3）------------------------------------------------
