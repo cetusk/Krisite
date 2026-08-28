@@ -177,6 +177,12 @@ void test_matches_binary_oracle() {
                     tag + ": C が正解器と違う" + kritest::pair_msg(t0.components, t1.components));
                 KRI_CHECK_MSG(t0.chi == t1.chi,
                               tag + ": χ が正解器と違う" + kritest::pair_msg(t0.chi, t1.chi));
+                // **(C, χ) は面の向きを反転しても変わりません。** 向きの誤りはここでしか
+                // 出ないので、別に固定します（変異 15）。接触の分裂を切っているので
+                // `ok()` は使えません（次数 4 の辺が残る）。`oriented` は各辺で
+                // #(u,v) = #(v,u) を見るので、次数 4 でも有効です。
+                // **空の出力（交わらない立体の ∩ など）では向きは定義されません。**
+                KRI_CHECK_MSG(t1.empty || t1.oriented, tag + ": **出力の向きが整合していない**");
                 ++n;
             }
         }

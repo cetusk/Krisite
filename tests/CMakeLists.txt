@@ -400,6 +400,24 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 split_strategy  PASS)
     krisite_add_mutant(13 KRISITE_MUTATION_DROP_DEGENERATE=1 cp3             PASS)
 
+    # 変異 15: 出力の向きを **`f.flipped` を見ずに `in_front` だけ**で決める。
+    #   **主検出器: volume_gmp（体積。符号が狂う）**
+    #
+    # **これは実際に入っていた誤りです**（`IMPL-phase3.md` §6.1）。断片の巻き順は
+    # 元の三角形の法線基準なので、`f.flipped` が真の面だけ向きが反転します。
+    #
+    #   volume_gmp … 体積。**符号が狂う**（`A ∪ A` で −1/3 になりました）
+    #   soup       … 位相。`oriented`（各辺で #(u,v) = #(v,u)）が崩れる
+    #
+    # **(C, χ) は面の向きを反転しても変わりません。** 正解器との (C, χ) 比較は
+    # **素通りします** — それがこの誤りが CP2 から CP3 まで残った理由です。
+    krisite_add_mutant(15 KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED=1 soup            FAIL)
+    krisite_add_mutant(15 KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED=1 cp3             PASS)
+    krisite_add_mutant(15 KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED=1 depth_monotonic PASS)
+    if(KRISITE_GMP_FOUND)
+        krisite_add_mutant(15 KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED=1 volume_gmp FAIL GMP)
+    endif()
+
     # ---- CP5 の組合せでも検出されること（SPEC-phase2 §13）--------------------
     #
     # **CP5 は機構を全部有効にした状態です。** 機構が増えると検出器は移動し、

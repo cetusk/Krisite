@@ -19,6 +19,9 @@
 #include <vector>
 
 #include "krisite/csg/boolean.hpp"
+#include "krisite/csg/polysoup.hpp"
+#include "krisite/csg/soup_boolean.hpp"
+#include "krisite/csg/to_mesh.hpp"
 
 #include "corpus.hpp"
 #include "gmp_oracle.hpp"
@@ -36,7 +39,11 @@ namespace {
 /// $$ \frac{\det(X_0, X_1, X_2)}{W_0 W_1 W_2}. $$
 /// 分子は整数行列式、分母は 3 つの $w$ の積です。**三角形ごとに分母が違う**ので、
 /// `mpq` で足し合わせます（ここが GMP を要する理由）。
-void bool_mesh_volume6(mpq_ptr out, const BoolMesh& m) {
+/// **`BoolMesh` と `SoupMesh` の両方**で使えるようにテンプレートにしています
+/// （どちらも `vertices` / `triangles` を持つだけの型）。**スープ経路の体積**を
+/// 見るために要ります。
+template <class Mesh>
+void mesh_volume6(mpq_ptr out, const Mesh& m) {
     mpq_set_ui(out, 0, 1);
     if (m.triangles.empty()) return;
 
@@ -176,9 +183,9 @@ void check_case(const kritest::Case& c) {
         const BoolMesh u = boolean_op(A, B, BoolOp::Union, opt, &st);
         const BoolMesh i = boolean_op(A, B, BoolOp::Intersection, opt, &st);
         const BoolMesh df = boolean_op(A, B, BoolOp::Difference, opt, &st);
-        bool_mesh_volume6(vu, u);
-        bool_mesh_volume6(vi, i);
-        bool_mesh_volume6(vd, df);
+        mesh_volume6(vu, u);
+        mesh_volume6(vi, i);
+        mesh_volume6(vd, df);
 
         // |A ∪ B| + |A ∩ B| = |A| + |B|
         mpq_add(lhs, vu, vi);
@@ -237,14 +244,42 @@ void check_case(const kritest::Case& c) {
             mpq_init(nu);
             mpq_init(ni);
             mpq_init(nd);
-            bool_mesh_volume6(nu, u2);
-            bool_mesh_volume6(ni, i2);
-            bool_mesh_volume6(nd, d2);
+            mesh_volume6(nu, u2);
+            mesh_volume6(ni, i2);
+            mesh_volume6(nd, d2);
             const bool same =
                 mpq_equal(nu, vu) != 0 && mpq_equal(ni, vi) != 0 && mpq_equal(nd, vd) != 0;
             KRI_CHECK_MSG(same, std::string("ケース ") + c.id + "（深度 " + std::to_string(d) +
                                     "）: **分裂の有無で体積が変わった**（§9.4.2 / §5.1.3）");
             for (mpq_ptr q : {nu, ni, nd}) mpq_clear(q);
+        }
+
+        // ---- **スープ経路の体積**（`SPEC-phase3.md` §10.1）★ ----------------
+        //
+        // 位相検査は「割れているか」しか見ず、$(C, \chi)$ は**面の向きを反転しても
+        // 変わりません。** スープ経路の出力を体積で見ていなかったため、
+        // **出力の向きの誤りが CP2 から CP3 まで残りました**（`IMPL-phase3.md` §6.1）。
+        {
+            krisite::csg::ToMeshOptions tmo;
+            tmo.split_contacts = true;
+            mpq_ptr ref[3] = {vu, vi, vd};
+            const char* nm[3] = {"∪", "∩", "\\"};
+            int k = 0;
+            for (BoolOp bop : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
+                const krisite::csg::SoupMesh sm = krisite::csg::to_mesh(
+                    krisite::csg::boolean(krisite::csg::from_mesh(A), krisite::csg::from_mesh(B),
+                                          bop, opt),
+                    tmo);
+                mpq_t sv;
+                mpq_init(sv);
+                mesh_volume6(sv, sm);
+                KRI_CHECK_MSG(mpq_equal(sv, ref[k]) != 0,
+                              std::string("ケース ") + c.id + "（深度 " + std::to_string(d) +
+                                  "）: スープの " + nm[k] + " の体積が二項正解器と違う（得 " +
+                                  to_str(sv) + " 期待 " + to_str(ref[k]) + "）");
+                mpq_clear(sv);
+                ++k;
+            }
         }
 
         // 深度不変性の体積版: 深度によらず同じ値であること（§10.2.1 の補強）

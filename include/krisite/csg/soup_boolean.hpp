@@ -501,7 +501,21 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
         Poly q;
         q.frag = f;
-        q.frag.flipped = false;  // 基準は支持平面の法線
+        // **断片の巻き順は「元の三角形の法線」基準**で、`f.flipped` がそれが支持平面の
+        // 法線と逆かを記録しています（`from_mesh` が設定し、切断も分割も保存します）。
+        // 出力の巻き順は**外向き法線**基準にしたいので、
+        //
+        //     反転が要るのは (目標 = in_front) と (現在 = f.flipped) が食い違うとき
+        //
+        // です。**`in_front` だけで判定すると `f.flipped` が真の面で向きが狂います。**
+        // $(C, \chi)$ は面の向きを反転しても変わらないので、**位相の比較では出ません。**
+#if defined(KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED)
+        // 変異 15: `f.flipped` を見ない（これが実際に入っていた誤りです）。
+        const bool need_reverse = in_front;
+#else
+        const bool need_reverse = (in_front != f.flipped);
+#endif
+        q.frag.flipped = in_front;  // 外向き法線が支持平面の法線と逆か
         q.src = frag_src[pick];
         q.tag = frag_tag[pick];
         const octree::CellBox cb2 = octree::box_of(frag_cell[pick]);
@@ -510,13 +524,12 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             q.aabb.hi[k] = cb2.hi[k];
         }
         // **立体は in の側にあります。** 外向き法線は立体から外を向くので、
-        // +N 側が in なら法線は -N、つまり反転して出力します（§5.2）。
-        if (in_front) {
+        // +N 側が in なら外向き法線は -N です（§5.2）。
+        if (need_reverse) {
             std::vector<std::uint32_t> dummy(vertex_count(q.frag), 0);
             std::vector<PlaneId> e = q.frag.edge;
             detail::reverse_polygon(dummy, e);
             q.frag.edge = std::move(e);
-            q.frag.flipped = true;
         }
         out.polys.push_back(std::move(q));
     }
