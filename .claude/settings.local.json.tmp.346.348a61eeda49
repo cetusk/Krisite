@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh auth *)",
+      "Bash(git config *)",
+      "Bash(git update-ref *)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(awk '{print \"  \"$NF\" \\(\"$5\" bytes\\)\"}')",
+      "Bash(git ls-remote *)",
+      "Bash(awk '{print \"  \"$2}')",
+      "Bash(git -c commit.gpgsign=false commit -q -F -)",
+      "Bash(git reset *)",
+      "Bash(git fsck *)",
+      "Bash(python3 -)",
+      "Bash(git -c commit.gpgsign=false commit -q -m '変異ジョブで ccache の効果を測る（暫定） *)",
+      "Bash(git -c commit.gpgsign=false commit -q -m 'ccache の warm 側を測る（注記のみ） *)"
+    ]
+  }
+}

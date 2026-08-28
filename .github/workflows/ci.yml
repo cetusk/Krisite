@@ -43,35 +43,114 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
+  # ---- 変更の範囲（`ROADMAP.md`「CI の方針」の影響トリガ）---------------------
+  #
+  # **ジョブごとのパス条件は `on:` では書けません**（`paths` はワークフロー単位）。
+  # そこで先頭で 1 度だけ判定し、各ジョブが `if:` で参照します。
+  # **第三者アクションは使いません**（`CLAUDE.md`「GitHub 純正と標準パッケージで
+  # 組めるなら、そちらを優先する」）。
+  #
+  # **トリガは広めに取ります。迷ったら含める。**
+  # `csg/` の変更が MSVC を壊すのに `arith/` を触っていない、という組合せは普通に
+  # あります。**main ゲートが最後の網**です。
+  changes:
+    name: 変更の範囲
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.f.outputs.code }}
+      mutation: ${{ steps.f.outputs.mutation }}
+      semantics: ${{ steps.f.outputs.semantics }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: f
+        run: |
+          set -uo pipefail
+          # **PR 以外（main への push / 手動実行）は全部回します。** main ゲートです。
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "PR ではないので全ジョブを回します"
+            printf 'code=true\nmutation=true\nsemantics=true\n' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          base="${{ github.event.pull_request.base.sha }}"
+          git cat-file -e "$base^{commit}" 2>/dev/null || \
+            git fetch --no-tags --depth=1 origin "$base"
+          files=$(git diff --name-only "$base" HEAD)
+          echo "--- 変更されたファイル ---"
+          echo "$files"
+          has() { echo "$files" | grep -qE "$1"; }
+          code=false; mutation=false; semantics=false
+          # ビルドできる形が変わり得るもの（テストコードも MSVC を壊します）
+          has '^(include/|tests/|CMakeLists\.txt|\.github/workflows/)' && code=true
+          # 変異が守るのは**テスト自身の検出力**。壊れるのはテストとコーパスの変更
+          has '^(tests/|include/krisite/(csg|mesh|octree)/|CMakeLists\.txt|\.github/workflows/)' && mutation=true
+          # 意味論（Manifold との突き合わせ）
+          has '^(tests/|include/krisite/(csg|mesh)/|\.github/workflows/)' && semantics=true
+          echo "--- 判定 ---"
+          printf 'code=%s\nmutation=%s\nsemantics=%s\n' "$code" "$mutation" "$semantics" \
+            | tee -a "$GITHUB_OUTPUT"
+
+  # ---- PR ゲート（毎 PR。`ROADMAP.md`「CI の方針」）---------------------------
+  #
+  # **主要 1 構成の全テスト。** ここだけは常に回します。
+  pr-gate:
+    name: PR ゲート (Linux Clang, b=21)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - name: 構成
+        env:
+          CC: clang-18
+          CXX: clang++-18
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_COORD_BITS=21 \
+            -DKRISITE_CHECKED_ARITH=ON
+      - run: cmake --build build
+      - run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
+
   # ---- プラットフォーム検証（§9 の 2 番目の条件）------------------------------
   #
   # GMP はテスト専用かつプラットフォームごとの入手性が違うので、ここでは OFF。
   # GMP 差分テストは下の gmp ジョブ（Linux）で回す。
   build:
     name: ${{ matrix.name }} (b=${{ matrix.coord_bits }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ${{ matrix.os }}
+    # **b=26 が固有に検証するのはリム数の違いです**（`cmp_h` が 5 → 6 リム）。
+    # これはプラットフォームに依らないので、**全構成でビルドはするが、テストは
+    # 幅に関わるものだけ**に絞ります（`tests: width`）。
+    #
+    # **Linux Clang の b=26 だけは全テストを回します。** 幾何配置での上界超過は
+    # 検査 ON の幾何コーパスが網なので、1 構成は残す必要があります。
+    #
+    # 絞り方は**除外ラベル**です（`CLAUDE.md`「対象外に印を付ける」）。
+    # ラベルを付け忘れたテストは**走ります**。網が黙って縮みません。
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: "Linux GCC",      os: ubuntu-24.04,  cc: gcc-13,   cxx: g++-13,     coord_bits: 21 }
-          - { name: "Linux GCC",      os: ubuntu-24.04,  cc: gcc-13,   cxx: g++-13,     coord_bits: 26 }
-          - { name: "Linux Clang",    os: ubuntu-24.04,  cc: clang-18, cxx: clang++-18, coord_bits: 21 }
-          - { name: "Linux Clang",    os: ubuntu-24.04,  cc: clang-18, cxx: clang++-18, coord_bits: 26 }
-          - { name: "macOS arm64",    os: macos-14,      cc: clang,    cxx: clang++,    coord_bits: 21 }
-          - { name: "macOS arm64",    os: macos-14,      cc: clang,    cxx: clang++,    coord_bits: 26 }
-          - { name: "Windows MSVC",   os: windows-2022,  cc: "",       cxx: "",         coord_bits: 21 }
-          - { name: "Windows MSVC",   os: windows-2022,  cc: "",       cxx: "",         coord_bits: 26 }
+          - { name: "Linux GCC",      os: ubuntu-24.04,  cc: gcc-13,   cxx: g++-13,     coord_bits: 21, tests: full  }
+          - { name: "Linux GCC",      os: ubuntu-24.04,  cc: gcc-13,   cxx: g++-13,     coord_bits: 26, tests: width }
+          - { name: "Linux Clang",    os: ubuntu-24.04,  cc: clang-18, cxx: clang++-18, coord_bits: 26, tests: full  }
+          - { name: "macOS arm64",    os: macos-14,      cc: clang,    cxx: clang++,    coord_bits: 21, tests: full  }
+          - { name: "macOS arm64",    os: macos-14,      cc: clang,    cxx: clang++,    coord_bits: 26, tests: width }
+          - { name: "Windows MSVC",   os: windows-2022,  cc: "",       cxx: "",         coord_bits: 21, tests: full  }
+          - { name: "Windows MSVC",   os: windows-2022,  cc: "",       cxx: "",         coord_bits: 26, tests: width }
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Ninja を用意
-        uses: seanmiddleditch/gha-setup-ninja@v5
+        uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
 
       - name: MSVC 環境を用意
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756  # v1
 
       - name: 構成
         shell: bash
@@ -88,7 +167,11 @@ jobs:
         run: cmake --build build
 
       - name: テスト（GMP 非依存の分）
-        run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
+        # `tests: width` の構成では**重い幾何テストを除外**します。
+        # 向きは `CLAUDE.md`「対象外に印を付ける」に従い、**付け忘れたテストは走ります。**
+        run: >
+          ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
+          ${{ matrix.tests == 'width' && '-LE heavy_geometry' || '' }}
 
   # ---- 適応分割モード（SPEC-phase2 §9.4）------------------------------------
   #
@@ -98,16 +181,21 @@ jobs:
   #
   # **空回りしないことを cp3 が検査します。** 既定を反転させても、テストが構成を明示して
   # いれば何も変わりません。適応分割モードでは葉の深さに差が出ていることを確かめます。
+  #
+  # **b=26 は回しません。** 適応分割の論理にビット幅は関与しないので、b=26 で固有に
+  # 出るものがありません（幅の網は build 行列の b=26 が持ちます）。
   adaptive:
     name: 適応分割モード (§9.4, b=${{ matrix.coord_bits }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        coord_bits: [21, 26]
+        coord_bits: [21]
     steps:
       - uses: actions/checkout@v4
-      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
       - run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DKRISITE_COORD_BITS=${{ matrix.coord_bits }} \
@@ -120,22 +208,71 @@ jobs:
         run: ctest --test-dir build --no-tests=error -R '^cp3$' -V | grep -F "§9.4 適応分割モード"
 
   # ---- 検査ビルド（Debug では KRISITE_CHECKED_ARITH が自動で ON）--------------
+  # **Debug が固有に検証するのは「検査が自動で ON になる」ことだけです。**
+  # 検査そのものは build 行列（RelWithDebInfo + CHECKED_ARITH=ON）が回しています。
+  # そこで**コンパイル行に `KRISITE_CHECKED_ARITH=1` が入っていることを直接見て**、
+  # 実行は arith の 2 本に絞ります。**文書ではなく機構で確かめる形**です。
   debug-checked:
     name: Linux Debug (検査自動 ON)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
       - run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+      - name: Debug で検査が自動 ON になること
+        run: |
+          cmake --build build -v --target bitwidth 2>&1 | tee build.log
+          grep -q "KRISITE_CHECKED_ARITH=1" build.log || {
+            echo "Debug なのにコンパイル行に KRISITE_CHECKED_ARITH=1 がありません" >&2
+            exit 1
+          }
+          echo "OK: Debug で検査が自動 ON"
+      - run: cmake --build build --target fixed_int
+      - run: ctest --test-dir build --no-tests=error -R '^(bitwidth|fixed_int)$' --output-on-failure
+
+  # ---- sanitizer（UBSan / ASan）----------------------------------------------
+  #
+  # **出荷時の構成（検査 OFF）での未定義動作を直接見ます。**
+  # `KRISITE_CHECKED_ARITH=ON` は溢れを表明で止めるので、**検査を切った経路の UB は
+  # どのジョブも見ていませんでした。** Debug（-O0）が偶然露出させるのを待つより、
+  # sanitizer で直接検出するほうが確かです。
+  sanitizers:
+    name: UBSan / ASan (検査 OFF)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - uses: ./.github/actions/ccache
+        with:
+          key: sanitizers
+      - run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_CHECKED_ARITH=OFF \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - run: cmake --build build
-      - run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
+      - env:
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
+      - name: ccache の効き
+        run: ccache -s | head -12
 
   # ---- 可搬フォールバック経路（__int128 / 32bit 筆算）------------------------
   #
   # SPEC §5.3 の 3 経路のうち、x86-64 組み込みを使わない 2 つを実際に走らせる。
   # MSVC ARM64 相当（__int128 も _umul128 も無い）は KRISITE_NO_INT128 で再現する。
+  #
+  # **フォールバックが変えるのは arith の実装だけです。** 幾何コーパスを 2 回追加で
+  # 回しても、直接の網（`fixed_int` と GMP 差分 10^7 件）以上のものは出ません。
+  # **重い幾何テストは除外**します（除外ラベル。付け忘れたテストは走ります）。
   fallback-paths:
     name: 可搬経路 (${{ matrix.flags }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -145,16 +282,18 @@ jobs:
           - "-DKRISITE_NO_INTRINSICS -DKRISITE_NO_INT128"
     steps:
       - uses: actions/checkout@v4
-      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
       - run: |
           cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DKRISITE_CHECKED_ARITH=ON -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
       - run: cmake --build build
-      - run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
+      - run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4 -LE heavy_geometry
 
   # ---- GMP 差分テスト（LGPL、テスト専用）------------------------------------
   gmp:
     name: GMP 差分テスト (b=${{ matrix.coord_bits }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -162,7 +301,7 @@ jobs:
         coord_bits: [21, 26]
     steps:
       - uses: actions/checkout@v4
-      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
       - name: GMP を導入
         run: sudo apt-get update && sudo apt-get install -y libgmp-dev
       - run: |
@@ -200,18 +339,27 @@ jobs:
   # ctest が WILL_FAIL で検証します。**素通りする組合せも固定しています。**
   mutation:
     name: 変異テスト (§10.5)
+    needs: changes
+    if: needs.changes.outputs.mutation == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      # **ccache は実測で入れました**（このジョブ: 4.7 分 → 1.2 分、命中 91/91）。
+      - uses: ./.github/actions/ccache
+        with:
+          key: mutation
       - name: 構成
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DKRISITE_CHECKED_ARITH=OFF \
-            -DKRISITE_BUILD_MUTANTS=ON
+            -DKRISITE_BUILD_MUTANTS=ON \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: ビルド
         run: cmake --build build
+      - name: ccache の効き（ログに残す）
+        run: ccache -s | head -12
       - name: 変異が期待どおり検出されること
         run: |
           # 期待する変異テストの件数。減っていたら「変異テストがある」だけの状態に
@@ -227,9 +375,6 @@ jobs:
         # もう一方の検出経路。位相検査に届く前に fragment_sign の不変条件が落とす。
         # **同じ誤りを 2 つの独立した機構が捕まえる**ことの確認（§10.5）。
         run: |
-          cmake -B build-chk -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DKRISITE_CHECKED_ARITH=ON
-          cmake --build build-chk --target cp2
           g++ -std=c++20 -O1 -Iinclude -Itests \
             -DKRISITE_COORD_BITS=21 -DKRISITE_CHECKED_ARITH=1 \
             -DKRISITE_MUTATION_LOCAL_PLANES=1 \
@@ -253,10 +398,15 @@ jobs:
   # 動かしたら）ここが落ちます。
   mutation_gmp:
     name: GMP 付き変異テスト (§9.4.1)
+    needs: changes
+    if: needs.changes.outputs.mutation == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - uses: ./.github/actions/ccache
+        with:
+          key: mutation-gmp
       - name: GMP を導入
         run: sudo apt-get update && sudo apt-get install -y libgmp-dev
       - name: 構成
@@ -265,7 +415,8 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DKRISITE_CHECKED_ARITH=OFF \
             -DKRISITE_BUILD_MUTANTS=ON \
-            -DKRISITE_BUILD_TESTS_WITH_GMP=ON
+            -DKRISITE_BUILD_TESTS_WITH_GMP=ON \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: ビルド
         run: cmake --build build
       - name: 体積の変異が期待どおりであること
@@ -275,6 +426,8 @@ jobs:
           echo "登録されている GMP 変異テスト: $n 件"
           test "$n" -eq 6 || { echo "件数が想定と違います（期待 6）"; exit 1; }
           ctest --test-dir build --no-tests=error -L mutation_gmp --output-on-failure --parallel 4
+      - name: ccache の効き
+        run: ccache -s | head -12
 
   # ---- 外部正解器 Manifold（SPEC-phase1 §10.4 / §10.6）-----------------------
   #
@@ -283,15 +436,21 @@ jobs:
   # deny は緩めていません。
   manifold:
     name: Manifold 正解器 (§10.4)
+    needs: changes
+    if: needs.changes.outputs.semantics == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - uses: ./.github/actions/ccache
+        with:
+          key: manifold
       - name: 構成（Manifold を FetchContent で取得）
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DKRISITE_BUILD_TESTS_WITH_MANIFOLD=ON
+            -DKRISITE_BUILD_TESTS_WITH_MANIFOLD=ON \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - name: 取得したコミットとライセンスを記録
         # LICENSE の実体を読んで確認する（README の記述を信用しない。THIRD_PARTY_LICENSES.md）。
         # 構成時にも FATAL_ERROR で検査しているが、根拠を CI ログに残す。
@@ -330,10 +489,12 @@ jobs:
 
   bench:
     name: ベンチマーク（基準線）
+    # **合否に使わない数値なので、main ゲートだけで足ります**（`ROADMAP.md`）。
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - uses: seanmiddleditch/gha-setup-ninja@v5
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
       - run: |
           cmake -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DKRISITE_CHECKED_ARITH=OFF -DKRISITE_BUILD_BENCH=ON -DKRISITE_BUILD_TESTS=OFF

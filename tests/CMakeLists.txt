@@ -14,6 +14,31 @@ function(krisite_add_test name src)
     set_tests_properties(${name} PROPERTIES TIMEOUT 3600)
 endfunction()
 
+# ---- 除外ラベル `heavy_geometry`（CI の副構成で外すもの）---------------------
+#
+# **印を付ける向きに注意してください**（`CLAUDE.md`「ラベルで検査範囲を絞るときは、
+# 失敗の向きを安全側にすること」）。
+#
+#   対象に印   … 付け忘れると**テストが走らない。網が黙って縮む**
+#   対象外に印 … 付け忘れると**テストが走る。時間が少し増えるだけ**  ← こちらを採る
+#
+# ここで付けるのは**外してよい側**です。**新しいテストは、何もしなければすべての
+# 構成で走ります。**
+#
+# 外してよい根拠があるのは 2 つの構成だけです。
+#
+#   b=26 の副構成   b=26 が固有に見るのはリム数の違いで、プラットフォームには依りません。
+#                   **Linux Clang の b=26 では全部走ります**（幾何配置での上界超過の網）
+#   可搬経路        変わるのは arith の実装だけ。直接の網は fixed_int と GMP 差分 10^7 件
+#
+# **`widths.hpp` を参照するテストは入れません**（`topology` / `plane_order` /
+# `bitwidth` / `volume_gmp`）。幅に直接依存するので b=26 で見る価値があります。
+function(krisite_mark_heavy)
+    foreach(t ${ARGN})
+        set_tests_properties(${t} PROPERTIES LABELS "heavy_geometry")
+    endforeach()
+endfunction()
+
 # ---- GMP を必要としないテスト（既定で常に実行）------------------------------
 
 krisite_add_test(fixed_int      arith/test_fixed_int.cpp)
@@ -57,6 +82,13 @@ krisite_add_test(depth_monotonic csg/test_depth_monotonic.cpp)
 # （既定ビルドに計数のコストを持ち込まない）。
 krisite_add_test(call_ratio    csg/test_call_ratio.cpp)
 target_compile_definitions(call_ratio PRIVATE KRISITE_COUNT_PREDICATES=1)
+
+# **重い幾何テストに「外してよい」印を付ける。** 根拠は krisite_mark_heavy の上の注記。
+krisite_mark_heavy(
+    uniform_grid faces fragment
+    cp1 cp2 cp25 cp3 cp5
+    split_strategy tjunction adaptive early_out cache split_semantics
+    idempotence depth_monotonic call_ratio)
 
 # ---- GMP 差分テスト（LGPL、テスト専用）--------------------------------------
 
