@@ -50,10 +50,12 @@ int main() {
     Gauge g_pmin{"平面の小行列式 (5b+9)", bits::kPlaneMinor, 0, 0};
     Gauge g_vol{"四面体の体積x6 (3b+1)", bits::kTetraVolume6, 0, 0};
     Gauge g_o2dh{"orient2d_h (8b+17)", bits::kOrient2dH, 0, 0};
-    Gauge g_msid{"side(plane,中点) (15b+33)", bits::kMidSide, 0, 0};
-    Gauge g_mo2dh{"orient2d_h(中点) (14b+30)", bits::kMidOrient2dH, 0, 0};
-    Gauge g_tsid{"side(plane,重心) (21b+46)", bits::kTriSide, 0, 0};
-    Gauge g_to2dh{"orient2d_h(重心) (20b+43)", bits::kTriOrient2dH, 0, 0};
+    // Phase 3（SPEC-phase3.md §3.1 / §2.1）。**中点系・重心系は段 0 で削除しました。**
+    Gauge g_en{"辺平面の法線 (b+1)", bits::kEdgeNormal, 0, 0};
+    Gauge g_ed{"辺平面のオフセット (2b+2)", bits::kEdgeOffset, 0, 0};
+    Gauge g_apw{"軸線交点の w (2b+6)", bits::kAxisPointW, 0, 0};
+    Gauge g_apx{"軸線交点の x,y,z (3b+8)", bits::kAxisPointXyz, 0, 0};
+    Gauge g_esid{"side(辺平面3枚の交点) (5b+11)", 5 * b + 11, 0, 0};
 
     Rng rng(20260826);
 
@@ -111,21 +113,46 @@ int main() {
         // レイキャストの投影向き（同次点版）
         feed(g_o2dh, orient2d_h_value(p[0], p[1], v, Axis::X));
         feed(g_o2dh, orient2d_h_value(p[2], p[3], u, Axis::Y));
-        // §6.1 の代表点フォールバック（2 構成点の中点）
-        const HMidPointD mid{v, u};
-        feed(g_msid, side_value(probe, mid));
-        feed(g_mo2dh, orient2d_h_value(p[0], p[1], mid, Axis::X));
-        // 3 頂点の重心（三角形の断片用のフォールバック）
-        const PlaneD pl4 = plane_from_triangle(p[2], p[5], p[8]);
-        if (!kritest::intersects_at_point(pl0, pl2, pl4)) continue;
-        const HTriPointD tri3{v, u, intersect3(pl0, pl2, pl4)};
-        feed(g_tsid, side_value(probe, tri3));
-        feed(g_to2dh, orient2d_h_value(p[0], p[1], tri3, Axis::X));
+        // Phase 3 §3.1: 辺平面（軸方向との外積）。**支持平面より小さいこと。**
+        const PlaneD e01 = plane_from_edge(p[0], p[1], pl0);
+        const PlaneD e12 = plane_from_edge(p[1], p[2], pl0);
+        const PlaneD e20 = plane_from_edge(p[2], p[0], pl0);
+        for (const PlaneD* e : {&e01, &e12, &e20}) {
+            feed(g_en, e->a);
+            feed(g_en, e->b);
+            feed(g_en, e->c);
+            feed(g_ed, e->d);
+        }
+        // 辺平面 3 枚の交点に対する side（§3.1.2 の表の 5b+11）。
+        //
+        // **同じ三角形の 3 辺平面は一点で交わりません**（軸方向との外積で作るので
+        // 3 枚とも支持平面に垂直に近く、交わりが線になる配置が多い）。
+        // **別々の三角形の辺平面**を取ります。
+        const PlaneD f01 = plane_from_edge(p[3], p[4], pl1);
+        const PlaneD g01 = plane_from_edge(p[6], p[7], pl2);
+        if (kritest::intersects_at_point(e01, f01, g01)) {
+            const HPointD ev = intersect3(e01, f01, g01);
+            // **交点を作った平面に対しては side が 0 です。** 別の辺平面で測ります。
+            feed(g_esid, side_value(plane_from_edge(p[4], p[5], pl1), ev));
+            feed(g_esid, side_value(plane_from_edge(p[7], p[8], pl2), ev));
+        }
+        // Phase 3 §2.1.1: 軸平行 2 枚 + 支持平面の交点
+        {
+            const PlaneD ax = plane_axis_aligned(Axis::X, p[3].x);
+            const PlaneD ay = plane_axis_aligned(Axis::Y, p[3].y);
+            if (kritest::intersects_at_point(ax, ay, pl0)) {
+                const HPointD av = intersect3(ax, ay, pl0);
+                feed(g_apw, av.w);
+                feed(g_apx, av.x);
+                feed(g_apx, av.y);
+                feed(g_apx, av.z);
+            }
+        }
     }
 
     Gauge* all[] = {&g_diff,  &g_normal, &g_offset, &g_w,    &g_xyz,  &g_side,
                     &g_sidei, &g_o3d,    &g_o2d,    &g_cmph, &g_pmin, &g_vol,
-                    &g_o2dh,  &g_msid,   &g_mo2dh,  &g_tsid, &g_to2dh};
+                    &g_o2dh,  &g_en,     &g_ed,     &g_apw,  &g_apx,  &g_esid};
 
     std::printf("\n  b = %zu のビット幅実測（SPEC-phase0.md §8.4）\n", b);
     std::printf("  実測値は乱択で到達した下限であり、真の最大値ではない。\n");

@@ -42,16 +42,6 @@ inline int proj_orient(const geom::IPoint& a, const geom::IPoint& b,
     return perturbed_orient(geom::orient2d_h(a, b, p, geom::Axis::X), a, b);
 }
 
-inline int proj_orient(const geom::IPoint& a, const geom::IPoint& b,
-                       const geom::HMidPointD& p) noexcept {
-    return perturbed_orient(geom::orient2d_h(a, b, p, geom::Axis::X), a, b);
-}
-
-inline int proj_orient(const geom::IPoint& a, const geom::IPoint& b,
-                       const geom::HTriPointD& p) noexcept {
-    return perturbed_orient(geom::orient2d_h(a, b, p, geom::Axis::X), a, b);
-}
-
 /// レイ（+X）が三角形を前方で横切るか。
 template <class Point>
 bool crosses(const geom::IPoint& a, const geom::IPoint& b, const geom::IPoint& c, const Point& p) {

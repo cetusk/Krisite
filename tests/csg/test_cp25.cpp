@@ -84,12 +84,13 @@ void run_case(const kritest::Case& c, std::vector<Row>& rows) {
             const TopologyReport t = check_topology(r.triangles);
             std::printf(
                 "    d%u %s C=%zu g=%-2lld F=%-5zu %s | 断片%-4zu 有効セル%zu/%-4zu "
-                "枚数%zu(mesh %zu) 値併合%zu/%zu 中点%zu 重心%zu 欠け辺%zu 余分辺%zu\n",
+                "枚数%zu(mesh %zu) 値併合%zu/%zu 軸線%zu 角%zu 欠け辺%zu 余分辺%zu\n",
                 d, op_name(op), t.components, t.genus_total, t.f,
                 excluded ? "（§9.3 で合否対象外）" : (t.ok() ? "ok" : "**NG**"), st.fragments,
                 st.active_cells, st.total_cells, st.max_planes_at_point,
                 st.max_mesh_planes_at_point, st.merged_by_value, st.constructed_points,
-                st.midpoint_raycasts, st.centroid_raycasts, t.edges_deficient, t.edges_excess);
+                st.interior.axis_line, st.interior.corner_offset, t.edges_deficient,
+                t.edges_excess);
             rows.push_back({c.id, d, op, st, t});
             if (excluded) {
                 // §9.3.1 の適用条件。**広げすぎないための番人です。**

@@ -398,103 +398,20 @@ inline int orient2d_h(const IPoint& a, const IPoint& b, const HPointD& p, Axis a
     return arith::sign(orient2d_h_value(a, b, p, along)) * arith::sign(p.w);
 }
 
-// ---- 中点に対する述語（SPEC-phase1.md §6.1 の代表点フォールバック）-----------
+// ---- 代表点は【平面ベース】で構成します（SPEC-phase3.md §2.1）--------------
 //
-// 中点 m = (X0*W1 + X1*W0 : 2*W0*W1) を**構成せず**に評価します。被符号値 F が
-// 同次座標について線形であることから
+// **中点系・重心系の述語は Phase 3 の段 0 で削除しました。**
 //
-//   F(m) = W1 * F(v0) + W0 * F(v1)
+// 「頂点 → 対角線の中点 → 3 頂点の重心」の 3 段は、2 段目以降が**点を組み合わせる**
+// 操作で、被符号値が 21b+46（b=21 で 487 ビット / 8 リム）に達していました。
 //
-// が厳密に成り立ちます。m の w = 2*W0*W1 の符号は sign(W0)*sign(W1) なので、
-// 述語の符号は sign(F(m)) * sign(W0) * sign(W1) です。
+// 段 0 は EMBER §4.4 に倣い、代表点そのものを平面の交点として作ります。
 //
-// ビット幅の導出は widths.hpp bits::kMidSide / bits::kMidOrient2dH を参照。
-
-/// side(plane, 中点) の被符号値 W1*side_value(v0) + W0*side_value(v1)。
-/// ビット幅 15b+33 → widths.hpp bits::kMidSide
-inline arith::fixed_int<limbs::kMidSide> side_value(const PlaneD& pl,
-                                                    const HMidPointD& m) noexcept {
-    using namespace arith;
-    constexpr std::size_t L = limbs::kMidSide;
-    static_assert(64 * L >= bits::kMidSide, "kMidSide のリム数が上界を下回っている");
-    return add(resize<L>(mul(m.v1.w, side_value(pl, m.v0))),
-               resize<L>(mul(m.v0.w, side_value(pl, m.v1))));
-}
-
-/// 中点の平面に対する側。中点の w = 2*W0*W1 なので符号は sign(W0)*sign(W1)。
-inline int side(const PlaneD& pl, const HMidPointD& m) noexcept {
-    KRISITE_COUNT(side_calls);
-    KRISITE_CHECK(!arith::is_zero(m.v0.w) && !arith::is_zero(m.v1.w), "side: 中点の端点の w == 0");
-    return arith::sign(side_value(pl, m)) * arith::sign(m.v0.w) * arith::sign(m.v1.w);
-}
-
-/// orient2d_h(a, b, 中点) の被符号値。ビット幅 14b+30 → widths.hpp bits::kMidOrient2dH
-inline arith::fixed_int<limbs::kMidOrient2dH> orient2d_h_value(const IPoint& a, const IPoint& b,
-                                                               const HMidPointD& m,
-                                                               Axis along) noexcept {
-    using namespace arith;
-    constexpr std::size_t L = limbs::kMidOrient2dH;
-    static_assert(64 * L >= bits::kMidOrient2dH, "kMidOrient2dH のリム数が上界を下回っている");
-    return add(resize<L>(mul(m.v1.w, orient2d_h_value(a, b, m.v0, along))),
-               resize<L>(mul(m.v0.w, orient2d_h_value(a, b, m.v1, along))));
-}
-
-/// 中点を軸 `along` に沿って投影した 2D の向き。
-inline int orient2d_h(const IPoint& a, const IPoint& b, const HMidPointD& m, Axis along) noexcept {
-    KRISITE_CHECK(!arith::is_zero(m.v0.w) && !arith::is_zero(m.v1.w),
-                  "orient2d_h: 中点の端点の w == 0");
-    return arith::sign(orient2d_h_value(a, b, m, along)) * arith::sign(m.v0.w) *
-           arith::sign(m.v1.w);
-}
-
-// ---- 3 頂点の重心に対する述語（三角形の断片用）------------------------------
+//   主経路: 軸平行 2 枚 + 支持平面の交点（float は候補を出すだけ。判定は厳密）
+//   予備経路: 辺平面を内側へずらした交点（`plane_shifted`）
 //
-// 中点は対角線を要求するので三角形では使えません。重心も同じ線形性で評価します。
-//
-//   F(c) = W1*W2*F(v0) + W0*W2*F(v1) + W0*W1*F(v2)
-//   c の w = 3*W0*W1*W2 なので符号は sign(W0)*sign(W1)*sign(W2)
-
-/// side(plane, 重心) の被符号値。ビット幅 21b+46 → widths.hpp bits::kTriSide
-inline arith::fixed_int<limbs::kTriSide> side_value(const PlaneD& pl,
-                                                    const HTriPointD& c) noexcept {
-    using namespace arith;
-    constexpr std::size_t L = limbs::kTriSide;
-    static_assert(64 * L >= bits::kTriSide, "kTriSide のリム数が上界を下回っている");
-    auto acc = resize<L>(mul(mul(c.v1.w, c.v2.w), side_value(pl, c.v0)));
-    acc = add(acc, resize<L>(mul(mul(c.v0.w, c.v2.w), side_value(pl, c.v1))));
-    acc = add(acc, resize<L>(mul(mul(c.v0.w, c.v1.w), side_value(pl, c.v2))));
-    return acc;
-}
-
-/// 重心の平面に対する側。
-inline int side(const PlaneD& pl, const HTriPointD& c) noexcept {
-    KRISITE_COUNT(side_calls);
-    KRISITE_CHECK(!arith::is_zero(c.v0.w) && !arith::is_zero(c.v1.w) && !arith::is_zero(c.v2.w),
-                  "side: 重心の頂点の w == 0");
-    return arith::sign(side_value(pl, c)) * arith::sign(c.v0.w) * arith::sign(c.v1.w) *
-           arith::sign(c.v2.w);
-}
-
-/// orient2d_h(a, b, 重心) の被符号値。ビット幅 20b+43 → widths.hpp bits::kTriOrient2dH
-inline arith::fixed_int<limbs::kTriOrient2dH> orient2d_h_value(const IPoint& a, const IPoint& b,
-                                                               const HTriPointD& c,
-                                                               Axis along) noexcept {
-    using namespace arith;
-    constexpr std::size_t L = limbs::kTriOrient2dH;
-    static_assert(64 * L >= bits::kTriOrient2dH, "kTriOrient2dH のリム数が上界を下回っている");
-    auto acc = resize<L>(mul(mul(c.v1.w, c.v2.w), orient2d_h_value(a, b, c.v0, along)));
-    acc = add(acc, resize<L>(mul(mul(c.v0.w, c.v2.w), orient2d_h_value(a, b, c.v1, along))));
-    acc = add(acc, resize<L>(mul(mul(c.v0.w, c.v1.w), orient2d_h_value(a, b, c.v2, along))));
-    return acc;
-}
-
-/// 重心を軸 `along` に沿って投影した 2D の向き。
-inline int orient2d_h(const IPoint& a, const IPoint& b, const HTriPointD& c, Axis along) noexcept {
-    KRISITE_CHECK(!arith::is_zero(c.v0.w) && !arith::is_zero(c.v1.w) && !arith::is_zero(c.v2.w),
-                  "orient2d_h: 重心の頂点の w == 0");
-    return arith::sign(orient2d_h_value(a, b, c, along)) * arith::sign(c.v0.w) *
-           arith::sign(c.v1.w) * arith::sign(c.v2.w);
-}
+// **どちらも一般の 3 平面交点なので、side は 9b+20 のままです。**
+// 構成は csg/interior.hpp、幅の導出は widths.hpp bits::kAxisPointXyz。
 
 // ---- 入力メッシュの向き検査（SPEC-phase1.md §3.4）----------------------------
 
