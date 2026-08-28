@@ -1,0 +1,265 @@
+// Krisite — CP5 全域（SPEC-phase2.md §13）
+//
+// **CP1〜CP4 で入った機構をすべて有効にして全域を回します。**
+//
+// 個々の機構は CP1〜CP4 で確かめました。**CP5 が新しく見るのは機構どうしの相互作用**で、
+// どのチェックポイントでも単独では通らなかった経路が 3 つあります。
+//
+//   適応分割 × 分裂          接触辺がセル平面で分割された状態での分裂
+//   構成点の保持 × T 解決    保持された点が T 頂点として挿入される経路
+//   early-out × 分裂         arrangement を省いたセルの断片が分裂に回る経路
+//
+// **「全部有効にしたら通った」だけでは足りません。** 3 つの経路を**実際に踏んだこと**を
+// 数えて、踏んでいなければ落とします（`CLAUDE.md`「機構を足したら、その機構が空回りして
+// いないことを別に検査してください」）。計数は
+//
+//   TJunctionStats::inserted_from_cache   構成点の保持 × T 解決
+//   SplitStats::split_from_early_out      early-out × 分裂
+//   適応分割で葉の深さに差があり、かつ分裂が起きた構成の数
+//
+// ---
+//
+// ## 分裂 on / off で期待値が反転します（§13 の表）
+//
+// | | 分裂 OFF | 分裂 ON |
+// |---|---|---|
+// | §9.3 の除外            | 3 構成       | **0 件** |
+// | 値の重複する頂点が無い | 成立         | **成立しない**（分裂が値を複製する） |
+// | $\chi$ の偶奇          | 奇数になり得る | 常に偶数 |
+//
+// **同じテストで両方を見ようとしないこと。** ここは分裂 ON / OFF を**別々に**判定し、
+// 両者をまたぐ検査は「分裂で変わってはいけない量」（$C$、$F$、幾何）に限ります。
+//
+// ## §9.4.2 分裂の有無で体積が一致すること
+//
+// **体積そのものは GMP が要ります**（構成点は有理数で、三角形ごとに分母が違う。
+// `test_volume_gmp.cpp` の注記）。そこで常時走る側は**より強い不変量**で見ます。
+//
+// > **分裂の前後で、頂点の【値】で見た三角形の多重集合が一致すること。**
+//
+// 分裂は頂点 ID を付け替えるだけで幾何を動かさないので（§5.1.3）、これが一致すれば
+// **どんな測度でも一致します。体積の一致はその系です。** 体積そのものの突き合わせは
+// `volume_gmp`（CI の GMP ジョブ）が担当します。
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+#include "krisite/csg/boolean.hpp"
+
+#include "corpus.hpp"
+#include "test_util.hpp"
+
+using namespace krisite::csg;
+using krisite::mesh::check_topology;
+using krisite::mesh::TopologyReport;
+using krisite::mesh::TriMesh;
+
+namespace {
+
+constexpr unsigned kMaxDepth = 3;
+constexpr std::size_t kPasses = kMaxDepth + 2;  ///< 固定深度 0〜3 + 出荷時構成
+
+/// **CP1〜CP4 の機構をすべて有効にした構成。**
+///
+/// **既定値に依存しません**（§9.4 の CI ジョブで既定が反転するため）。
+BoolOptions all_on(unsigned depth, bool adaptive) {
+    BoolOptions o;
+    o.depth = depth;
+    o.cull_planes = true;     // CP1
+    o.adaptive = adaptive;    // CP2
+    o.leaf_threshold = 0;     // CP2
+    o.early_out = true;       // CP2
+    o.cache_points = true;    // CP3
+    o.split_contacts = true;  // CP4（呼び出し側で上書きする）
+    return o;
+}
+
+const char* op_name(BoolOp op) {
+    switch (op) {
+        case BoolOp::Union:
+            return "∪";
+        case BoolOp::Intersection:
+            return "∩";
+        default:
+            return "\\";
+    }
+}
+
+/// 頂点の**値**で見た三角形の多重集合（§9.4.2）。
+///
+/// 値が等しい頂点に同じ番号を振り直し、三角形は**巡回順を保ったまま**最小の番号が
+/// 先頭に来るよう回します（向きを落とさないため、並べ替えはしません）。
+std::vector<std::array<std::uint32_t, 3>> geometric_key(const BoolMesh& m) {
+    const std::size_t n = m.vertices.size();
+    std::vector<std::uint32_t> order(n);
+    for (std::uint32_t i = 0; i < n; ++i) order[i] = i;
+    std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
+        return krisite::geom::lex_less(m.vertices[a], m.vertices[b]);
+    });
+    std::vector<std::uint32_t> canon(n, 0);
+    std::uint32_t next = 0;
+    for (std::size_t i = 0; i < order.size();) {
+        std::size_t j = i;
+        while (j < order.size() &&
+               krisite::geom::h_equal(m.vertices[order[i]], m.vertices[order[j]])) {
+            canon[order[j]] = next;
+            ++j;
+        }
+        ++next;
+        i = j;
+    }
+    std::vector<std::array<std::uint32_t, 3>> out;
+    out.reserve(m.triangles.size());
+    for (const krisite::mesh::Tri& t : m.triangles) {
+        const std::uint32_t c[3] = {canon[t[0]], canon[t[1]], canon[t[2]]};
+        int s = 0;
+        if (c[1] < c[s]) s = 1;
+        if (c[2] < c[s]) s = 2;
+        out.push_back({c[s], c[(s + 1) % 3], c[(s + 2) % 3]});
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+struct Totals {
+    std::size_t configs = 0;
+    std::size_t split_configs = 0;  ///< 分裂が実際に起きた構成
+    // ---- 相互作用の計数（**空回りの番人**）----
+    std::size_t adaptive_x_split = 0;   ///< 葉の深さに差があり、かつ分裂が起きた構成
+    std::size_t cache_x_tjunction = 0;  ///< 保持された点が T 頂点として入った回数
+    std::size_t early_out_x_split = 0;  ///< early-out 由来の三角形に接する頂点の分裂
+    std::size_t uneven_leaves = 0;      ///< 葉の深さに差が出た構成
+    std::size_t early_out_cells = 0;
+    std::size_t cache_hits = 0;
+    std::size_t t_inserted = 0;
+};
+
+Totals g;
+
+void run_case(const kritest::Case& c) {
+    const TriMesh a = c.make_a(), b = c.make_b();
+
+    for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
+        for (std::size_t pass = 0; pass < kPasses; ++pass) {
+            const bool adaptive = (pass == kPasses - 1);
+            const unsigned depth = adaptive ? kMaxDepth : static_cast<unsigned>(pass);
+            const std::string tag =
+                std::string("ケース ") + c.id + " " + op_name(op) + "（" +
+                (adaptive ? std::string("出荷時構成") : ("深度 " + std::to_string(depth))) + "）";
+
+            // 正解器は **Phase 1 の構成**（機構をすべて外した固定深度）です（§0.1）。
+            BoolOptions base_off = kritest::phase1_options(depth);
+            BoolOptions base_on = base_off;
+            base_on.split_contacts = true;
+            BoolOptions on_off = all_on(depth, adaptive);
+            on_off.split_contacts = false;
+            BoolOptions on_on = all_on(depth, adaptive);
+
+            BoolStats s_base_off, s_base_on, s_off, s_on;
+            const BoolMesh r_base_off = boolean_op(a, b, op, base_off, &s_base_off);
+            const BoolMesh r_base_on = boolean_op(a, b, op, base_on, &s_base_on);
+            const BoolMesh r_off = boolean_op(a, b, op, on_off, &s_off);
+            const BoolMesh r_on = boolean_op(a, b, op, on_on, &s_on);
+            const TopologyReport t_base_off = check_topology(r_base_off.triangles);
+            const TopologyReport t_base_on = check_topology(r_base_on.triangles);
+            const TopologyReport t_off = check_topology(r_off.triangles);
+            const TopologyReport t_on = check_topology(r_on.triangles);
+            ++g.configs;
+
+            // ---- (1) 機構を全部入れても答えが変わらないこと（§9.1 の一般化）----
+            //
+            // **分裂 ON / OFF を別々に突き合わせます。** 期待値が反転する量
+            // （除外・χ の偶奇・値の重複）を混ぜないためです（§13 の表）。
+            KRI_CHECK_MSG(t_off.components == t_base_off.components,
+                          tag + "（分裂 OFF）: C が Phase 1 の構成と違う" +
+                              kritest::pair_msg(t_base_off.components, t_off.components));
+            KRI_CHECK_MSG(t_off.chi == t_base_off.chi,
+                          tag + "（分裂 OFF）: χ が Phase 1 の構成と違う" +
+                              kritest::pair_msg(t_base_off.chi, t_off.chi));
+            KRI_CHECK_MSG(t_on.components == t_base_on.components,
+                          tag + "（分裂 ON）: C が Phase 1 の構成と違う" +
+                              kritest::pair_msg(t_base_on.components, t_on.components));
+            KRI_CHECK_MSG(t_on.chi == t_base_on.chi,
+                          tag + "（分裂 ON）: χ が Phase 1 の構成と違う" +
+                              kritest::pair_msg(t_base_on.chi, t_on.chi));
+
+            // ---- (2) 分裂 ON の意味論（§5）----
+            KRI_CHECK_MSG(t_on.ok(), tag + ": 分裂後も多様体になっていない（§5.3）");
+            if (!t_on.empty) KRI_CHECK_MSG(t_on.chi_even, tag + ": 分裂後も χ が奇数（§5.4）");
+            const auto& sp = s_on.split;
+            KRI_CHECK_MSG(sp.unresolved == 0, tag + ": §5.1.2.1 の停止に到達した");
+            KRI_CHECK_MSG(sp.predicted_delta_v == sp.actual_delta_v,
+                          tag + ": ΔV の予測と実測が違う" +
+                              kritest::pair_msg(sp.predicted_delta_v, sp.actual_delta_v));
+            KRI_CHECK_MSG(sp.predicted_delta_e == sp.actual_delta_e,
+                          tag + ": ΔE の予測と実測が違う" +
+                              kritest::pair_msg(sp.predicted_delta_e, sp.actual_delta_e));
+            KRI_CHECK_MSG(sp.predicted_delta_chi == t_on.chi - t_off.chi,
+                          tag + ": Δχ が出力の χ の差と一致しない");
+
+            // ---- (3) 分裂で変わってはいけない量（§5.1.2 / §5.1.3）----
+            KRI_CHECK_MSG(t_on.components == t_off.components,
+                          tag + ": **分裂で C が変わった**（§5.5.1）" +
+                              kritest::pair_msg(t_off.components, t_on.components));
+            KRI_CHECK_MSG(t_on.f == t_off.f, tag + ": 分裂で面が増減した（§5.1.3）");
+
+            // ---- (4) §9.4.2 分裂の有無で幾何が一致すること（体積の一致はこの系）----
+            KRI_CHECK_MSG(geometric_key(r_off) == geometric_key(r_on),
+                          tag +
+                              ": **分裂で三角形の幾何が変わった**（§9.4.2）。"
+                              "分裂は頂点 ID の付け替えだけのはずです");
+
+            // ---- 相互作用の計数 ----
+            if (sp.split_vertices > 0) ++g.split_configs;
+            if (s_on.leaf_depth_max > s_on.leaf_depth_min) {
+                ++g.uneven_leaves;
+                if (sp.split_vertices > 0) ++g.adaptive_x_split;
+            }
+            g.cache_x_tjunction += s_on.t.inserted_from_cache;
+            g.early_out_x_split += sp.split_from_early_out;
+            g.early_out_cells += s_on.early_out_cells;
+            g.cache_hits += s_on.cache_hits;
+            g.t_inserted += s_on.t.inserted;
+        }
+    }
+}
+
+/// **空回りの番人。** 3 つの経路を踏んでいなければ、CP5 は何も新しく検証していません。
+void check_not_vacuous() {
+    // **期待値は実測ではなく式で持ちます**（`CLAUDE.md`）。
+    const std::size_t expect = kritest::corpus().size() * 3 * kPasses;
+    std::printf("\n  §13 CP5 の記録（%zu ケース × 3 演算 × %zu パス = %zu 構成、期待 %zu）\n",
+                kritest::corpus().size(), kPasses, g.configs, expect);
+    std::printf("    分裂が起きた構成 %zu / 葉の深さに差が出た構成 %zu\n", g.split_configs,
+                g.uneven_leaves);
+    std::printf("    T 頂点 %zu（うち保持された点 %zu）/ キャッシュ命中 %zu / early-out セル %zu\n",
+                g.t_inserted, g.cache_x_tjunction, g.cache_hits, g.early_out_cells);
+    std::printf("\n    **相互作用（どれかが 0 なら CP5 は空回りです）**\n");
+    std::printf("      適応分割 × 分裂        %zu 構成\n", g.adaptive_x_split);
+    std::printf("      構成点の保持 × T 解決  %zu 回\n", g.cache_x_tjunction);
+    std::printf("      early-out × 分裂       %zu 回\n", g.early_out_x_split);
+
+    KRI_CHECK_MSG(g.configs == expect, "構成数が期待と違う。**空回りの疑い**");
+    KRI_CHECK_MSG(g.adaptive_x_split > 0,
+                  "**適応分割 × 分裂を 1 度も踏んでいない。** 葉の深さに差がある状態で"
+                  "接触が分裂する配置がコーパスにありません");
+    KRI_CHECK_MSG(g.cache_x_tjunction > 0,
+                  "**構成点の保持 × T 解決を 1 度も踏んでいない。** 保持された点が"
+                  "T 頂点として挿入される配置がコーパスにありません");
+    KRI_CHECK_MSG(g.early_out_x_split > 0,
+                  "**early-out × 分裂を 1 度も踏んでいない。** arrangement を省いたセルの"
+                  "断片が分裂に回る配置がコーパスにありません");
+}
+
+}  // namespace
+
+int main() {
+    std::printf("\n  CP5 全域 — 機構どうしの相互作用（SPEC-phase2 §13）\n");
+    KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
+    for (const kritest::Case& c : kritest::corpus()) run_case(c);
+    check_not_vacuous();
+    std::printf("\n");
+    return kritest::finish("csg/cp5");
+}

@@ -39,11 +39,17 @@ krisite_add_test(adaptive      csg/test_adaptive.cpp)
 krisite_add_test(early_out     csg/test_early_out.cpp)
 # SPEC-phase2 §4 / CP3。**キャッシュ無効側が正解器**。値まで一致することを要求する
 krisite_add_test(cache         csg/test_cache.cpp)
-# SPEC-phase2 §5 / CP4。**§5.5.1 の C 不変性が対応付けの唯一の番人**
+# SPEC-phase2 §5 / CP4。**§5.5.1 の壊れ方 2 通りを両方見る**
+#   誤った組で分裂が起きる   → C 不変性
+#   誤った組で分裂が起きない → 分裂後の多様体性 + ΔE の予測不一致
 krisite_add_test(split_semantics csg/test_split_semantics.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
+# SPEC-phase2 §13 の CP5。**機構どうしの相互作用**（適応分割 × 分裂 /
+# 構成点の保持 × T 解決 / early-out × 分裂）。3 経路を踏んだ回数を数え、
+# 0 なら落とす。§9.4.2 の「分裂の有無で幾何が一致する」もここが常時見る
+krisite_add_test(cp5           csg/test_cp5.cpp)
 krisite_add_test(idempotence   csg/test_idempotence.cpp)
 krisite_add_test(depth_monotonic csg/test_depth_monotonic.cpp)
 
