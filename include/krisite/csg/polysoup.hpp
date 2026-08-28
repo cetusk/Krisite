@@ -45,19 +45,116 @@ struct Poly {
     std::uint32_t tag = 0;  ///< 由来のタグ（§4.3。元の多角形 ID）
 };
 
+/// 指示関数（`SPEC-phase3.md` §5.2）。**表ではなく【関数】として持ちます。**
+///
+/// > 真理値表を materialize しないこと。`sources` が $n$ 個なら $2^n$ 項になり、
+/// > 工具を 20 個引くミリングでは 100 万項です。そして **CP3 で $\mathbb{Z}^n$ に
+/// > 一般化すると、表そのものが作れません**（定義域が無限）。
+///
+/// 合成は関数合成、評価は呼び出しです。式木を平らな配列で持ち、**最後の要素が根**。
+/// 子の添字は必ず自分より小さいので、前から 1 回走査すれば評価できます。
+///
+/// **定義域は「各 source の状態」です。** CP2 は内外の 0/1 ですが、CP3 で巻き数
+/// （$\mathbb{Z}^n$）に変えても「**非零なら内側**」の規約は変わりません（§5.1）。
+struct Indicator {
+    enum class Kind : std::uint8_t { Source, Not, And, Or };
+    struct Node {
+        Kind kind = Kind::Source;
+        std::uint32_t src = 0;  ///< Kind::Source のとき、sources の添字
+        std::uint32_t a = 0, b = 0;
+    };
+    std::vector<Node> nodes;
+
+    bool eval(const std::vector<std::int32_t>& w) const {
+        KRISITE_CHECK(!nodes.empty(), "Indicator: 空の式");
+        std::vector<char> v(nodes.size(), 0);
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            const Node& n = nodes[i];
+            switch (n.kind) {
+                case Kind::Source:
+                    KRISITE_CHECK(n.src < w.size(), "Indicator: source の添字が範囲外");
+                    v[i] = (w[n.src] != 0) ? 1 : 0;  // **非零なら内側**（§5.1）
+                    break;
+                case Kind::Not:
+                    v[i] = v[n.a] ? 0 : 1;
+                    break;
+                case Kind::And:
+                    v[i] = (v[n.a] && v[n.b]) ? 1 : 0;
+                    break;
+                case Kind::Or:
+                    v[i] = (v[n.a] || v[n.b]) ? 1 : 0;
+                    break;
+            }
+        }
+        return v.back() != 0;
+    }
+};
+
+/// 「source `i` の内側」だけを見る指示関数。
+inline Indicator indicator_source(std::uint32_t src) {
+    Indicator f;
+    f.nodes.push_back({Indicator::Kind::Source, src, 0, 0});
+    return f;
+}
+
+/// 演算の種類（`boolean.hpp` の `BoolOp` に依存しないよう、ここで持つ）。
+enum class Compose { Union, Intersection, Difference };
+
+/// **合成は関数合成です。** `y` の source 添字と子の添字をずらして連結し、根を足すだけ。
+inline Indicator compose(const Indicator& x, const Indicator& y, std::uint32_t src_offset,
+                         Compose how) {
+    Indicator f = x;
+    const auto base = static_cast<std::uint32_t>(f.nodes.size());
+    const std::uint32_t root_x = base - 1;
+    for (const Indicator::Node& n : y.nodes) {
+        Indicator::Node m = n;
+        if (m.kind == Indicator::Kind::Source) {
+            m.src += src_offset;
+        } else {
+            m.a += base;
+            if (m.kind == Indicator::Kind::And || m.kind == Indicator::Kind::Or) m.b += base;
+        }
+        f.nodes.push_back(m);
+    }
+    const auto root_y = static_cast<std::uint32_t>(f.nodes.size() - 1);
+    switch (how) {
+        case Compose::Union:
+            f.nodes.push_back({Indicator::Kind::Or, 0, root_x, root_y});
+            break;
+        case Compose::Intersection:
+            f.nodes.push_back({Indicator::Kind::And, 0, root_x, root_y});
+            break;
+        case Compose::Difference: {
+            f.nodes.push_back({Indicator::Kind::Not, 0, root_y, 0});
+            const auto not_y = static_cast<std::uint32_t>(f.nodes.size() - 1);
+            f.nodes.push_back({Indicator::Kind::And, 0, root_x, not_y});
+            break;
+        }
+    }
+    return f;
+}
+
 /// 凸多角形スープ。**CSG について閉じた中間表現。**
 struct PolySoup {
     PlaneTable table;
     std::vector<Poly> polys;
     /// **生成 0 の整数メッシュ。** 分類の台であり、連鎖しても増えるだけで丸められない
     std::vector<mesh::TriMesh> sources;
-    /// 指示関数の真理値表。添字は「各入力の内側なら 1」を立てたビット列（§5.2）。
-    /// 大きさは 2^sources.size()
-    std::vector<std::uint8_t> indicator;
+    /// 指示関数（§5.2）。**表ではなく関数**
+    Indicator indicator;
 
     std::size_t source_count() const noexcept { return sources.size(); }
-    bool inside(std::uint32_t membership) const noexcept { return indicator[membership] != 0; }
 };
+
+/// ビット列を「各 source の状態」に開く。`own` の面上の断片について、
+/// その source の内外を `own_inside` で与えます（表裏の 2 通りを作るため）。
+inline std::vector<std::int32_t> to_membership(std::uint32_t bits, std::size_t n, std::uint32_t own,
+                                               bool own_inside) {
+    std::vector<std::int32_t> w(n, 0);
+    for (std::size_t i = 0; i < n; ++i) w[i] = ((bits >> i) & 1u) ? 1 : 0;
+    w[own] = own_inside ? 1 : 0;
+    return w;
+}
 
 /// 入力メッシュ 1 枚を、そのまま「内側 = そのメッシュの内側」のスープにする。
 ///
@@ -67,7 +164,7 @@ struct PolySoup {
 inline PolySoup from_mesh(const mesh::TriMesh& m) {
     PolySoup s;
     s.sources.push_back(m);
-    s.indicator = {0, 1};  // 1 ビット: 内側なら in
+    s.indicator = indicator_source(0);  // 「source 0 の内側」
     s.polys.reserve(m.triangles.size());
     for (std::size_t ti = 0; ti < m.triangles.size(); ++ti) {
         const mesh::Tri& t = m.triangles[ti];

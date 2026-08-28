@@ -179,6 +179,16 @@ inline constexpr std::size_t kOffsetShifted = kOffset + 1;
 inline constexpr std::size_t kAxisPointW = 2 * b + 6;
 inline constexpr std::size_t kAxisPointXyz = 3 * b + 8;
 
+/// 2 つの平面の法線の内積の符号（`SPEC-phase3.md` §7 の手順で導出）。
+///
+/// 面が重なっているとき、**どちら向きに重なっているか**の判定に使います。
+///
+///   $N_1 \cdot N_2$ の各項 : $(2b+3) + (2b+3) = 4b+6$
+///   3 項の和               : $4b+8$
+///
+/// b = 21 で 92 ビット / 2 リム、b = 26 で 112 ビット / 2 リム。
+inline constexpr std::size_t kNormalDot = 4 * b + 8;
+
 }  // namespace bits
 
 namespace limbs {
@@ -210,6 +220,7 @@ inline constexpr std::size_t kEdgeNormal = limbs_for(bits::kEdgeNormal);
 inline constexpr std::size_t kEdgeOffset = limbs_for(bits::kEdgeOffset);
 inline constexpr std::size_t kAxisPointW = limbs_for(bits::kAxisPointW);
 inline constexpr std::size_t kAxisPointXyz = limbs_for(bits::kAxisPointXyz);
+inline constexpr std::size_t kNormalDot = limbs_for(bits::kNormalDot);
 
 /// Phase 0 の述語が要求する最大リム数（SPEC §3.3 の表の最右列）。
 /// b = 21 → 5、b = 26 → 6。
@@ -236,6 +247,7 @@ static_assert(bits::kShiftLog2 + 1 <= bits::kOffset, "ずらし幅の上限が d
 // 軸平行 2 枚を含む交点が一般の構成点に収まること（新しい点の型を作らない条件）
 static_assert(bits::kAxisPointW <= bits::kHomoW && bits::kAxisPointXyz <= bits::kHomoXyz,
               "軸平行を含む交点が HPointD に収まらない");
+static_assert(64 * limbs::kNormalDot >= bits::kNormalDot, "kNormalDot のリム数不足");
 // 軸平行平面のオフセットは kOffset に収まること
 static_assert(bits::kAxisOffset <= bits::kOffset, "軸平行平面のオフセットが kOffset を超える");
 
