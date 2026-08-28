@@ -125,6 +125,7 @@ cmake --build build-rel
 | `KRISITE_BUILD_TESTS_WITH_GMP` | **OFF** | GMP 差分テスト（LGPL、テスト専用） |
 | `KRISITE_BUILD_TESTS_WITH_MANIFOLD` | **OFF** | Manifold 正解器（Apache-2.0、テスト専用） |
 | `KRISITE_BUILD_MUTANTS` | OFF | 変異テスト（検査 OFF の構成が必要） |
+| `KRISITE_DEFAULT_ADAPTIVE` | OFF | ブール演算の既定を適応分割 + early-out + 構成点の保持にする |
 | `KRISITE_BUILD_BENCH` | OFF | ベンチマークのビルド |
 
 `KRISITE_CHECKED_ARITH` は `NDEBUG` とは独立に効きます。Release ビルドでも
@@ -142,6 +143,7 @@ CI は他に次のジョブを回します。
 |---|---|
 | 可搬経路 | `__int128` / 32bit 筆算のフォールバックを明示的に強制 |
 | GMP 差分テスト | 算術 $10^7$ 件・述語 $10^6$ 件の突き合わせ、体積の恒等式 |
+| **適応分割モード** | 既定を適応分割に反転し、**Phase 1 の検査体系が全通過する**ことを確認 |
 | Manifold 正解器 | ブール出力の連結成分数と種数を独立実装と照合 |
 | **変異テスト** | 意図的に誤りを埋め、**検出されること**と**検出しない組合せ**の両方を固定 |
 | clang-format | 書式 |

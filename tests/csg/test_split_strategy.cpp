@@ -81,9 +81,13 @@ void run_case(const kritest::Case& c) {
     for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
         for (unsigned d = 0; d <= kMaxDepth; ++d) {
             BoolStats s_off, s_on;
-            // 絞り込み無効 = Phase 1 の挙動（正解器）
-            const BoolMesh r_off = boolean_op(a, b, op, d, &s_off, false);
-            const BoolMesh r_on = boolean_op(a, b, op, d, &s_on, true);
+            // 絞り込み無効 = Phase 1 の挙動（正解器）。**既定値に依存しないこと**
+            BoolOptions off = kritest::phase1_options(d);
+            off.cull_planes = false;
+            BoolOptions on = off;
+            on.cull_planes = true;
+            const BoolMesh r_off = boolean_op(a, b, op, off, &s_off);
+            const BoolMesh r_on = boolean_op(a, b, op, on, &s_on);
             const TopologyReport t_off = check_topology(r_off.triangles);
             const TopologyReport t_on = check_topology(r_on.triangles);
 

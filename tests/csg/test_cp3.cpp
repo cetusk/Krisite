@@ -93,7 +93,12 @@ void run_case(const kritest::Case& c) {
         bool first = true;
         for (unsigned d = 0; d <= kMaxDepth; ++d) {
             BoolStats st;
-            const BoolMesh r = boolean_op(a, b, op, d, &st);
+            // **Phase 1 の意味論のまま（分裂 OFF）で見ます**（SPEC-phase2 §5.2）。
+            // 分裂は設計どおり頂点の値を複製するので、§5.3 の第2段を突く
+            // 「値の重複が無いこと」の検査と衝突します。**分裂側は
+            // `tests/csg/test_split_semantics.cpp` が受け持ちます。**
+            const BoolOptions opt = kritest::corpus_options(d);
+            const BoolMesh r = boolean_op(a, b, op, opt, &st);
             const TopologyReport t = check_topology(r.triangles);
             const std::string tag = std::string("ケース ") + c.id + " " + op_name(op) + "（深度 " +
                                     std::to_string(d) + "）";
@@ -166,6 +171,24 @@ void run_case(const kritest::Case& c) {
 
 }  // namespace
 
+/// **§9.4 のジョブが空回りしていないことの番人。**
+///
+/// 既定を反転させても、テストが構成を明示していれば何も変わりません。**実際に一度、
+/// 全テストを固定深度に固定したせいでジョブが無意味になりかけました。**
+/// 適応分割モードでは**葉の深さに差が出ている**ことを確かめます。
+void check_adaptive_mode_effective() {
+    if (!kritest::adaptive_mode()) return;
+    unsigned gap = 0;
+    for (const kritest::Case& c : kritest::corpus()) {
+        const TriMesh a = c.make_a(), b = c.make_b();
+        BoolStats st;
+        boolean_op(a, b, BoolOp::Union, kritest::corpus_options(3), &st);
+        gap = std::max(gap, st.leaf_depth_max - st.leaf_depth_min);
+    }
+    std::printf("\n  §9.4 適応分割モード: 葉の深さの差 最大 %u 段\n", gap);
+    KRI_CHECK_MSG(gap >= 2, "適応分割モードなのに葉の深さに差が出ていない。**空回りです**");
+}
+
 int main() {
     std::printf("\n  CP3 — 全ケース × 3 演算 × 深度 0〜3（SPEC-phase1 §11）\n");
     KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
@@ -196,5 +219,6 @@ int main() {
     KRI_CHECK_MSG(checked == expect, "合否に使った組数が期待と違う（" + std::to_string(checked) +
                                          " 対 " + std::to_string(expect) + "）");
     std::printf("\n");
+    check_adaptive_mode_effective();
     return kritest::finish("csg/cp3");
 }

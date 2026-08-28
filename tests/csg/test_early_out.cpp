@@ -64,8 +64,8 @@ void run_case(const kritest::Case& c) {
     std::printf("\n  ケース %-4s %s\n", c.id, c.what);
 
     for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
-        BoolOptions off;
-        off.depth = kMaxDepth;
+        // **既定値に依存しないこと**（§9.4 の CI ジョブで既定が反転する）
+        BoolOptions off = kritest::phase1_options(kMaxDepth);
         off.adaptive = true;
         BoolOptions on = off;
         on.early_out = true;

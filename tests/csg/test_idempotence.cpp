@@ -116,9 +116,10 @@ void run(const kritest::Case& c) {
 
     for (unsigned d = 0; d <= 3; ++d) {
         BoolStats si, su, sd;
-        const BoolMesh inter = boolean_op(a, a, BoolOp::Intersection, d, &si);
-        const BoolMesh uni = boolean_op(a, a, BoolOp::Union, d, &su);
-        const BoolMesh diff = boolean_op(a, a, BoolOp::Difference, d, &sd);
+        const BoolMesh inter =
+            boolean_op(a, a, BoolOp::Intersection, kritest::corpus_options(d), &si);
+        const BoolMesh uni = boolean_op(a, a, BoolOp::Union, kritest::corpus_options(d), &su);
+        const BoolMesh diff = boolean_op(a, a, BoolOp::Difference, kritest::corpus_options(d), &sd);
         const std::string tag =
             std::string("ケース ") + c.id + "（深度 " + std::to_string(d) + "）";
 

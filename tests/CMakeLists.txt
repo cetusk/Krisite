@@ -37,6 +37,10 @@ krisite_add_test(adaptive      csg/test_adaptive.cpp)
 # SPEC-phase2 §3.2 / §3.3 / CP2。**early-out 無効側が正解器**。省いても答えが
 # 変わらないことを直接検査する
 krisite_add_test(early_out     csg/test_early_out.cpp)
+# SPEC-phase2 §4 / CP3。**キャッシュ無効側が正解器**。値まで一致することを要求する
+krisite_add_test(cache         csg/test_cache.cpp)
+# SPEC-phase2 §5 / CP4。**§5.5.1 の C 不変性が対応付けの唯一の番人**
+krisite_add_test(split_semantics csg/test_split_semantics.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
@@ -208,6 +212,53 @@ if(KRISITE_BUILD_MUTANTS)
     if(KRISITE_GMP_FOUND)
         krisite_add_mutant(6 KRISITE_MUTATION_LOOSE_EARLY_OUT=1 volume_gmp FAIL GMP)
     endif()
+
+    # 変異 7: §4.2 の構成点キャッシュのキーから 1 平面を落とす。
+    #   **主検出器: cache（キャッシュ有無の比較。値の完全一致）**
+    #
+    # **異なる3つ組が同じキーに落ち、別の点を同一視します。** 静かに壊れる種類の誤りです。
+    #
+    #   cache       … 出力の**値**が変わる（1101 件）
+    #   volume_gmp  … **体積。別の立体を作っている**（97 件）
+    #
+    # **キャッシュ無効のテストは素通りします。** 変異が発火しないので当然です。
+    krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 cache     FAIL)
+    krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 adaptive  PASS)
+    krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 early_out PASS)
+    krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 cp3       PASS)
+    if(KRISITE_GMP_FOUND)
+        krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 volume_gmp FAIL GMP)
+    endif()
+
+    # 変異 8: §5 の接触の分裂を無効化する（辺・頂点の両方）。
+    #   **主検出器: split_semantics（位相。多様体性）**
+    #
+    # **8a / 8b の 2 変種も用意します**（§9.3）。**11b は辺分裂でしか直りません。**
+    #
+    #   8   両方を無効        FAIL 28 / 2359
+    #   8a  辺の分裂だけ無効   FAIL 45 / 2359（= 頂点分裂だけ。11b が直らない）
+    #   8b  頂点の分裂だけ無効 FAIL 22 / 2359（= 辺分裂だけ。4T / 4T′ が直らない）
+    #
+    # **体積は分裂の誤りを検出しません**（§5.1.3 のとおり体積不変）。位相でしか出ません。
+    # cp3 / adaptive は分裂 OFF で回るので素通りします。
+    krisite_add_mutant(8 KRISITE_MUTATION_NO_SPLIT=1 split_semantics FAIL)
+    krisite_add_mutant(8 KRISITE_MUTATION_NO_SPLIT=1 cp3             PASS)
+    krisite_add_mutant(8 KRISITE_MUTATION_NO_SPLIT=1 adaptive        PASS)
+    krisite_add_mutant(8a KRISITE_MUTATION_NO_EDGE_SPLIT=1 split_semantics FAIL)
+    krisite_add_mutant(8a KRISITE_MUTATION_NO_EDGE_SPLIT=1 cp3             PASS)
+    krisite_add_mutant(8b KRISITE_MUTATION_NO_VERTEX_SPLIT=1 split_semantics FAIL)
+    krisite_add_mutant(8b KRISITE_MUTATION_NO_VERTEX_SPLIT=1 cp3             PASS)
+
+    # 変異 9: §5.1.2 の対応付けを owner に戻す。
+    #   **主検出器: split_semantics（§5.5.1 の C 不変性の検査群）**
+    #
+    # **ケース 16（自己接触）でのみ発火します**（§8.1）。13 / 14 / 15 は自己接触を
+    # 作らないので、owner でも連結成分でも同じ結果になり**素通りします。**
+    #
+    # **$\chi$ でも体積でも捕まりません。** cp3 / adaptive / volume_gmp はすべて素通り。
+    krisite_add_mutant(9 KRISITE_MUTATION_SPLIT_BY_OWNER=1 split_semantics FAIL)
+    krisite_add_mutant(9 KRISITE_MUTATION_SPLIT_BY_OWNER=1 cp3             PASS)
+    krisite_add_mutant(9 KRISITE_MUTATION_SPLIT_BY_OWNER=1 adaptive        PASS)
 
     # 変異 10: §2.4.3 の T 頂点解決を無効化する（SPEC-phase2 §9.3）。
     #   **主検出器: 位相検査（adaptive。辺の次数 1）**

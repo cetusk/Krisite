@@ -35,6 +35,7 @@
 #include "krisite/csg/plane_table.hpp"
 #include "krisite/csg/raycast.hpp"
 #include "krisite/csg/tjunction.hpp"
+#include "krisite/mesh/split.hpp"
 #include "krisite/mesh/topology.hpp"
 #include "krisite/mesh/tri_mesh.hpp"
 #include "krisite/octree/adaptive.hpp"
@@ -121,6 +122,15 @@ struct BoolStats {
     std::size_t empty_cells = 0;          ///< どちらも居ないので丸ごと飛ばしたセル
     std::size_t early_out_fragments = 0;  ///< そのセルで作った断片（分類を省いた数）
     std::size_t early_out_raycasts = 0;   ///< セルの隅（**整数点**）1 つで済ませた判定
+
+    /// §4 の構成点キャッシュ（§4.4 の記録）。
+    std::size_t cache_hits = 0;
+    std::size_t cache_misses = 0;
+    std::size_t cache_entries = 0;
+    std::size_t cache_bytes = 0;
+
+    /// §5 の接触の分裂。**予測と実測の突き合わせもここに入ります**（§5.5）。
+    mesh::SplitStats split{};
 
     /// §2.4.3 の T 頂点の解決（SPEC-phase2）。
     ///
@@ -218,14 +228,43 @@ struct BoolOptions {
     bool cull_planes = true;
     /// **適応分割**（§3.1）。偽なら常に最大深度まで分割する固定深度モード。
     /// **固定深度モードを消さないこと。** §9.1 の正解器です
+    ///
+    /// `KRISITE_DEFAULT_ADAPTIVE` を定義すると既定が反転します（§9.4 の CI ジョブ用）。
+    /// **明示的に指定すれば従来どおり**なので、比較のテストは影響を受けません。
+#if defined(KRISITE_DEFAULT_ADAPTIVE)
+    bool adaptive = true;
+#else
     bool adaptive = false;
+#endif
     /// 分割を打ち切る三角形数の閾値（§3.1）。0 なら閾値では打ち切らない
     std::size_t leaf_threshold = 0;
+    /// **接触の分裂**（§5）。**既定で有効です**（§5.2）。
+    ///
+    /// 正則化ブールは一般に多様体出力を保証できません。辺だけ・頂点だけを共有する接触が
+    /// 出力に残るので、分裂させて多様体化します。Phase 5 のメッシュ化と GWN が多様体を
+    /// 前提にできると扱いが楽なため、既定を分裂側にしています。
+    ///
+    /// **無効にしたときは $g$ で比較してはいけません**（§5.4）。非多様体出力では
+    /// $\chi$ が奇数になり得ます。
+    bool split_contacts = true;
+    /// **構成点の保持**（§4）。平面3つ組をキーにメモ化する。
+    ///
+    /// **無効側が Phase 1 の挙動 = §9.1 の正解器です。** キャッシュの有無で出力は
+    /// 1 ビットも変わらないはずなので、比較は値の完全一致で行えます。
+#if defined(KRISITE_DEFAULT_ADAPTIVE)
+    bool cache_points = true;
+#else
+    bool cache_points = false;
+#endif
     /// **early-out**（§3.2）。相手の三角形が 1 つも無いセルで arrangement と分類を省く。
     ///
     /// **無効側が正解器です。** 有効・無効を同一プロセス内で比較すれば、省いたことで
     /// 答えが変わっていないことが直接検査できます（§0.1 と同じ構図）。
+#if defined(KRISITE_DEFAULT_ADAPTIVE)
+    bool early_out = true;
+#else
     bool early_out = false;
+#endif
 };
 
 /// ブール演算。`depth` は八分木の深度（実行時パラメータ。SPEC-phase1 §2.2）。
@@ -241,6 +280,10 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     const unsigned depth = opt.depth;
     const bool cull_planes = opt.cull_planes;
     BoolStats st;
+    // §4.2: **キャッシュはグローバルに持ちません。** ここが「CSG の文脈オブジェクト」で、
+    // 以下すべての呼び出しに明示的に引き回します（`STYLE.md` と Phase 3 の並列化のため）。
+    PointCache point_cache;
+    PointCache* const cache = opt.cache_points ? &point_cache : nullptr;
 #if defined(KRISITE_COUNT_PREDICATES)
     geom::counters::reset();
 #endif
@@ -466,7 +509,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                         bool alive = true;
                         for (const CellPlane& cp : cps) {
                             if (cp.id == frag.support) continue;
-                            if (!clip_fragment(table, frag, cp.id, cp.keep)) {
+                            if (!clip_fragment(table, frag, cp.id, cp.keep, cache)) {
                                 alive = false;
                                 break;
                             }
@@ -487,7 +530,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                                     next.push_back(p);
                                     continue;
                                 }
-                                const SplitResult r = split_fragment(table, p, q);
+                                const SplitResult r = split_fragment(table, p, q, cache);
                                 if (r.has_pos) next.push_back(r.pos);
                                 if (r.has_neg) next.push_back(r.neg);
                             }
@@ -539,7 +582,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
             return it->second;
         }
         const auto id = static_cast<std::uint32_t>(points.size());
-        const geom::HPointD v = fragment_vertex(table, f, i);
+        const geom::HPointD v = fragment_vertex(table, f, i, cache);
         KRISITE_CHECK(arith::sign(v.w) != 0,
                       "boolean_op: 構成点の w が 0（3 平面が一点で交わっていない）");
         points.push_back(v);
@@ -685,7 +728,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
             const std::vector<PlaneId>& qs = planes_of[f.owner];
             std::vector<std::int8_t> sig(qs.size());
             for (std::size_t k = 0; k < qs.size(); ++k) {
-                sig[k] = static_cast<std::int8_t>(fragment_sign(table, f, qs[k]));
+                sig[k] = static_cast<std::int8_t>(fragment_sign(table, f, qs[k], cache));
             }
             const auto key = std::make_pair(f.owner, sig);
             auto it = region_inside.find(key);
@@ -707,7 +750,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                 const mesh::TriMesh& other = (f.owner == 0) ? B : A;
                 const std::size_t nv = vertex_count(f);
                 std::vector<geom::HPointD> vs(nv);
-                for (std::size_t vi = 0; vi < nv; ++vi) vs[vi] = fragment_vertex(table, f, vi);
+                for (std::size_t vi = 0; vi < nv; ++vi)
+                    vs[vi] = fragment_vertex(table, f, vi, cache);
 
                 bool decided = false, inside = false;
                 for (std::size_t vi = 0; vi < nv && !decided; ++vi) {
@@ -759,7 +803,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                     for (PlaneId q : qs) std::fprintf(stderr, "%u ", q);
                     std::fprintf(stderr, "]\n");
                     for (std::size_t vi = 0; vi < vertex_count(f); ++vi) {
-                        const geom::HPointD v = fragment_vertex(table, f, vi);
+                        const geom::HPointD v = fragment_vertex(table, f, vi, cache);
                         std::fprintf(stderr, "  v%zu:", vi);
                         for (PlaneId q : qs) {
                             std::fprintf(stderr, " %u:%d", q, geom::side(table.at(q), v));
@@ -793,6 +837,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     // **一律に適用します。** 「隣が持っているから入れる」ではなく「線分の内部に載る
     // 大域頂点はすべて入れる」。片側だけに入れると T 字接合を作ってしまいます。
     BoolMesh out;
+    std::vector<int> tri_owner;
     out.vertices = std::move(merged);
     {
         // 出力に残る断片の支持平面だけ索引を張る（平面数 x 頂点数 回の `side`）
@@ -813,7 +858,11 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         if (op == BoolOp::Difference && f.owner == 1) detail::reverse_polygon(poly, edge);
         const TPolygon tp =
             insert_t_vertices(table, out.vertices, vertex_index, f.support, edge, poly, &st.t);
+        const std::size_t before_n = out.triangles.size();
         fan_triangulate(tp, out.triangles, &st.t);
+        // **owner は出力時に直接記録します。** 多角形の頂点数から再構成すると、
+        // T 頂点が入ったときに数が合いません（§9.3 の変異 9 で使う）
+        tri_owner.insert(tri_owner.end(), out.triangles.size() - before_n, f.owner);
     }
 
     // ---- §5.4: 1 点に集まる平面の最大枚数（総当たり）----
@@ -838,6 +887,40 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     st.side_calls = geom::counters::side_calls;
     st.intersect3_calls = geom::counters::intersect3_calls;
 #endif
+    // ---- 8. 接触の分裂（§5）----
+    //
+    // **辺（次数 4）と頂点（k 個の扇）の両方を、頂点まわりの扇で一度に扱います。**
+    // 次数 4 の辺は扇を繋がないので、辺の両端で扇が分かれ、辺そのものが 2 本になります。
+    //
+    // **面は増えません。** 境界の点集合は変わらず、組合せ的な表現だけが変わります（§5.1.3）。
+#if defined(KRISITE_MUTATION_NO_SPLIT)
+    // SPEC-phase2 §9.3 の変異 8: **接触の分裂を無効化**（辺・頂点の両方）。
+    // §9.3 の除外 3 件が再び落ちるはずです。
+    const bool do_split = false;
+    (void)opt;
+#else
+    const bool do_split = opt.split_contacts;
+#endif
+    if (do_split && !out.triangles.empty()) {
+        std::vector<std::uint32_t> origin;
+#if defined(KRISITE_MUTATION_SPLIT_BY_OWNER)
+        // SPEC-phase2 §9.3 の変異 9: §5.1.2 の対応付けを owner に戻す。
+        // **$\chi$ と体積では捕まりません。** §5.5.1 の $C$ 不変性でのみ落ちます。
+        // **ケース 16（自己接触）が無いと素通りします**（§8.1）。
+        const std::vector<int>* owner_ptr = &tri_owner;
+#else
+        const std::vector<int>* owner_ptr = nullptr;
+        (void)tri_owner;
+#endif
+        out.triangles =
+            mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split, owner_ptr);
+        for (std::uint32_t o : origin) out.vertices.push_back(out.vertices[o]);
+    }
+
+    st.cache_hits = point_cache.hits();
+    st.cache_misses = point_cache.misses();
+    st.cache_entries = point_cache.entries();
+    st.cache_bytes = point_cache.bytes();
     if (stats) *stats = st;
     return out;
 }

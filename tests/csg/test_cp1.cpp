@@ -22,7 +22,7 @@ namespace {
 
 /// 位相検査（§10.1）を通し、結果を返す。
 TopologyReport run(const TriMesh& a, const TriMesh& b, BoolOp op, unsigned depth, BoolStats& st) {
-    const BoolMesh r = boolean_op(a, b, op, depth, &st);
+    const BoolMesh r = boolean_op(a, b, op, kritest::corpus_options(depth), &st);
     return check_topology(r.triangles);
 }
 
@@ -84,8 +84,8 @@ void test_depth_actually_splits() {
     const TriMesh a = kritest::cases::case1_a();
     const TriMesh b = kritest::cases::case1_b();
     BoolStats s0, s2;
-    boolean_op(a, b, BoolOp::Union, 0, &s0);
-    boolean_op(a, b, BoolOp::Union, 2, &s2);
+    boolean_op(a, b, BoolOp::Union, kritest::corpus_options(0), &s0);
+    boolean_op(a, b, BoolOp::Union, kritest::corpus_options(2), &s2);
     KRI_CHECK_MSG(s2.fragments > s0.fragments,
                   "深度を上げても断片が増えない（分割が効いていない）");
     std::printf("  断片数: 深度0 = %zu → 深度2 = %zu\n", s0.fragments, s2.fragments);

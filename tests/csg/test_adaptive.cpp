@@ -69,10 +69,9 @@ void run_case(const kritest::Case& c) {
     bool gap_seen = false;
 
     for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
-        BoolOptions fixed_opt;
-        fixed_opt.depth = kMaxDepth;
-        BoolOptions adap_opt;
-        adap_opt.depth = kMaxDepth;
+        // **既定値に依存しないこと**（§9.4 の CI ジョブで既定が反転する）
+        BoolOptions fixed_opt = kritest::phase1_options(kMaxDepth);
+        BoolOptions adap_opt = fixed_opt;
         adap_opt.adaptive = true;
 
         BoolStats sf, sa;

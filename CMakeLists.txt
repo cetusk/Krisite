@@ -14,6 +14,10 @@ option(KRISITE_BUILD_BENCH "ベンチマークのビルド" OFF)
 option(KRISITE_CHECKED_ARITH "全演算のオーバーフロー検査（Debug では自動で ON）" OFF)
 option(KRISITE_BUILD_MUTANTS "変異テスト（SPEC-phase1 §10.5）のビルド" OFF)
 option(KRISITE_BUILD_TESTS_WITH_MANIFOLD "Manifold 正解器（Apache-2.0、テスト専用）" OFF)
+# SPEC-phase2 §9.4: **適応分割モードを CI のマトリクスに加える。**
+# `BoolOptions` の既定を「適応分割 + early-out + 構成点の保持」に切り替える。
+# **固定深度モードは消えません**（§0.1 の正解器。オプションを明示すれば従来どおり）。
+option(KRISITE_DEFAULT_ADAPTIVE "BoolOptions の既定を適応分割にする（SPEC-phase2 §9.4）" OFF)
 # **タグではなくコミットに固定します**（SPEC-phase1 §10.4）。
 # タグは付け替えられるので、再現性の保証になりません。
 # 下の SHA は v3.0.1 を CI で解決した結果です。更新するときは CI のログで
@@ -33,7 +37,8 @@ target_compile_features(krisite INTERFACE cxx_std_20)
 target_compile_definitions(krisite INTERFACE
     KRISITE_COORD_BITS=${KRISITE_COORD_BITS}
     # SPEC §3.4: デバッグビルドでは常に検査を有効にする
-    $<$<OR:$<BOOL:${KRISITE_CHECKED_ARITH}>,$<CONFIG:Debug>>:KRISITE_CHECKED_ARITH=1>)
+    $<$<OR:$<BOOL:${KRISITE_CHECKED_ARITH}>,$<CONFIG:Debug>>:KRISITE_CHECKED_ARITH=1>
+    $<$<BOOL:${KRISITE_DEFAULT_ADAPTIVE}>:KRISITE_DEFAULT_ADAPTIVE=1>)
 
 if(MSVC)
     # /utf-8: ソースも実行文字集合も UTF-8。日本語のコメントと文字列リテラルが
@@ -130,4 +135,5 @@ message(STATUS "Krisite: b = ${KRISITE_COORD_BITS}, "
                "checked = ${KRISITE_CHECKED_ARITH} (Debug では常に ON), "
                "gmp = ${KRISITE_GMP_FOUND}, "
                "mutants = ${KRISITE_BUILD_MUTANTS}, "
+               "adaptive_default = ${KRISITE_DEFAULT_ADAPTIVE}, "
                "manifold = ${KRISITE_MANIFOLD_FOUND}")
