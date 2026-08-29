@@ -127,6 +127,95 @@ void test_determinism() {
     std::printf("    決定性 %zu 件（うち非空の基準 %zu 構成）\n", g_cmp, g_nonempty);
 }
 
+std::size_t g_cmp_soup = 0, g_cmp_nary = 0;
+
+/// §12 の CP3:「**全コーパス**」。主コーパスだけでは通らない経路が 2 つあります。
+///
+/// | コーパス | ここでしか通らない経路 |
+/// |---|---|
+/// | `soup_only_corpus` | **凸分割**（`FromMeshOptions::max_merges`）。非凸な面 |
+/// | `nary_corpus` | **深さ 3 以上の指示関数**。連鎖した `Indicator` の評価 |
+///
+/// **主コーパスは二項・三角形化だけです。** 機構を全部有効にすると言うなら、
+/// この 2 つを外せません。
+void test_determinism_all_corpora() {
+    constexpr unsigned kThreads[] = {1, 2, 4, 8};
+    std::vector<std::unique_ptr<krisite::par::ThreadPool>> pools;
+    for (unsigned t : kThreads) pools.push_back(std::make_unique<krisite::par::ThreadPool>(t));
+
+    // ---- スープ専用（凸分割）----
+    FromMeshOptions fm;
+    fm.max_merges = kMergeAll;
+    for (const kritest::Case& c : kritest::soup_only_corpus()) {
+        const TriMesh a = c.make_a(), b = c.make_b();
+        for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
+            for (unsigned d = 0; d <= kMaxDepth; ++d) {
+                std::string base;
+                for (std::size_t ti = 0; ti < std::size(kThreads); ++ti) {
+                    ToMeshOptions tm;
+                    tm.split_contacts = true;
+                    tm.threads = kThreads[ti];
+                    tm.pool = pools[ti].get();
+                    const BoolOptions o = all_on(d, d == kMaxDepth, kThreads[ti], pools[ti].get());
+                    const std::string s =
+                        bytes(to_mesh(boolean(from_mesh(a, fm), from_mesh(b, fm), op, o), tm));
+                    const std::string tag = std::string("スープ ") + c.id + " " + op_name(op) +
+                                            "（深度 " + std::to_string(d) + "、スレッド " +
+                                            std::to_string(kThreads[ti]) + "）";
+                    if (ti == 0) {
+                        base = s;
+                    } else {
+                        KRI_CHECK_MSG(s == base, tag + ": **スレッド数で出力が変わった**（§7.1）");
+                        ++g_cmp_soup;
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- n 項（連鎖した指示関数）----
+    //
+    // **和で連鎖します。** 各ケースの意味論を再現するのは `test_nary` の仕事で、
+    // ここが問うのは「**同じ式がスレッド数に依らず同じ答えを返すか**」だけです。
+    for (const kritest::NaryCase& c : kritest::nary_corpus()) {
+        const std::vector<TriMesh> m = c.make();
+        for (unsigned d = 0; d <= kMaxDepth; ++d) {
+            std::string base;
+            for (std::size_t ti = 0; ti < std::size(kThreads); ++ti) {
+                ToMeshOptions tm;
+                tm.split_contacts = true;
+                tm.threads = kThreads[ti];
+                tm.pool = pools[ti].get();
+                const BoolOptions o = all_on(d, d == kMaxDepth, kThreads[ti], pools[ti].get());
+                PolySoup acc = from_mesh(m[0]);
+                for (std::size_t i = 1; i < m.size(); ++i) {
+                    acc = boolean(acc, from_mesh(m[i]), BoolOp::Union, o);
+                }
+                const std::string s = bytes(to_mesh(acc, tm));
+                const std::string tag = std::string("n 項 ") + c.id + "（深度 " +
+                                        std::to_string(d) + "、スレッド " +
+                                        std::to_string(kThreads[ti]) + "）";
+                if (ti == 0) {
+                    base = s;
+                } else {
+                    KRI_CHECK_MSG(s == base, tag + ": **スレッド数で出力が変わった**（§7.1）");
+                    ++g_cmp_nary;
+                }
+            }
+        }
+    }
+
+    const std::size_t want_soup =
+        kritest::soup_only_corpus().size() * 3 * (kMaxDepth + 1) * (std::size(kThreads) - 1);
+    const std::size_t want_nary =
+        kritest::nary_corpus().size() * (kMaxDepth + 1) * (std::size(kThreads) - 1);
+    KRI_CHECK_MSG(g_cmp_soup == want_soup,
+                  "スープ経路の比較数が式と合わない" + kritest::pair_msg(want_soup, g_cmp_soup));
+    KRI_CHECK_MSG(g_cmp_nary == want_nary,
+                  "n 項の比較数が式と合わない" + kritest::pair_msg(want_nary, g_cmp_nary));
+    std::printf("    決定性（凸分割）%zu 件、（n 項）%zu 件\n", g_cmp_soup, g_cmp_nary);
+}
+
 /// §7.3: スレッド局所であることを、**統計で確かめます。**
 ///
 /// キャッシュを共有すると命中数が変わります（1 本にまとまるので増えます）。
@@ -162,6 +251,7 @@ int main() {
     std::printf("\n  並列化（SPEC-phase4 §7）\n");
     KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
     test_determinism();
+    test_determinism_all_corpora();
     test_thread_local_cache();
     std::printf("\n");
     return kritest::finish("csg/parallel");
