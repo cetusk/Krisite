@@ -297,7 +297,6 @@ void test_boolean() {
 }  // namespace
 
 int main() {
-    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     std::printf("\n  凸分割（SPEC-phase3 §4.1）\n");
     KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
     test_shapes();
