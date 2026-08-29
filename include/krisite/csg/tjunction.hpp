@@ -33,9 +33,9 @@
 #include <vector>
 
 #include "krisite/csg/plane_table.hpp"
-#include "krisite/par/thread_pool.hpp"
 #include "krisite/geom/point.hpp"
 #include "krisite/geom/predicates.hpp"
+#include "krisite/par/thread_pool.hpp"
 
 namespace krisite::csg {
 

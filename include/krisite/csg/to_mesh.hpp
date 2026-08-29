@@ -20,8 +20,8 @@
 #define KRISITE_CSG_TO_MESH_HPP
 
 #include <algorithm>
-#include <chrono>
 #include <array>
+#include <chrono>
 #include <map>
 #include <vector>
 
@@ -197,8 +197,8 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
     if (opt.split_contacts && !out.triangles.empty()) {
         std::vector<std::uint32_t> origin;
         // **頂点ごとに独立**（§3）。ID の割り当ては逐次なので決定的です
-        out.triangles = mesh::split_contacts(out.triangles, out.vertices.size(), &origin,
-                                             &st.split, nullptr, nullptr, &pool);
+        out.triangles = mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split,
+                                             nullptr, nullptr, &pool);
         for (std::uint32_t o : origin) out.vertices.push_back(out.vertices[o]);
     }
 
