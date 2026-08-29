@@ -16,9 +16,9 @@
 `Krisite` is a header-only C++20 library for 3D data. The long-term goal is to unify
 point-cloud compression, meshing, and exact boolean operations.
 **Phase 0 (the arithmetic foundation), Phase 1 (minimal validation of output
-extraction), and Phase 2 (adaptive subdivision and output semantics) are complete.**
-The Phase 1 verdict was: continue. Work is now on **Phase 3 (core redesign)** — $n$-ary
-operations, winding-number classification, and separating the core from post-processing.
+extraction), Phase 2 (adaptive subdivision and output semantics) and Phase 3 (core
+redesign) are complete.** The Phase 1 verdict was: continue. Work now heads toward
+**Phase 4 (work-stealing parallelism)**.
 [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single source of truth for where the
 project stands (Japanese).
 
@@ -211,7 +211,7 @@ The design documents are written in Japanese.
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **Where the project stands. Start here** |
 | [`docs/SPEC-phase3.md`](docs/SPEC-phase3.md) | **Phase 3 spec.** The $n$-ary contract, WNV, core/post-processing split |
-| [`docs/IMPL-phase3.md`](docs/IMPL-phase3.md) | Phase 3 implementation notes (in progress). Decisions, rationale, **and the mistakes that were corrected** |
+| [`docs/IMPL-phase3.md`](docs/IMPL-phase3.md) | Phase 3 implementation notes (**as of completion**). Decisions, rationale, **and the mistakes that were corrected** |
 | [`docs/LOG-phase3-design.md`](docs/LOG-phase3-design.md) | The discussion log behind the Phase 3 spec |
 | [`docs/DECISION-core-contract.md`](docs/DECISION-core-contract.md) | How the core contract ($n$-ary, WNV, core/post-processing split) was decided |
 | [`docs/SPEC-phase2.md`](docs/SPEC-phase2.md) | Phase 2 spec: split-plane culling, adaptive subdivision, non-manifold output semantics |
@@ -245,8 +245,8 @@ build time rather than in prose.
 | 0 | Fixed-width exact integers + plane-based predicates | Complete (2026-08-26) |
 | 1 | Minimal validation of output extraction (fixed-depth subdivision, single-threaded) | Complete (2026-08-27) — **verdict: continue** |
 | **2** | **Adaptive subdivision, constructed-point reuse, output semantics** | **Complete (2026-08-28)** |
-| **3** | **Core redesign** ($n$-ary, WNV, core/post-processing split; single-threaded) | **In progress** |
-| 4 | Work-stealing parallelism | Not started |
+| **3** | **Core redesign** ($n$-ary, WNV, local BSP, convex split; single-threaded) | **Complete (2026-08-29)** |
+| **4** | **Work-stealing parallelism** | **Next** |
 | 5 | Thingi10K full-corpus validation, performance targets | Not started |
 | 6+ | Point-cloud codec, GWN, meshing | Not started |
 
@@ -259,7 +259,7 @@ through**, and that is the reason to keep going.
 **Phase 2 passed CP1 through CP5 and is complete** (2026-08-28). Its completion
 criteria are about correctness only; no performance target was set.
 
-**Phase 3 is rebuilding the core.** Booleans are normally used in chains, so the
+**Phase 3 rebuilt the core.** Booleans are normally used in chains, so the
 requirement is now to evaluate them as an $n$-ary operation and **chain them without
 rounding intermediate results**.
 
