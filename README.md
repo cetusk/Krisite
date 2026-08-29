@@ -383,7 +383,6 @@ $$\text{予測} = \frac{\text{全体}_1}{\text{入口} + \text{中核}_1/k_c + \
 いません。** それまでは構造から設計しています。精読したあとに取り入れた考え方
 （局所 BSP、半開区間の割り当て、巻き数による分類）と、自分で導いたものとの差分は
 [`docs/LOG-phase3-design.md`](docs/LOG-phase3-design.md) に記録しています。
-**実装は 1 行も参照していません。**
 
 **GPL / LGPL のコード（CGAL、Indirect_Predicates、OpenMeshCraft、VCGlib 等）は
 参照・引用・移植していません。**
