@@ -414,7 +414,6 @@ obtained until just before Phase 3.** Until then the design was derived from the
 structure of the problem. What was adopted after reading them (the local BSP, half-open
 cell assignment, winding-number classification) and what was derived here is recorded in
 [`docs/LOG-phase3-design.md`](docs/LOG-phase3-design.md) (Japanese).
-**No implementation was ever consulted.**
 
 **No GPL/LGPL code (CGAL, Indirect_Predicates, OpenMeshCraft, VCGlib and the like)
 has been consulted, quoted, or ported.**
