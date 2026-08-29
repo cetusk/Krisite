@@ -116,6 +116,25 @@ inline bool assign_to_cell(const Aabb& tri, const CellBox& c) noexcept {
     return true;
 }
 
+/// **閉領域**での重なり判定。**割り当てには使いません。**
+///
+/// `assign_to_cell` は「この多角形をどのセルで処理するか」を決めるもので、
+/// **重複を避けるために半開区間**です（`SPEC-phase2.md` §3.4）。
+///
+/// 一方「この曲面はこのセルに存在するか」を問うときは**閉領域で見なければなりません。**
+/// 面がセルの上側境界にちょうど乗る配置では、半開区間は「存在しない」と答えますが、
+/// **閉じたセルの上には存在します。** early-out（`SPEC-phase2.md` §3.2）や
+/// 局所 BSP の切断候補（`SPEC-phase3.md` §5.4）は後者の問いです。
+///
+/// **役割が違う 2 つの問いに同じ述語を使うと、境界に乗る配置で静かに壊れます。**
+inline bool overlaps_cell(const Aabb& tri, const CellBox& c) noexcept {
+    for (int t = 0; t < 3; ++t) {
+        if (tri.hi[t] < c.lo[t]) return false;
+        if (tri.lo[t] > c.hi[t]) return false;
+    }
+    return true;
+}
+
 /// 開領域で判定する版。**本来使ってはいけません**（§10.5 の変異 2）。
 inline bool assign_to_cell_open(const Aabb& tri, const CellBox& c) noexcept {
     for (int t = 0; t < 3; ++t) {

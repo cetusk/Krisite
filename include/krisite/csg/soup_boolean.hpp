@@ -235,11 +235,25 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // 隅 1 点（整数点）で決まります（§3.2 の early-out の一般化）。
         // **このセルに居る source の三角形**を、平面ごとに集めます。
         // early-out の判定（`count`）と局所 BSP の切断候補（§5.4）の両方に使います。
+        //
+        // **閉領域で見ます**（`overlaps_cell`）。割り当てに使う `assign_to_cell` は
+        // 重複を避けるため半開区間ですが、ここで問うているのは
+        // 「この曲面はこのセルに存在するか」で、**閉じたセルの上での話**です。
+        //
+        // 半開区間で見ると、面がセルの上側境界にちょうど乗る配置で
+        // 「存在しない」と答えてしまい、early-out が**面の上の点を「曲面なし」として
+        // 分類します**（`IMPL-phase3.md` §7.1。実際に踏みました）。
         std::vector<std::size_t> count(n_src, 0);
         std::map<PlaneId, std::vector<std::pair<std::uint32_t, std::uint32_t>>> cell_tri_by_plane;
         for (std::size_t i = 0; i < n_src; ++i) {
             for (std::size_t j = 0; j < src_aabb[i].size(); ++j) {
+#if defined(KRISITE_MUTATION_HALF_OPEN_PRESENCE)
+                // 変異 17: 「存在するか」を**割り当てと同じ半開区間**で見る（実際の誤り）。
+                // 面がセルの上側境界に乗る配置でしか出ません。
                 if (!octree::assign_to_cell(src_aabb[i][j], cbox)) continue;
+#else
+                if (!octree::overlaps_cell(src_aabb[i][j], cbox)) continue;
+#endif
                 ++count[i];
                 const PlaneId pid = tri_plane[i][j];
                 if (pid != kNoPlane) {

@@ -75,6 +75,8 @@ krisite_add_test(cp3           csg/test_cp3.cpp)
 # 構成点の保持 × T 解決 / early-out × 分裂）。3 経路を踏んだ回数を数え、
 # 0 なら落とす。§9.4.2 の「分裂の有無で幾何が一致する」もここが常時見る
 krisite_add_test(cp5           csg/test_cp5.cpp)
+# **Phase 3 の CP5**（n 項 / スープ経路）。Phase 2 の `cp5` は二項経路のままです。
+krisite_add_test(cp5n          csg/test_cp5n.cpp)
 # SPEC-phase3 §3.1 / §2.1 の CP1。辺平面の構成（軸方向との外積）と、
 # 断片の相対内部の点。**両方の経路が使われることを固定する**（空回りの番人）
 krisite_add_test(interior      csg/test_interior.cpp)

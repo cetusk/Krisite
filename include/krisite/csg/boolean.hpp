@@ -392,12 +392,19 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                 // **`lo` 隅が $\partial B$ の上に無いことは、割り当てが保証します。**
                 // $\partial B$ が隅を含むなら、その面の AABB は隅を含むので割り当てられ、
                 // $n_B > 0$ になります。したがって `point_inside` の契約は満たされます。
+                //
+                // **閉領域で数えます**（`overlaps_cell`）。割り当ての `assign_to_cell` は
+                // 重複を避けるため半開区間ですが、ここで問うているのは
+                // 「相手の曲面がこのセルに存在するか」で、**閉じたセルの上での話**です。
+                // 半開区間で数えると、面がセルの**上側境界**にちょうど乗る配置で
+                // 「存在しない」と答え、early-out が面の上の点を「曲面なし」として
+                // 分類します（`IMPL-phase3.md` §7.1）。
                 std::size_t na = 0, nb = 0;
                 for (const octree::Aabb& r : aabb_a) {
-                    if (octree::assign_to_cell(r, cbox)) ++na;
+                    if (octree::overlaps_cell(r, cbox)) ++na;
                 }
                 for (const octree::Aabb& r : aabb_b) {
-                    if (octree::assign_to_cell(r, cbox)) ++nb;
+                    if (octree::overlaps_cell(r, cbox)) ++nb;
                 }
                 // -1 = 分類を省かない、0 = 相手の外、1 = 相手の内
                 int forced[2] = {-1, -1};
