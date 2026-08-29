@@ -696,6 +696,34 @@ inline std::vector<TriMesh> case18() {
     return {w, t};
 }
 
+/// ケース 23: **20 個の立方体が同じ上下面（と側面）を共有**（EMBER Fig. 25）。
+///
+/// **共平面重複が 20 枚**になります。`SPEC-phase2.md` §4.3.2 の選択規則は
+/// 「同方向 / 逆方向 × 3 演算」の表で**二項**なので、この配置を通したことがありません。
+/// **`SPEC-phase3.md` §5.4.1（全順序）の要否がここで決まります。**
+///
+/// $x$ 方向に 32 きざみで幅 40 の箱を 20 個並べます（**隣と 8 だけ重なる**）。
+/// $y$ / $z$ は 20 個すべてで同一なので、4 枚の平面に 20 枚のシートが載ります。
+///
+/// **この配置は意図的に軸平行です。** 突きたいのは共平面重複の枚数であって
+/// 4 平面同時交差ではありません（そちらはケース 17 / 2T / 15 が持っています）。
+inline std::vector<TriMesh> case23() {
+    std::vector<TriMesh> v;
+    v.reserve(20);
+    for (int i = 0; i < 20; ++i) {
+        const int x0 = -300 + 32 * i;
+        v.push_back(box(at(x0, 640), at(-300, 640), at(-300, 640), at(x0 + 40, 640), at(340, 640),
+                        at(340, 640)));
+    }
+    return v;
+}
+
+/// ケース 23 の期待値: 20 個の和は 1 つの箱になります。
+inline TriMesh case23_expect() {
+    return box(at(-300, 640), at(-300, 640), at(-300, 640), at(-300 + 32 * 19 + 40, 640),
+               at(340, 640), at(340, 640));
+}
+
 }  // namespace cases
 
 /// $n$ 項のケース。**恒等式とセットで持ちます。**
@@ -705,12 +733,17 @@ struct NaryCase {
         Distributive,
         /// $W - T - \dots - T = W - T$（`repeat` 回引く）
         RepeatedDifference,
+        /// $\bigcup_i M_i = E$（`expect` が返す立体）
+        UnionOfMany,
     };
     const char* id;
     const char* what;
     Kind kind;
     std::vector<TriMesh> (*make)();
     int repeat = 0;
+    /// `UnionOfMany` のときの期待値。**解析的に分かる立体を置くこと**
+    /// （恒等式は自己整合の検査なので、答えのレベルで独立な対照が要ります）。
+    TriMesh (*expect)() = nullptr;
 };
 
 inline const std::vector<NaryCase>& nary_corpus() {
@@ -719,6 +752,8 @@ inline const std::vector<NaryCase>& nary_corpus() {
          cases::case17, 0},
         {"18", "同一形状を 5 回引く（中間結果を経由しない）", NaryCase::Kind::RepeatedDifference,
          cases::case18, 5},
+        {"23", "20 個の立方体が同じ上下面を共有（共平面重複 20 枚）", NaryCase::Kind::UnionOfMany,
+         cases::case23, 0, cases::case23_expect},
     };
     return k;
 }

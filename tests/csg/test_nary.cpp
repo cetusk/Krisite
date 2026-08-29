@@ -1,4 +1,4 @@
-// Krisite — $n$ 項のケース 17 / 18（`SPEC-phase3.md` §9）
+// Krisite — $n$ 項のケース 17 / 18 / 23（`SPEC-phase3.md` §9）
 //
 // **二項の連鎖とは突き合わせられません。** 二項の `boolean_op` は `BoolMesh` を返し、
 // 構成点が有理数なので**入力に戻せない**からです。それが $n$ 項にした理由でもあります。
@@ -7,6 +7,7 @@
 //
 //     ケース 17   $(A \cup B) \setminus C \;=\; (A \setminus C) \cup (B \setminus C)$
 //     ケース 18   $W - T - T - T - T - T \;=\; W - T$
+//     ケース 23   $\bigcup_{i=0}^{19} M_i \;=\;$ 解析的に分かる 1 つの箱
 //
 // **集合の恒等式なので、答えのレベルで独立です**（自己整合の検査ではありません）。
 //
@@ -136,6 +137,23 @@ void run_repeated(const kritest::NaryCase& c, const BoolOptions& o, const std::s
     check_same(lhs, rhs, o, tag);
 }
 
+/// ケース 23: 多数の和が、解析的に分かる立体と一致すること。
+void run_union_of_many(const kritest::NaryCase& c, const BoolOptions& o, const std::string& tag) {
+    const std::vector<TriMesh> m = c.make();
+    KRI_CHECK_MSG(m.size() >= 2, tag + ": メッシュが 2 枚未満");
+    KRI_CHECK_MSG(c.expect != nullptr, tag + ": 期待値が無い");
+
+    PolySoup lhs = from_mesh(m[0]);
+    for (std::size_t i = 1; i < m.size(); ++i) {
+        lhs = boolean(lhs, from_mesh(m[i]), BoolOp::Union, o);
+    }
+    KRI_CHECK_MSG(lhs.source_count() == m.size(), tag + ": source 数がメッシュ数と合わない");
+
+    // **期待値は解析的に分かる立体です。** 恒等式は自己整合の検査なので、
+    // 答えのレベルで独立な対照を置きます（`SPEC-phase1.md` §10.3 と同じ構図）。
+    check_same(lhs, from_mesh(c.expect()), o, tag);
+}
+
 void run_case(const kritest::NaryCase& c) {
     // §9.0 (1) のサイズ規律
     KRI_CHECK_MSG(kritest::size_discipline_ok(c.make()),
@@ -153,6 +171,9 @@ void run_case(const kritest::NaryCase& c) {
             case kritest::NaryCase::Kind::RepeatedDifference:
                 run_repeated(c, o, tag);
                 break;
+            case kritest::NaryCase::Kind::UnionOfMany:
+                run_union_of_many(c, o, tag);
+                break;
         }
     }
 }
@@ -160,7 +181,7 @@ void run_case(const kritest::NaryCase& c) {
 }  // namespace
 
 int main() {
-    std::printf("\n  n 項のケース 17 / 18（SPEC-phase3 §9）\n");
+    std::printf("\n  n 項のケース 17 / 18 / 23（SPEC-phase3 §9）\n");
     KRI_CHECK_MSG(!kritest::nary_corpus().empty(), "n 項のコーパスが空");
     for (const kritest::NaryCase& c : kritest::nary_corpus()) {
         std::printf("    ケース %-3s %s\n", c.id, c.what);

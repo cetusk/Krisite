@@ -72,6 +72,32 @@ inline bool tri_touches_plane(const geom::PlaneD& pl, const mesh::TriMesh& m, co
     return false;
 }
 
+#if defined(KRISITE_MUTATION_BSP_MINIMAL_CUT)
+/// 断片が箱と**分離している**か（どれかの軸で厳密に外側にあるか）。
+///
+/// 変異「局所 BSP の保守的分割をやめる」（`SPEC-phase3.md` §10.5）で使います。
+/// **軸平行平面に対する `side` だけ**で判定できます。
+inline bool fragment_outside_box(const PlaneTable& t, const Fragment& f, const octree::Aabb& box,
+                                 PointCache* cache) {
+    const std::size_t n = vertex_count(f);
+    for (int k = 0; k < 3; ++k) {
+        const auto ax = static_cast<geom::Axis>(k);
+        // 箱の lo 面より手前（side < 0）に全頂点があるか
+        for (int side_sel = 0; side_sel < 2; ++side_sel) {
+            const geom::PlaneD pl =
+                geom::plane_axis_aligned(ax, side_sel == 0 ? box.lo[k] : box.hi[k]);
+            const int want = (side_sel == 0) ? -1 : +1;
+            bool all = true;
+            for (std::size_t i = 0; i < n && all; ++i) {
+                if (geom::side(pl, fragment_vertex(t, f, i, cache)) != want) all = false;
+            }
+            if (all) return true;
+        }
+    }
+    return false;
+}
+#endif
+
 }  // namespace detail
 
 /// 2 つのスープのブール演算（CP2）。**出力もスープなので連鎖できます。**
@@ -380,6 +406,34 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 opt.local_bsp ? cuts_for(frag.support) : split_planes;
             std::vector<Fragment> pieces{frag};
             for (PlaneId q : cut_planes) {
+#if defined(KRISITE_MUTATION_BSP_MINIMAL_CUT)
+                // 変異「局所 BSP の保守的分割をやめる」（`SPEC-phase3.md` §10.5）。
+                //
+                // **断片ごとに「必要な分だけ」切ります。** 三角形が断片と交わらない
+                // なら切らなくてよい — **分類だけを見れば健全です。**
+                //
+                // **壊れるのは大域の不変条件のほうです。** 切断集合が支持平面だけで
+                // 決まらなくなるので、**同じ平面に載る別々の多角形が違う切り方を
+                // します。** 重なりの領域が一致せず `region_key` で潰せません。
+                {
+                    bool touches = false;
+                    const auto it = cell_tri_by_plane.find(q);
+                    if (it != cell_tri_by_plane.end()) {
+                        for (const auto& ref : it->second) {
+                            if (!detail::fragment_outside_box(
+                                    out.table, frag, src_aabb[ref.first][ref.second], cache)) {
+                                touches = true;
+                                break;
+                            }
+                        }
+                    }
+                    // **変異が発火したことを数えます。** 空回りの変異は変異ではありません
+                    if (!touches) {
+                        ++st.bsp_cuts_skipped;
+                        continue;
+                    }
+                }
+#endif
                 std::vector<Fragment> next;
                 next.reserve(pieces.size());
                 for (const Fragment& p : pieces) {
