@@ -72,10 +72,10 @@ inline bool tri_touches_plane(const geom::PlaneD& pl, const mesh::TriMesh& m, co
     return false;
 }
 
-#if defined(KRISITE_MUTATION_BSP_MINIMAL_CUT)
+#if defined(KRISITE_EXPERIMENT_BSP_SKIP_DISJOINT)
 /// 断片が箱と**分離している**か（どれかの軸で厳密に外側にあるか）。
 ///
-/// 変異「局所 BSP の保守的分割をやめる」（`SPEC-phase3.md` §10.5）で使います。
+/// **最適化の候補**であって変異ではありません（`ROADMAP.md`「切断候補の絞り込み」）。
 /// **軸平行平面に対する `side` だけ**で判定できます。
 inline bool fragment_outside_box(const PlaneTable& t, const Fragment& f, const octree::Aabb& box,
                                  PointCache* cache) {
@@ -404,17 +404,29 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // （CP3 までの挙動 = §10.1 の正解器）。
             const std::vector<PlaneId>& cut_planes =
                 opt.local_bsp ? cuts_for(frag.support) : split_planes;
+            // 変異「局所 BSP の交差線分を 1 本落とす」（`SPEC-phase3.md` §10.5）。
+            //
+            // **落とすと断片が相手の曲面をまたいだまま残ります。** 代表点 1 点で
+            // 分類できる前提（定理 7.2）が崩れるので、位相か体積に出るはずです。
+            // **過剰分割の側では落としません**（そちらは正解器なので）。
+            std::size_t cut_begin = 0;
+#if defined(KRISITE_MUTATION_BSP_DROP_ONE_CUT)
+            if (opt.local_bsp && !cut_planes.empty()) cut_begin = 1;
+#endif
             std::vector<Fragment> pieces{frag};
-            for (PlaneId q : cut_planes) {
-#if defined(KRISITE_MUTATION_BSP_MINIMAL_CUT)
-                // 変異「局所 BSP の保守的分割をやめる」（`SPEC-phase3.md` §10.5）。
+            for (std::size_t ci = cut_begin; ci < cut_planes.size(); ++ci) {
+                const PlaneId q = cut_planes[ci];
+#if defined(KRISITE_EXPERIMENT_BSP_SKIP_DISJOINT)
+                // **切断候補の絞り込み（最適化の候補。Phase 5）。変異ではありません。**
                 //
-                // **断片ごとに「必要な分だけ」切ります。** 三角形が断片と交わらない
-                // なら切らなくてよい — **分類だけを見れば健全です。**
+                // 三角形が断片と交わらないなら、その断片をその平面で切る必要はありません。
+                // **分類については健全です**（定理 7.2 の前提は保たれます）。
+                // 全コーパスで出力は 1 ビットも変わらず、8,169 回多く省きました。
                 //
-                // **壊れるのは大域の不変条件のほうです。** 切断集合が支持平面だけで
-                // 決まらなくなるので、**同じ平面に載る別々の多角形が違う切り方を
-                // します。** 重なりの領域が一致せず `region_key` で潰せません。
+                // **採用には証明か専用のコーパスケースが要ります。** 残る経路は
+                // 「共平面に載る別々の多角形が違う切り方をして `region_key` が潰せなく
+                // なる」で、**「コーパスに配置が無い」だけでは否定できません**
+                // （`SPEC-phase2.md` §2.6）。Phase 3 は性能のフェーズではないので保留です。
                 {
                     bool touches = false;
                     const auto it = cell_tri_by_plane.find(q);

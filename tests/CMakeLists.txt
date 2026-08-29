@@ -455,6 +455,29 @@ if(KRISITE_BUILD_MUTANTS)
     # ここが FAIL に転じたら検出器が増えたということなので、表を更新してください。
     krisite_add_mutant(17 KRISITE_MUTATION_HALF_OPEN_PRESENCE=1 nary PASS)
 
+    # 変異 18: **局所 BSP の交差線分を 1 本落とす**（`SPEC-phase3.md` §10.5）。
+    #   **主検出器: soup（局所 BSP ↔ 過剰分割の比較）**
+    #
+    # 落とすと断片が相手の曲面をまたいだまま残り、**代表点 1 点で分類できる前提
+    # （定理 7.2）が崩れます。** 位相にも体積にも出ます。
+    #
+    #   soup       … 局所 BSP と過剰分割で (C, χ) が食い違う
+    #   cp5n       … 全機構有効の全域
+    #   nary       … 恒等式の両方向の差が空にならない
+    #   volume_gmp … 体積。**別の立体を作っている**
+    #
+    # **二項実装は過剰分割のままなので `cp3` は素通りします。**
+    #
+    # > 仕様の「保守的分割をやめる」は **retire** しました（§10.5.1）。`Fragment` が
+    # > 凸専用なので、交差線分だけで切る defect は**表現できません。** これが代替です。
+    krisite_add_mutant(18 KRISITE_MUTATION_BSP_DROP_ONE_CUT=1 soup FAIL)
+    krisite_add_mutant(18 KRISITE_MUTATION_BSP_DROP_ONE_CUT=1 cp5n FAIL)
+    krisite_add_mutant(18 KRISITE_MUTATION_BSP_DROP_ONE_CUT=1 nary FAIL)
+    krisite_add_mutant(18 KRISITE_MUTATION_BSP_DROP_ONE_CUT=1 cp3  PASS)
+    if(KRISITE_GMP_FOUND)
+        krisite_add_mutant(18 KRISITE_MUTATION_BSP_DROP_ONE_CUT=1 volume_gmp FAIL GMP)
+    endif()
+
     # ---- CP5 の組合せでも検出されること（SPEC-phase2 §13）--------------------
     #
     # **CP5 は機構を全部有効にした状態です。** 機構が増えると検出器は移動し、
