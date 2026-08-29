@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <map>
 #include <vector>
 
@@ -41,6 +42,16 @@ struct SoupMesh {
 
 /// §11 の記録。
 struct ToMeshStats {
+    /// **段ごとの時間**（`SPEC-phase4.md` §3.2 / §9）。ミリ秒。
+    ///
+    /// **バリアの数が並列効率の上限を決めます。** 各段の実行時間が偏ると、
+    /// バリアで待つ時間が増えます。**まず内訳を測ってから並列化すること。**
+    double ms_construct = 0;  ///< 構成点を作る（平面3つ組でメモ化）
+    double ms_merge = 0;      ///< 値で併合する（整列 + 区分）
+    double ms_index = 0;      ///< 平面ごとの頂点索引（T 解決の下ごしらえ）
+    double ms_tri = 0;        ///< T 頂点の解決 + 三角形化
+    double ms_split = 0;      ///< 接触の分裂
+
     std::size_t constructed_points = 0;  ///< 第1段（平面3つ組）で作った点
     std::size_t merged_points = 0;       ///< 第2段（値）の併合後
     std::size_t merged_by_value = 0;     ///< 第2段が併合した数
@@ -49,6 +60,17 @@ struct ToMeshStats {
 };
 
 struct ToMeshOptions {
+    /// **スレッド数**（`SPEC-phase4.md` §3）。0 か 1 なら逐次。
+    ///
+    /// 出口は**段ごと + バリア**で並列化します。中核（再帰タスク木）とは
+    /// **構造が違います** — work-stealing のプールはそのままでは当たりません。
+#if defined(KRISITE_DEFAULT_THREADS)
+    unsigned threads = KRISITE_DEFAULT_THREADS;
+#else
+    unsigned threads = 1;
+#endif
+    /// 持ち回すプール。`nullptr` なら呼び出しごとに作ります。
+    par::ThreadPool* pool = nullptr;
     bool split_contacts = true;  ///< §6.3。既定 ON、フラグで無効化可
     bool resolve_t = true;       ///< §6.2 の T 頂点解決
 };
@@ -57,6 +79,20 @@ struct ToMeshOptions {
 inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
                         ToMeshStats* stats = nullptr) {
     ToMeshStats st;
+    using Clock = std::chrono::steady_clock;
+    auto t_stage = Clock::now();
+    const auto lap = [](Clock::time_point& t0) {
+        const auto t1 = Clock::now();
+        const double ms =
+            std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
+        t0 = t1;
+        return ms;
+    };
+    // **プールは持ち回します**（生成コストは 8 スレッドで 0.2 ms）
+    const unsigned nthreads =
+        (opt.pool != nullptr) ? opt.pool->size() : ((opt.threads <= 1) ? 1u : opt.threads);
+    par::ThreadPool local_pool(opt.pool != nullptr ? 1u : nthreads);
+    par::ThreadPool& pool = (opt.pool != nullptr) ? *opt.pool : local_pool;
     SoupMesh out;
     if (s.polys.empty()) {
         if (stats != nullptr) *stats = st;
@@ -88,6 +124,7 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         }
     }
     st.constructed_points = points.size();
+    st.ms_construct = lap(t_stage);
 
     std::vector<std::uint32_t> order(points.size());
     for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
@@ -107,6 +144,7 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         i = j;
     }
     st.merged_points = out.vertices.size();
+    st.ms_merge = lap(t_stage);
 
     // ---- 2. T 頂点の解決（§6.2）+ 3. 三角形化 --------------------------------
     PlaneVertexIndex index;
@@ -116,42 +154,55 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         for (const Poly& q : s.polys) sup.push_back(q.frag.support);
         std::sort(sup.begin(), sup.end());
         sup.erase(std::unique(sup.begin(), sup.end()), sup.end());
-        index.build(s.table, out.vertices, sup);
+        // **平面ごとに独立**（§3）。規模のあるコーパスでは出口の 88% を占めます
+        index.build(s.table, out.vertices, sup, &pool);
     }
+    st.ms_index = lap(t_stage);
 
-    std::vector<int> tri_src;
-    for (std::size_t pi = 0; pi < s.polys.size(); ++pi) {
+    // **多角形ごとに独立**（§3）。**スロットに書いて、あとで多角形の順に結合します**
+    // （§4.2。スレッド数に依らず同じ三角形の列になります）。
+    std::vector<std::vector<mesh::Tri>> poly_tris(s.polys.size());
+    std::vector<TJunctionStats> tl_t(nthreads);
+    pool.run(s.polys.size(), [&](std::size_t pi, unsigned tid) {
         const Fragment& f = s.polys[pi].frag;
         std::vector<std::uint32_t> poly;
         poly.reserve(raw[pi].size());
         for (std::uint32_t v : raw[pi]) poly.push_back(remap[v]);
-        if (poly.size() < 3) continue;
+        if (poly.size() < 3) return;
         std::vector<PlaneId> edge = f.edge;
-        const std::size_t before = out.triangles.size();
+        TJunctionStats& t = tl_t[tid];
         if (opt.resolve_t) {
             const TPolygon tp =
-                insert_t_vertices(s.table, out.vertices, index, f.support, edge, poly, &st.t);
-            fan_triangulate(tp, out.triangles, &st.t);
+                insert_t_vertices(s.table, out.vertices, index, f.support, edge, poly, &t);
+            fan_triangulate(tp, poly_tris[pi], &t);
         } else {
             TPolygon tp;
             tp.corners = static_cast<std::uint32_t>(poly.size());
             tp.vertex = poly;
             tp.is_corner.assign(poly.size(), 1);
             for (std::uint32_t i = 0; i < poly.size(); ++i) tp.orig.push_back(i);
-            fan_triangulate(tp, out.triangles, &st.t);
+            fan_triangulate(tp, poly_tris[pi], &t);
         }
-        tri_src.insert(tri_src.end(), out.triangles.size() - before,
-                       static_cast<int>(s.polys[pi].src));
+    });
+    std::vector<int> tri_src;
+    for (std::size_t pi = 0; pi < s.polys.size(); ++pi) {
+        for (const mesh::Tri& t : poly_tris[pi]) out.triangles.push_back(t);
+        tri_src.insert(tri_src.end(), poly_tris[pi].size(), static_cast<int>(s.polys[pi].src));
     }
+    for (const TJunctionStats& t : tl_t) detail::merge_tjunction_stats(st.t, t);
+
+    st.ms_tri = lap(t_stage);
 
     // ---- 4. 接触の分裂（§6.3）------------------------------------------------
     if (opt.split_contacts && !out.triangles.empty()) {
         std::vector<std::uint32_t> origin;
-        out.triangles =
-            mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split);
+        // **頂点ごとに独立**（§3）。ID の割り当ては逐次なので決定的です
+        out.triangles = mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split,
+                                             nullptr, nullptr, &pool);
         for (std::uint32_t o : origin) out.vertices.push_back(out.vertices[o]);
     }
 
+    st.ms_split = lap(t_stage);
     if (stats != nullptr) *stats = st;
     return out;
 }

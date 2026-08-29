@@ -519,6 +519,23 @@ if(KRISITE_BUILD_MUTANTS)
     #
     # **「TSan でしか捕まらない」ことが、TSan を置く理由そのものです。**
 
+    # 変異 23: **出口の段の間のバリアを 1 つ外す**（`SPEC-phase4.md` §7.5）。
+    #   **主検出器: parallel（決定性）**
+    #
+    # 扇の計算（並列）と ID の割り当て（逐次）を融合し、**完了した順に**番号を配ります。
+    # 排他は取るので**競合はありません**。番号の付き方だけが変わります。
+    #
+    # **幾何も位相も体積も同じ**なので、`soup` / `nary` / `cp5n` は素通りします。
+    #
+    # > **この変異は最初、素通りしました。** 決定性の検査が `ToMeshOptions` に
+    # > プールを渡しておらず、**出口を 1 スレッドで回していた**からです。
+    # > 「機構を足したら、その機構が空回りしていないことを別に検査する」の実例です
+    # > （`IMPL-phase4.md` §2.4）。
+    krisite_add_mutant(23 KRISITE_MUTATION_NO_EXIT_BARRIER=1 parallel FAIL)
+    krisite_add_mutant(23 KRISITE_MUTATION_NO_EXIT_BARRIER=1 soup     PASS)
+    krisite_add_mutant(23 KRISITE_MUTATION_NO_EXIT_BARRIER=1 nary     PASS)
+    krisite_add_mutant(23 KRISITE_MUTATION_NO_EXIT_BARRIER=1 cp5n     PASS)
+
     # ---- CP5 の組合せでも検出されること（SPEC-phase2 §13）--------------------
     #
     # **CP5 は機構を全部有効にした状態です。** 機構が増えると検出器は移動し、
