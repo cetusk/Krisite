@@ -246,6 +246,51 @@ jobs:
       - name: 適応分割が効いていることを確認
         run: ctest --test-dir build --no-tests=error -R '^cp3$' -V | grep -F "§9.4 適応分割モード"
 
+  # ---- n 項 / スープ経路（SPEC-phase3 §13「CI に n 項のジョブが入っている」）----
+  #
+  # **標準の行列でも `soup` / `cp5n` は走ります。** このジョブが固有に見るのは
+  # **「走ったこと自体」**です。登録が消えても標準の行列は緑のままになるので
+  # （`CLAUDE.md`「ラベルで検査範囲を絞るときは、失敗の向きを安全側に」と同じ形の穴）、
+  # **要約行が出たことを直接見ます。**
+  #
+  # 件数そのものは検査しません。**コーパスが増えたら追随してほしい量**なので、
+  # `cp5n` 側が式（ケース数 × 演算 × パス）で持っています。
+  nary:
+    name: n 項 / スープ経路 (§14 の CP5, b=${{ matrix.coord_bits }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        coord_bits: [21, 26]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - uses: ./.github/actions/ccache
+        with:
+          key: nary-${{ matrix.coord_bits }}
+      - run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_COORD_BITS=${{ matrix.coord_bits }} \
+            -DKRISITE_CHECKED_ARITH=ON \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - run: cmake --build build
+      - name: n 項の経路
+        run: |
+          ctest --test-dir build --no-tests=error -R '^(soup|cp5n|interior)$' \
+            --output-on-failure --parallel 4
+      - name: 経路が実際に走ったことを記録する
+        run: |
+          # **番人が 0 なら `cp5n` 自身が落ちます。** ここで見るのは「登録が消えて
+          # いないか」です。要約行が出なければ、テストが走っていません。
+          out=$(ctest --test-dir build --no-tests=error -R '^cp5n$' -V)
+          echo "$out" | grep -F "相互作用:"
+          echo "$out" | grep -F "n 項"
+          out2=$(ctest --test-dir build --no-tests=error -R '^soup$' -V)
+          echo "$out2" | grep -F "局所 BSP"
+          echo "$out2" | grep -F "順序非依存"
+
   # ---- 検査ビルド（Debug では KRISITE_CHECKED_ARITH が自動で ON）--------------
   # **Debug が固有に検証するのは「検査が自動で ON になる」ことだけです。**
   # 検査そのものは build 行列（RelWithDebInfo + CHECKED_ARITH=ON）が回しています。
@@ -430,7 +475,7 @@ jobs:
           # 時点で 71 → 3 に見えました（番人が黙って壊れる形です）。
           n=$(ctest --test-dir build -N -L '^mutation$' | sed -n 's/^Total Tests: *//p')
           echo "登録されている変異テスト: $n 件"
-          test "$n" -eq 76 || { echo "変異テストの件数が想定と違います（期待 76）"; exit 1; }
+          test "$n" -eq 78 || { echo "変異テストの件数が想定と違います（期待 78）"; exit 1; }
           ctest --test-dir build --no-tests=error -L '^mutation$' --output-on-failure --parallel 4
       - name: 変異 3 は検査ビルドでは表明が止めること
         # もう一方の検出経路。位相検査に届く前に fragment_sign の不変条件が落とす。
@@ -564,6 +609,8 @@ jobs:
       # CI ランナーの数値は揺れるので合否には使わない。傾向の監視のみ。
       - run: ./build-rel/bench/pred_bench
       - run: ./build-rel/bench/arith_bench
+      # SPEC-phase3 §11 の計数と時間。**合否には使いません**（`BENCH.md` に転記済み）。
+      - run: ./build-rel/bench/soup_bench
 
   # ---- 書式 -------------------------------------------------------------------
   format:

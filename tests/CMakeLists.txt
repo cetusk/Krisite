@@ -75,6 +75,8 @@ krisite_add_test(cp3           csg/test_cp3.cpp)
 # 構成点の保持 × T 解決 / early-out × 分裂）。3 経路を踏んだ回数を数え、
 # 0 なら落とす。§9.4.2 の「分裂の有無で幾何が一致する」もここが常時見る
 krisite_add_test(cp5           csg/test_cp5.cpp)
+# **Phase 3 の CP5**（n 項 / スープ経路）。Phase 2 の `cp5` は二項経路のままです。
+krisite_add_test(cp5n          csg/test_cp5n.cpp)
 # SPEC-phase3 §3.1 / §2.1 の CP1。辺平面の構成（軸方向との外積）と、
 # 断片の相対内部の点。**両方の経路が使われることを固定する**（空回りの番人）
 krisite_add_test(interior      csg/test_interior.cpp)
@@ -430,6 +432,19 @@ if(KRISITE_BUILD_MUTANTS)
     if(KRISITE_GMP_FOUND)
         krisite_add_mutant(16 KRISITE_MUTATION_BSP_NEVER_CUT=1 volume_gmp FAIL GMP)
     endif()
+
+    # 変異 17: 「この曲面がこのセルに存在するか」を、**割り当て用の半開区間の述語**で
+    # 判定する（`assign_to_cell`）。
+    #   **主検出器: cp5n（early-out 有無の一致）**
+    #
+    # **これは実際に入っていた誤りです**（`IMPL-phase3.md` §7.1）。面がセルの上側境界に
+    # ちょうど乗る配置でしか出ません。存在の問いは**閉領域**（`overlaps_cell`）です。
+    #
+    #   cp5n … early-out 有無の一致が崩れる。n 項 3 source × 適応分割で非多様体になる
+    #
+    # **二項実装は別経路なので `cp3` などは素通りします。**
+    krisite_add_mutant(17 KRISITE_MUTATION_HALF_OPEN_PRESENCE=1 cp5n FAIL)
+    krisite_add_mutant(17 KRISITE_MUTATION_HALF_OPEN_PRESENCE=1 cp3  PASS)
 
     # ---- CP5 の組合せでも検出されること（SPEC-phase2 §13）--------------------
     #

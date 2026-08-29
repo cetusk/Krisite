@@ -130,8 +130,9 @@ struct Totals {
     // ---- 相互作用の計数（**空回りの番人**）----
     std::size_t adaptive_x_split = 0;   ///< 葉の深さに差があり、かつ分裂が起きた構成
     std::size_t cache_x_tjunction = 0;  ///< 保持された点が T 頂点として入った回数
-    std::size_t early_out_x_split = 0;  ///< early-out 由来の三角形に接する頂点の分裂
-    std::size_t uneven_leaves = 0;      ///< 葉の深さに差が出た構成
+    /// early-out 由来の三角形に接する頂点の分裂。**retire 済み。0 が正**（§13）
+    std::size_t early_out_x_split = 0;
+    std::size_t uneven_leaves = 0;  ///< 葉の深さに差が出た構成
     std::size_t early_out_cells = 0;
     std::size_t cache_hits = 0;
     std::size_t t_inserted = 0;
@@ -240,7 +241,7 @@ void check_not_vacuous() {
     std::printf("\n    **相互作用（どれかが 0 なら CP5 は空回りです）**\n");
     std::printf("      適応分割 × 分裂        %zu 構成\n", g.adaptive_x_split);
     std::printf("      構成点の保持 × T 解決  %zu 回\n", g.cache_x_tjunction);
-    std::printf("      early-out × 分裂       %zu 回\n", g.early_out_x_split);
+    std::printf("      early-out × 分裂       %zu 回（retire。0 が正）\n", g.early_out_x_split);
 
     KRI_CHECK_MSG(g.configs == expect, "構成数が期待と違う。**空回りの疑い**");
     KRI_CHECK_MSG(g.adaptive_x_split > 0,
@@ -249,9 +250,27 @@ void check_not_vacuous() {
     KRI_CHECK_MSG(g.cache_x_tjunction > 0,
                   "**構成点の保持 × T 解決を 1 度も踏んでいない。** 保持された点が"
                   "T 頂点として挿入される配置がコーパスにありません");
-    KRI_CHECK_MSG(g.early_out_x_split > 0,
-                  "**early-out × 分裂を 1 度も踏んでいない。** arrangement を省いたセルの"
-                  "断片が分裂に回る配置がコーパスにありません");
+    // **early-out × 分裂 は retire しました**（`SPEC-phase2.md` §13、2026-08-28）。
+    //
+    // **「作れなかったから外す」ではなく、構造的に到達不能だから外します**
+    // （`CLAUDE.md`「番人を retire するときは、証明とセットにしてください」）。
+    //
+    // > 早期脱出したセル $C$ の**閉じた箱**に相手の三角形が 1 枚も無いなら、
+    // > 相手の曲面は $\overline{C}$ に届きません。接触辺（次数 4）は $A$ の 2 枚と
+    // > $B$ の 2 枚が辺を共有する形なので、**$C$ 由来の断片が接触に加わるには
+    // > 相手の曲面が $\overline{C}$ に届く必要があり、矛盾します。**
+    //
+    // **Phase 2 では 19 回発火していましたが、それはすべてバグ経由でした。**
+    // early-out の存在判定に**割り当て用の半開区間の述語**を使っており、面がセルの
+    // 上側境界に乗ると「存在しない」と誤答していました（`IMPL-phase3.md` §7.1）。
+    // 閉領域（`overlaps_cell`）で判定するのが正しく、直したら 19 → 0 になりました。
+    //
+    // **したがって「0 でなければならない」に反転します。** 非零に戻ったら、
+    // 存在判定がまた割り当て用の述語に戻ったということなので、そこで落とします。
+    KRI_CHECK_MSG(g.early_out_x_split == 0,
+                  "**early-out × 分裂が発火した。** 早期脱出したセルの閉じた箱には相手の"
+                  "曲面が無いので、構造的に到達不能なはずです。存在判定が半開区間の述語に"
+                  "戻っていないか確認してください（SPEC-phase2 §13 / IMPL-phase3 §7.1）");
 }
 
 }  // namespace
