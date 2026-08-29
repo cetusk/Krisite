@@ -10,7 +10,7 @@
 </p>
 
 
-# Krisite: Exact, plane-based geometry for point clouds and meshes
+# Krisite — exact, plane-based geometry for point clouds and meshes
 
 `Krisite` は 3D データを扱う C++20 ヘッダオンリーライブラリです。
 最終目標は点群圧縮・メッシュ化・厳密ブール演算の統合です。
@@ -25,7 +25,7 @@
 |---|---|---|
 | `arith/` | 固定幅の厳密整数演算（動的確保なし・例外なし・グローバル状態なし） | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
 | `geom/` | 平面ベース幾何述語。**幅を型で表す**ので上界超過がコンパイル時に防がれる | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
-| `mesh/` `octree/` `csg/` | 厳密ブール演算（$\cup$ / $\cap$ / $\setminus$、**$n$ 項**）、位相検査、**適応分割 + early-out + 構成点の保持**、**接触の分裂**、**WNV による分類** | [`SPEC-phase1.md`](docs/SPEC-phase1.md) 〜 [`SPEC-phase3.md`](docs/SPEC-phase3.md) |
+| `mesh/` `octree/` `csg/` | 厳密ブール演算（$\cup$ / $\cap$ / $\setminus$、**$n$ 項**）、位相検査、**適応分割 + early-out + 構成点の保持**、**局所 BSP**、**接触の分裂**、**WNV による分類**、入口の**凸分割** | [`SPEC-phase1.md`](docs/SPEC-phase1.md) 〜 [`SPEC-phase3.md`](docs/SPEC-phase3.md) |
 
 **浮動小数点も許容誤差も使いません。** 判定はすべて整数の厳密演算です。
 
@@ -48,15 +48,17 @@ int s2 = side(pl, v);          // 除算なしで厳密に判定
 bool lt = lex_less(v, other_v);
 ```
 
-ブール演算も同じ厳密性の上に乗っています。まず 2 枚の場合（`boolean_op`）から。
+ブール演算も同じ厳密性の上に乗っています。
 
 ```cpp
-#include <krisite/csg/boolean.hpp>
+#include <krisite/csg/boolean.hpp>       // 二項の boolean_op
+#include <krisite/csg/soup_boolean.hpp>  // n 項の boolean（PolySoup 経路）
+#include <krisite/csg/to_mesh.hpp>
 
 using namespace krisite;
 
 mesh::TriMesh A = /* 整数座標の閉じた向き付き三角メッシュ */;
-mesh::TriMesh B = /* 同上 */;
+mesh::TriMesh B = /* 同上 */, C = /* 同上 */;
 
 csg::BoolStats st;
 // depth は八分木の分割深度（実行時パラメータ）。意味論には影響しない
@@ -65,67 +67,25 @@ csg::BoolMesh r = csg::boolean_op(A, B, csg::BoolOp::Union, /*depth=*/2, &st);
 // 出力の頂点は座標を持たない構成点（3 平面の交点）のまま
 auto t = mesh::check_topology(r.triangles);
 assert(t.ok());                  // 辺多様体・頂点多様体・向きの整合・退化なし
-```
 
-3 枚以上を組み合わせるとき、この二項 API では中間結果をメッシュに戻す必要があります。
-そこで型を CSG について閉じさせたのが次の `PolySoup` 経路です。
-
-### $n$ 項の CSG ツリー — 中間結果を丸めません
-
-**ブール演算は連鎖して使うのが常態です。** 二項の API で $(A \cup B) \setminus C$ を書くと、
-中間結果をメッシュに戻す必要があり、そこで頂点を整数に丸めるか、平面表を作り直すことに
-なります。Krisite は入出力をどちらも `PolySoup` にして**型を CSG について閉じさせます。**
-
-```cpp
-#include <krisite/csg/polysoup.hpp>
-#include <krisite/csg/soup_boolean.hpp>
-#include <krisite/csg/to_mesh.hpp>
-
-using namespace krisite;
-
-mesh::TriMesh A = /* … */, B = /* … */, C = /* … */, D = /* … */;
+// 3 枚以上は PolySoup 経路で。**中間結果を丸めません**（型が CSG について閉じる）
 csg::BoolOptions opt;
 opt.depth = 2;
+csg::PolySoup s = csg::boolean(csg::from_mesh(A), csg::from_mesh(B), csg::BoolOp::Union, opt);
+s = csg::boolean(s, csg::from_mesh(C), csg::BoolOp::Difference, opt);   // (A ∪ B) \ C
 
-// 入口: 量子化・辺平面の構成はここだけ
-const csg::PolySoup a = csg::from_mesh(A);
-const csg::PolySoup b = csg::from_mesh(B);
-const csg::PolySoup c = csg::from_mesh(C);
-const csg::PolySoup d = csg::from_mesh(D);
-
-// ((A ∪ B) \ C) ∪ D — 中間に TriMesh は現れない
-csg::PolySoup r = csg::boolean(a, b, csg::BoolOp::Union, opt);
-r = csg::boolean(r, c, csg::BoolOp::Difference, opt);
-r = csg::boolean(r, d, csg::BoolOp::Union, opt);
-
-assert(r.source_count() == 4);   // 入力 4 枚がそのまま残っている
-assert(r.sources[0].vertices == A.vertices);  // 丸められていない
-
-// 出口: 縫合・T 頂点の解決・接触の分裂・三角形化はここだけ
-const csg::SoupMesh out = csg::to_mesh(r);
+assert(s.source_count() == 3);                // 入力 3 枚がそのまま残っている
+assert(s.sources[0].vertices == A.vertices);  // 1 ビットも変わっていない
+const csg::SoupMesh out = csg::to_mesh(s);    // 縫合・T 解決・分裂・三角形化はここだけ
 ```
 
-`PolySoup` が持つのは **第 0 世代の入力メッシュそのもの**（`sources`）と、
-**指示関数の式木**（`indicator`）です。段を重ねても `sources` は増えるだけで、
-入力の頂点は 1 ビットも変わりません。分類は各点の**巻き数ベクトル**
-$\mathbf{w} \in \mathbb{Z}^n$ に指示関数を適用して行います。
-
-```cpp
-// 指示関数は真理値表ではなく式木です。定義域が {0,1}^n ではなく Z^n なので、
-// 表という形が存在しません（同じ曲面を 2 度跨ぐと w = 2 になります）。
-assert(r.indicator.eval(std::vector<std::int32_t>{1, 0, 0, 0}));  // A の内側 → in
-```
-
-**その帰結として、同じメッシュを 2 度使う連鎖が書けます。** $(A \cup B) \setminus B$ は
-$A \setminus B$ と一致します — 内外の 1 ビットでは表せない配置です。
-
-```cpp
-csg::PolySoup ub = csg::boolean(csg::boolean(a, b, csg::BoolOp::Union, opt), b,
-                                csg::BoolOp::Difference, opt);
-```
-
-**ビット幅は連鎖で伸びません。** CSG は新しい平面を作らないので、構成点は何段重ねても
-「入力平面から 3 枚を選んだ交点」のままです（実測: 1 段 / 2 段 / 3 段とも 142 ビット）。
+`PolySoup` が持つのは**第 0 世代の入力メッシュそのもの**（`sources`）と、
+**指示関数の式木**（`indicator`）です。分類は各点の巻き数ベクトル
+$\mathbf{w} \in \mathbb{Z}^n$ に指示関数を適用して行うので、
+$(A \cup B) \setminus B = A \setminus B$ のように**同じ曲面を 2 度跨ぐ連鎖**も書けます
+（内外の 1 ビットでは表せません）。**ビット幅は連鎖で伸びません** —
+CSG は新しい平面を作らないので、構成点は何段重ねても
+「入力平面から 3 枚を選んだ交点」のままです（実測: 1 段 / 2 段 / 3 段とも 141 ビット）。
 
 浮動小数点は一切使いません。すべての述語は固定幅整数の符号だけで決まり、
 動的メモリ確保・例外・グローバル状態がないため、そのまま並列化できます。
@@ -174,7 +134,8 @@ ctest --test-dir build -R fixed_int --output-on-failure
 cmake -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DKRISITE_CHECKED_ARITH=OFF -DKRISITE_BUILD_BENCH=ON
 cmake --build build-rel
-./build-rel/bench/pred_bench
+./build-rel/bench/pred_bench   # 述語のスループット
+./build-rel/bench/soup_bench   # 入口・中核・出口の内訳（SPEC-phase3 §11）
 ```
 
 ### CMake オプション
@@ -234,14 +195,16 @@ CI は次のジョブを回します。
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **現在地とフェーズの全体像。まずここを読む** |
 | [`docs/SPEC-phase3.md`](docs/SPEC-phase3.md) | **Phase 3 の仕様。** $n$ 項の契約、WNV、中核と後処理の分離 |
-| [`docs/IMPL-phase3.md`](docs/IMPL-phase3.md) | Phase 3 の実装ノート（進行中） |
+| [`docs/IMPL-phase3.md`](docs/IMPL-phase3.md) | Phase 3 の実装ノート（進行中）。判断と根拠、**踏んだ誤りと訂正** |
+| [`docs/LOG-phase3-design.md`](docs/LOG-phase3-design.md) | Phase 3 の仕様を決めるまでの議論ログ |
+| [`docs/DECISION-core-contract.md`](docs/DECISION-core-contract.md) | 中核の契約（$n$ 項・WNV・中核と後処理の分離）を決めた経緯 |
 | [`docs/SPEC-phase2.md`](docs/SPEC-phase2.md) | Phase 2 の仕様。分割平面の絞り込み、適応分割、非多様体出力の意味論 |
 | [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) | Phase 2 の実装ノート（**完了時点**）。判断と根拠、機構が検出器を動かした記録 |
 | [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 の仕様。縫合の可否判定、テストコーパス、中止条件 |
 | [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) | Phase 1 の実装ノート（**完了時点**）。判断と根拠、**つまずいた点と訂正** |
 | [`docs/SPEC-phase0.md`](docs/SPEC-phase0.md) | Phase 0 の仕様。ビット幅解析、述語一覧、テスト要件 |
 | [`docs/IMPL-phase0.md`](docs/IMPL-phase0.md) | Phase 0 の実装ノート。**なぜそう作ったか**、検証の設計と検出力、Phase 1 への申し送り |
-| [`docs/BENCH.md`](docs/BENCH.md) | ベンチマークの基準線と、Phase 1 / Phase 2 の計数 |
+| [`docs/BENCH.md`](docs/BENCH.md) | ベンチマークの基準線と、Phase 1 / 2 / 3 の計数 |
 | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | 第三者コンポーネントの扱いと、それを機構で保証する仕組み |
 | [`docs/STYLE.md`](docs/STYLE.md) | コーディング規約（命名、書式、算術コードの制約） |
 | [`assets/BRAND.md`](assets/BRAND.md) | ロゴとテーマカラーの定義 |
@@ -314,8 +277,26 @@ Phase 1 が明らかにした構造的な数値も残ります。
 | 値ベース併合の発火率 | 最大 **44%** | 平面3つ組をキーにする第1段だけでは足りない |
 | 併合グループの空間的な広がり | **1 セルとその隣接まで** | 大域整列は不要。並列化はセル単位で閉じる |
 
+### 実測値（Phase 3）
+
+中核と後処理を分けて測っています。**先行研究の数値がどこまでを含むかを確かめないと
+比較になりません** — EMBER の 1.6 ms はスープを出すまでの時間です。
+
+| 区分 | 時間 | 割合 |
+|---|---:|---:|
+| `from_mesh`（入口） | 0.8 ms | 0.7% |
+| **`boolean`（中核）** | **75.9 ms** | **64.6%** |
+| `to_mesh`（出口） | 40.9 ms | 34.8% |
+
+| 機構 | 効果 |
+|---|---|
+| 局所 BSP（過剰分割の置き換え） | 生の断片 **80.3%** / 正準化後 **78.6%** |
+| 凸分割（入口、実行時切替） | 片 **54.5%** / 平面 **64.9%** / 断片 **76.8%** |
+| 連鎖 1 / 2 / 3 段のビット幅 | **141 のまま伸びない** |
+
 詳細は [`docs/BENCH.md`](docs/BENCH.md)、判断の経緯は
-[`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) と [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md)。
+[`docs/IMPL-phase1.md`](docs/IMPL-phase1.md)、[`docs/IMPL-phase2.md`](docs/IMPL-phase2.md)、
+[`docs/IMPL-phase3.md`](docs/IMPL-phase3.md)。
 
 ## 参考文献
 
@@ -323,8 +304,14 @@ Phase 1 が明らかにした構造的な数値も残ります。
 |---|---|
 | **EMBER** | Trettner, Nehring-Wirxel, Kobbelt. *EMBER: Exact Mesh Booleans via Efficient & Robust Local Arrangements.* ACM TOG 41(4), SIGGRAPH 2022. |
 | **OEBSP** | Nehring-Wirxel, Trettner, Kobbelt. *Fast Exact Booleans for Iterated CSG using Octree-Embedded BSPs.* CAD 135, 2021. |
+| **FARMA** | Cherchi, Livesu, Scateni, Attene. *Fast and Robust Mesh Arrangements using Floating-point Arithmetic.* ACM TOG 39(6), 2020. |
 | **Levy24** | Bruno Lévy. *Exact predicates, exact constructions and combinatorics for mesh CSG.* arXiv:2405.12949. |
 | **Shewchuk97** | Shewchuk. *Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric Predicates.* DCG 18(3), 1997. |
 
-実装はすべて論文からの再実装です。GPL/LGPL のコード（CGAL、Indirect_Predicates、
-OpenMeshCraft、VCGlib 等）は参照・引用・移植していません。
+**論文は記述だけを読んでいます。実装は 1 行も参照していません。**
+設計には論文に述べられた考え方（局所 BSP、半開区間の割り当て、巻き数による分類など）を
+取り入れていますが、ビット幅の導出・辺平面の構成・T 頂点の解決・分類の分解などは
+自分で導いたものです。
+
+**GPL / LGPL のコード（CGAL、Indirect_Predicates、OpenMeshCraft、VCGlib 等）は
+参照・引用・移植していません。**

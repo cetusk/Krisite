@@ -28,7 +28,7 @@ project stands (Japanese).
 |---|---|---|
 | `arith/` | Fixed-width exact integers — no dynamic allocation, no exceptions, no global state | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
 | `geom/` | Plane-based geometric predicates. **Widths live in the type**, so exceeding a derived bound is a compile error | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
-| `mesh/` `octree/` `csg/` | Exact booleans ($\cup$ / $\cap$ / $\setminus$, **$n$-ary**), topology checking, **adaptive subdivision + early-out + constructed-point reuse**, **contact splitting**, **WNV classification** | [`SPEC-phase1.md`](docs/SPEC-phase1.md) – [`SPEC-phase3.md`](docs/SPEC-phase3.md) |
+| `mesh/` `octree/` `csg/` | Exact booleans ($\cup$ / $\cap$ / $\setminus$, **$n$-ary**), topology checking, **adaptive subdivision + early-out + constructed-point reuse**, **local BSP**, **contact splitting**, **WNV classification**, a **convex split** at the entry | [`SPEC-phase1.md`](docs/SPEC-phase1.md) – [`SPEC-phase3.md`](docs/SPEC-phase3.md) |
 
 **No floating point, no epsilons.** Every decision is the sign of an exact integer.
 
@@ -56,12 +56,14 @@ bool lt = lex_less(v, other_v);
 Booleans sit on the same exactness.
 
 ```cpp
-#include <krisite/csg/boolean.hpp>
+#include <krisite/csg/boolean.hpp>       // binary boolean_op
+#include <krisite/csg/soup_boolean.hpp>  // n-ary boolean (the PolySoup path)
+#include <krisite/csg/to_mesh.hpp>
 
 using namespace krisite;
 
 mesh::TriMesh A = /* closed, oriented triangle mesh on integer coordinates */;
-mesh::TriMesh B = /* likewise */;
+mesh::TriMesh B = /* likewise */, C = /* likewise */;
 
 csg::BoolStats st;
 // `depth` is the octree subdivision depth — a runtime parameter that
@@ -71,71 +73,26 @@ csg::BoolMesh r = csg::boolean_op(A, B, csg::BoolOp::Union, /*depth=*/2, &st);
 // Output vertices remain constructed points (intersections of three planes).
 auto t = mesh::check_topology(r.triangles);
 assert(t.ok());  // edge-manifold, vertex-manifold, consistently oriented, non-degenerate
-```
 
-Combining three or more meshes with that binary API would force the intermediate
-result back through a mesh. The `PolySoup` path below closes the type under CSG instead.
-
-### $n$-ary CSG trees — intermediate results are never rounded
-
-**Booleans are normally used in chains.** With a binary API, writing
-$(A \cup B) \setminus C$ forces you to turn the intermediate result back into a mesh,
-which means either rounding its vertices to integers or rebuilding the plane table.
-Krisite makes both the input and the output a `PolySoup`, so **the type is closed
-under CSG.**
-
-```cpp
-#include <krisite/csg/polysoup.hpp>
-#include <krisite/csg/soup_boolean.hpp>
-#include <krisite/csg/to_mesh.hpp>
-
-using namespace krisite;
-
-mesh::TriMesh A = /* … */, B = /* … */, C = /* … */, D = /* … */;
+// Three or more meshes go through the PolySoup path, which **never rounds an
+// intermediate result** — the type is closed under CSG.
 csg::BoolOptions opt;
 opt.depth = 2;
+csg::PolySoup s = csg::boolean(csg::from_mesh(A), csg::from_mesh(B), csg::BoolOp::Union, opt);
+s = csg::boolean(s, csg::from_mesh(C), csg::BoolOp::Difference, opt);   // (A ∪ B) \ C
 
-// Entry: quantisation and edge-plane construction happen only here
-const csg::PolySoup a = csg::from_mesh(A);
-const csg::PolySoup b = csg::from_mesh(B);
-const csg::PolySoup c = csg::from_mesh(C);
-const csg::PolySoup d = csg::from_mesh(D);
-
-// ((A ∪ B) \ C) ∪ D — no TriMesh appears in between
-csg::PolySoup r = csg::boolean(a, b, csg::BoolOp::Union, opt);
-r = csg::boolean(r, c, csg::BoolOp::Difference, opt);
-r = csg::boolean(r, d, csg::BoolOp::Union, opt);
-
-assert(r.source_count() == 4);                // all four inputs are still there
-assert(r.sources[0].vertices == A.vertices);  // untouched, not rounded
-
-// Exit: stitching, T-vertex resolution, contact splitting and triangulation
-// happen only here
-const csg::SoupMesh out = csg::to_mesh(r);
+assert(s.source_count() == 3);                // all three inputs are still there
+assert(s.sources[0].vertices == A.vertices);  // not one bit changed
+const csg::SoupMesh out = csg::to_mesh(s);    // stitch, resolve T-vertices, split, triangulate
 ```
 
 A `PolySoup` carries **the generation-0 input meshes themselves** (`sources`) plus
-**an expression tree for the indicator function** (`indicator`). Chaining only ever
-appends to `sources`; not one bit of an input vertex changes. Classification applies
-the indicator to each point's **winding number vector** $\mathbf{w} \in \mathbb{Z}^n$.
-
-```cpp
-// The indicator is an expression tree, not a truth table: its domain is Z^n rather
-// than {0,1}^n, so a table does not exist (crossing the same surface twice gives w = 2).
-assert(r.indicator.eval(std::vector<std::int32_t>{1, 0, 0, 0}));  // inside A → in
-```
-
-**A consequence: you can reuse the same mesh inside a chain.** $(A \cup B) \setminus B$
-agrees with $A \setminus B$ — a configuration a single inside/outside bit cannot express.
-
-```cpp
-csg::PolySoup ub = csg::boolean(csg::boolean(a, b, csg::BoolOp::Union, opt), b,
-                                csg::BoolOp::Difference, opt);
-```
-
-**Bit widths do not grow along a chain.** CSG introduces no new planes, so a constructed
-point stays "the intersection of three planes chosen from the input", however many
-stages you add (measured: 142 bits at 1, 2 and 3 stages).
+**an expression tree for the indicator function** (`indicator`). Classification applies
+that indicator to each point's winding number vector $\mathbf{w} \in \mathbb{Z}^n$, so a
+chain may cross the same surface twice: $(A \cup B) \setminus B = A \setminus B$, which a
+single inside/outside bit cannot express. **Bit widths do not grow along a chain** —
+CSG introduces no new planes, so a constructed point stays "the intersection of three
+planes chosen from the input" (measured: 141 bits at 1, 2 and 3 stages).
 
 Because every predicate reduces to the sign of a fixed-width integer, and because
 there is no allocation, no exception and no global state, the whole thing
@@ -190,7 +147,8 @@ ctest --test-dir build -R fixed_int --output-on-failure
 cmake -B build-rel -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DKRISITE_CHECKED_ARITH=OFF -DKRISITE_BUILD_BENCH=ON
 cmake --build build-rel
-./build-rel/bench/pred_bench
+./build-rel/bench/pred_bench   # predicate throughput
+./build-rel/bench/soup_bench   # entry / core / exit breakdown (SPEC-phase3 §11)
 ```
 
 ### CMake options
@@ -253,17 +211,20 @@ The design documents are written in Japanese.
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **Where the project stands. Start here** |
 | [`docs/SPEC-phase3.md`](docs/SPEC-phase3.md) | **Phase 3 spec.** The $n$-ary contract, WNV, core/post-processing split |
-| [`docs/IMPL-phase3.md`](docs/IMPL-phase3.md) | Phase 3 implementation notes (in progress) |
+| [`docs/IMPL-phase3.md`](docs/IMPL-phase3.md) | Phase 3 implementation notes (in progress). Decisions, rationale, **and the mistakes that were corrected** |
+| [`docs/LOG-phase3-design.md`](docs/LOG-phase3-design.md) | The discussion log behind the Phase 3 spec |
+| [`docs/DECISION-core-contract.md`](docs/DECISION-core-contract.md) | How the core contract ($n$-ary, WNV, core/post-processing split) was decided |
 | [`docs/SPEC-phase2.md`](docs/SPEC-phase2.md) | Phase 2 spec: split-plane culling, adaptive subdivision, non-manifold output semantics |
 | [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) | Phase 2 implementation notes (**as of completion**). Decisions, rationale, and how added mechanisms moved the detectors |
 | [`docs/SPEC-phase1.md`](docs/SPEC-phase1.md) | Phase 1 spec: the stitching question, test corpus, abort conditions |
 | [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) | Phase 1 implementation notes. Decisions, rationale, **and the mistakes that were corrected** |
 | [`docs/SPEC-phase0.md`](docs/SPEC-phase0.md) | Phase 0 spec: bit-width analysis, predicates, test requirements |
 | [`docs/IMPL-phase0.md`](docs/IMPL-phase0.md) | Phase 0 implementation notes. **Why it is built this way**, and how the tests were designed to have detection power |
-| [`docs/BENCH.md`](docs/BENCH.md) | Benchmark baseline and the Phase 1 / Phase 2 measurements |
+| [`docs/BENCH.md`](docs/BENCH.md) | Benchmark baseline and the Phase 1 / 2 / 3 measurements |
 | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | Third-party components and the mechanisms that keep them out of the distributable |
 | [`docs/STYLE.md`](docs/STYLE.md) | Coding conventions |
 | [`assets/BRAND.md`](assets/BRAND.md) | Logo and theme colours |
+| [`tools/README.md`](tools/README.md) | One-off revision scripts for the documents (**not part of the library**) |
 
 ## Licence
 
@@ -336,9 +297,28 @@ The structural numbers Phase 1 established still hold.
 | Rate of value-based vertex merging | up to **44%** | Keying on the plane triple alone is not enough |
 | Spatial extent of a merge group | **one cell and its neighbours** | No global sort needed; parallelism closes at cell scope |
 
+### Measurements (Phase 3)
+
+The core and the post-processing are timed separately. **Comparing against published
+numbers means first checking what they include** — EMBER's 1.6 ms is the time to
+produce the soup, nothing after it.
+
+| Stage | Time | Share |
+|---|---:|---:|
+| `from_mesh` (entry) | 0.8 ms | 0.7% |
+| **`boolean` (core)** | **75.9 ms** | **64.6%** |
+| `to_mesh` (exit) | 40.9 ms | 34.8% |
+
+| Mechanism | Effect |
+|---|---|
+| Local BSP (replacing over-subdivision) | raw fragments **80.3%** / canonicalised **78.6%** |
+| Convex split (entry, runtime switch) | pieces **54.5%** / planes **64.9%** / fragments **76.8%** |
+| Bit width at chain depth 1 / 2 / 3 | **stays at 141** |
+
 Details in [`docs/BENCH.md`](docs/BENCH.md); the reasoning behind them in
-[`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) and
-[`docs/IMPL-phase2.md`](docs/IMPL-phase2.md).
+[`docs/IMPL-phase1.md`](docs/IMPL-phase1.md),
+[`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) and
+[`docs/IMPL-phase3.md`](docs/IMPL-phase3.md).
 
 ## References
 
@@ -346,9 +326,15 @@ Details in [`docs/BENCH.md`](docs/BENCH.md); the reasoning behind them in
 |---|---|
 | **EMBER** | Trettner, Nehring-Wirxel, Kobbelt. *EMBER: Exact Mesh Booleans via Efficient & Robust Local Arrangements.* ACM TOG 41(4), SIGGRAPH 2022. |
 | **OEBSP** | Nehring-Wirxel, Trettner, Kobbelt. *Fast Exact Booleans for Iterated CSG using Octree-Embedded BSPs.* CAD 135, 2021. |
+| **FARMA** | Cherchi, Livesu, Scateni, Attene. *Fast and Robust Mesh Arrangements using Floating-point Arithmetic.* ACM TOG 39(6), 2020. |
 | **Levy24** | Bruno Lévy. *Exact predicates, exact constructions and combinatorics for mesh CSG.* arXiv:2405.12949. |
 | **Shewchuk97** | Shewchuk. *Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric Predicates.* DCG 18(3), 1997. |
 
-Everything is a reimplementation from the papers. No GPL/LGPL code (CGAL,
-Indirect_Predicates, OpenMeshCraft, VCGlib and the like) has been consulted,
-quoted, or ported.
+**Only the papers' prose was read; no implementation was consulted.** The design
+adopts ideas described in them (the local BSP, half-open cell assignment,
+winding-number classification), while the bit-width derivation, the edge-plane
+construction, T-vertex resolution and the front/back decomposition of the classification
+were derived here.
+
+**No GPL/LGPL code (CGAL, Indirect_Predicates, OpenMeshCraft, VCGlib and the like)
+has been consulted, quoted, or ported.**
