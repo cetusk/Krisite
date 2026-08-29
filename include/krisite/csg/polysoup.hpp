@@ -178,6 +178,15 @@ inline constexpr std::size_t kMergeAll = static_cast<std::size_t>(-1);
 
 namespace detail {
 
+/// 比例する 2 平面の向きが同じか（`PlaneTable` の正準化と同じ規則）。
+inline bool same_orientation(const geom::PlaneD& a, const geom::PlaneD& b) noexcept {
+    for (int i = 0; i < 4; ++i) {
+        const int sa = arith::sign(geom::detail::plane_coeff(a, i));
+        if (sa != 0) return sa == arith::sign(geom::detail::plane_coeff(b, i));
+    }
+    return true;
+}
+
 /// 支持平面の法線の絶対値が最大の軸。**投影して 2D で扱うため**の軸です。
 inline geom::Axis dominant_axis(const geom::PlaneD& pl) {
     const std::size_t bx = arith::min_bits(pl.a), by = arith::min_bits(pl.b),
@@ -281,9 +290,16 @@ inline PolySoup from_mesh(const mesh::TriMesh& m, const FromMeshOptions& opt = {
     // ---- 1. 三角形を「支持平面 + 頂点ループ」にする ---------------------------
     //
     // **併合の上限が 0 ならここで終わり**、三角形化そのものになります（§4.1）。
+    //
+    // > **平面表への登録は段 3 でだけ行います。** `PlaneTable` の正準代表は
+    // > **最初に登録された向き**なので、登録順を変えると `flipped` が変わります。
+    // > 段 1 で支持平面をまとめて登録すると、**三角形化のときの順序が変わり**、
+    // > 既存の検出器が黙って失われます（実際に変異 15 が `volume_gmp` で
+    // > 素通りするようになりました。`IMPL-phase3.md` §10.5）。
+    // >
+    // > **上限 0 のとき、登録の順序は書き換え前と 1 つも変わりません。**
     struct Piece {
-        PlaneId support = kNoPlane;
-        bool flipped = false;
+        geom::PlaneD sp{};                ///< 三角形自身の平面（**値**で持つ）
         std::vector<std::uint32_t> loop;  ///< `m.vertices` への添字
         std::uint32_t tag = 0;            ///< **最小の三角形添字**（正準）
         bool alive = true;
@@ -295,10 +311,8 @@ inline PolySoup from_mesh(const mesh::TriMesh& m, const FromMeshOptions& opt = {
         const geom::PlaneD sp =
             geom::plane_from_triangle(m.vertices[t[0]], m.vertices[t[1]], m.vertices[t[2]]);
         if (geom::is_degenerate(sp)) continue;  // 面積 0 の三角形は入口で落とす
-        const PlaneRef ref = s.table.intern(sp);
         Piece p;
-        p.support = ref.id;
-        p.flipped = ref.flipped;
+        p.sp = sp;
         p.loop = {t[0], t[1], t[2]};
         p.tag = static_cast<std::uint32_t>(ti);
         pieces.push_back(std::move(p));
@@ -323,11 +337,12 @@ inline PolySoup from_mesh(const mesh::TriMesh& m, const FromMeshOptions& opt = {
             changed = false;
             for (std::size_t i = 0; i < pieces.size() && merges < opt.max_merges; ++i) {
                 if (!pieces[i].alive) continue;
-                const geom::Axis ax = detail::dominant_axis(s.table.at(pieces[i].support));
+                const geom::Axis ax = detail::dominant_axis(pieces[i].sp);
                 for (std::size_t j = i + 1; j < pieces.size(); ++j) {
                     if (!pieces[j].alive) continue;
-                    if (pieces[j].support != pieces[i].support) continue;
-                    if (pieces[j].flipped != pieces[i].flipped) continue;
+                    // **同じ平面で、向きも同じであること。** 平面表を使わずに直接比べます
+                    if (geom::plane_cmp(pieces[j].sp, pieces[i].sp) != 0) continue;
+                    if (detail::same_orientation(pieces[i].sp, pieces[j].sp) == false) continue;
                     // 共有する有向辺を探す
                     const std::size_t na = pieces[i].loop.size();
                     std::size_t ia = static_cast<std::size_t>(-1), ib = ia;
@@ -362,13 +377,12 @@ inline PolySoup from_mesh(const mesh::TriMesh& m, const FromMeshOptions& opt = {
     s.polys.reserve(pieces.size());
     for (const Piece& p : pieces) {
         if (!p.alive) continue;
-        // **値で受けること。** `intern` が平面表を伸ばすと参照が無効になります
-        // （実際に踏みました。支持平面と平行な候補が棄却されなくなり、
-        // 辺平面が支持平面と一致して `intersect3` が w=0 で落ちます）。
-        const geom::PlaneD sp = s.table.at(p.support);
+        // **支持平面 → 辺平面の順に登録します**（書き換え前と同じ順序）。
+        const geom::PlaneD& sp = p.sp;  // Piece が値で持っているので無効化しません
+        const PlaneRef ref = s.table.intern(sp);
         Poly q;
-        q.frag.support = p.support;
-        q.frag.flipped = p.flipped;
+        q.frag.support = ref.id;
+        q.frag.flipped = ref.flipped;
         q.frag.owner = 0;
         q.src = 0;
         q.tag = p.tag;
