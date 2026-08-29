@@ -310,7 +310,7 @@ to_mesh   : PolySoup → TriMesh              exit: stitch, resolve T-vertices, 
 
 Classification moved from sign vectors to **generalized winding number vectors (WNV)**.
 Fragment subdivision moved from over-subdivision by every support plane to a **local BSP**
-(raw fragments down to 80.0%, canonicalised fragments to 78.2%).
+(raw fragments down to 80.3%, canonicalised fragments to 78.6%).
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) (Japanese).
 
 ### Measurements (Phase 1 → Phase 2)
