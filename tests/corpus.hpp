@@ -6,7 +6,9 @@
 #ifndef KRISITE_TESTS_CORPUS_HPP
 #define KRISITE_TESTS_CORPUS_HPP
 
+#include <array>
 #include <cstdint>
+#include <map>
 #include <vector>
 
 #include "krisite/mesh/tri_mesh.hpp"
@@ -619,6 +621,80 @@ inline TriMesh case16_b() {
     return prism4(px, py, at(-130, 256), at(130, 256));
 }
 
+/// 断面が任意の**星型**単純多角形の角柱（頂点 0 からの扇で三角形化）。
+inline TriMesh star_prism(const std::vector<std::int32_t>& px, const std::vector<std::int32_t>& py,
+                          std::int32_t zlo, std::int32_t zhi) {
+    const std::size_t n = px.size();
+    TriMesh m;
+    for (std::size_t i = 0; i < n; ++i) m.vertices.push_back({px[i], py[i], zlo});
+    for (std::size_t i = 0; i < n; ++i) m.vertices.push_back({px[i], py[i], zhi});
+    const auto u = [](std::size_t i) { return static_cast<std::uint32_t>(i); };
+    const auto d = [n](std::size_t i) { return static_cast<std::uint32_t>(i + n); };
+    for (std::size_t i = 1; i + 1 < n; ++i) {
+        m.triangles.push_back({u(0), u(i + 1), u(i)});  // 底面（法線 -z）
+        m.triangles.push_back({d(0), d(i), d(i + 1)});  // 上面（法線 +z）
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t j = (i + 1) % n;
+        m.triangles.push_back({u(i), u(j), d(j)});
+        m.triangles.push_back({u(i), d(j), d(i)});
+    }
+    return m;
+}
+
+/// ケース 21 の A: **L 字柱**（非凸の面）。
+///
+/// **凸分割が 1 枚に併合できない**面を持ちます。半空間の交わりは凸多角形しか
+/// 表せないので、凸性の判定が壊れると**凸包**になり、点集合が変わります。
+inline TriMesh case21_a() {
+    const std::vector<std::int32_t> px = {at(-121, 256), at(135, 256), at(135, 256),
+                                          at(7, 256),    at(7, 256),   at(-121, 256)};
+    const std::vector<std::int32_t> py = {at(-121, 256), at(-121, 256), at(7, 256),
+                                          at(7, 256),    at(135, 256),  at(135, 256)};
+    return star_prism(px, py, at(-128, 256), at(128, 256));
+}
+
+/// ケース 21 の B: **穴あき平板**（外枠と内枠を側面でつないだ角柱）。
+///
+/// 上下面が**穴あきの領域**なので、凸分割の併合が穴を塞いではいけません。
+/// 外枠を反時計回り、内枠を時計回りに置き、4 本の橋で 1 つの帯にしています。
+inline TriMesh case21_b() {
+    TriMesh m;
+    const std::int32_t o[4][2] = {{at(-135, 256), at(-135, 256)},
+                                  {at(121, 256), at(-135, 256)},
+                                  {at(121, 256), at(121, 256)},
+                                  {at(-135, 256), at(121, 256)}};
+    const std::int32_t i4[4][2] = {{at(-57, 256), at(-57, 256)},
+                                   {at(43, 256), at(-57, 256)},
+                                   {at(43, 256), at(43, 256)},
+                                   {at(-57, 256), at(43, 256)}};
+    const std::int32_t zlo = at(-40, 256), zhi = at(40, 256);
+    // 頂点: 外枠 lo(0-3) / 内枠 lo(4-7) / 外枠 hi(8-11) / 内枠 hi(12-15)
+    for (const auto& p : o) m.vertices.push_back({p[0], p[1], zlo});
+    for (const auto& p : i4) m.vertices.push_back({p[0], p[1], zlo});
+    for (const auto& p : o) m.vertices.push_back({p[0], p[1], zhi});
+    for (const auto& p : i4) m.vertices.push_back({p[0], p[1], zhi});
+    const auto ol = [](int k) { return static_cast<std::uint32_t>(k % 4); };
+    const auto il = [](int k) { return static_cast<std::uint32_t>(4 + k % 4); };
+    const auto oh = [](int k) { return static_cast<std::uint32_t>(8 + k % 4); };
+    const auto ih = [](int k) { return static_cast<std::uint32_t>(12 + k % 4); };
+    for (int k = 0; k < 4; ++k) {
+        // 底面（法線 -z）: 外枠と内枠のあいだの帯
+        m.triangles.push_back({ol(k), il(k), ol(k + 1)});
+        m.triangles.push_back({ol(k + 1), il(k), il(k + 1)});
+        // 上面（法線 +z）
+        m.triangles.push_back({oh(k), oh(k + 1), ih(k)});
+        m.triangles.push_back({oh(k + 1), ih(k + 1), ih(k)});
+        // 外側面
+        m.triangles.push_back({ol(k), ol(k + 1), oh(k + 1)});
+        m.triangles.push_back({ol(k), oh(k + 1), oh(k)});
+        // 内側面（法線は内向きの穴を向く = 立体から見て外向き）
+        m.triangles.push_back({il(k), ih(k), ih(k + 1)});
+        m.triangles.push_back({il(k), ih(k + 1), il(k + 1)});
+    }
+    return m;
+}
+
 }  // namespace cases
 
 /// §9.1 の実装済みケース。CP3 に向けて増やしていきます。
@@ -696,6 +772,68 @@ inline std::vector<TriMesh> case18() {
     return {w, t};
 }
 
+/// 同一座標の頂点を溶接する。**連結しただけでは組合せ的に多様体のまま**なので、
+/// 非多様体な入力を作るには添字を共有させる必要があります。
+inline TriMesh weld(const TriMesh& m) {
+    std::map<std::array<std::int32_t, 3>, std::uint32_t> id;
+    TriMesh r;
+    std::vector<std::uint32_t> remap(m.vertices.size());
+    for (std::size_t i = 0; i < m.vertices.size(); ++i) {
+        const IPoint& p = m.vertices[i];
+        const std::array<std::int32_t, 3> k{p.x, p.y, p.z};
+        const auto it = id.find(k);
+        if (it != id.end()) {
+            remap[i] = it->second;
+        } else {
+            remap[i] = static_cast<std::uint32_t>(r.vertices.size());
+            id.emplace(k, remap[i]);
+            r.vertices.push_back(p);
+        }
+    }
+    for (const Tri& t : m.triangles) r.triangles.push_back({remap[t[0]], remap[t[1]], remap[t[2]]});
+    return r;
+}
+
+/// ケース 19: **自己交差したメッシュ**（重なる 2 つの箱を 1 つのメッシュとして与える）。
+///
+/// **$\partial S = 0$ なので PWN です**（各箱が個別に閉じている）。self-union が
+/// 修復として機能すること、すなわち**別々に与えて和を取った結果と一致すること**を突きます。
+inline std::vector<TriMesh> case19() {
+    const TriMesh a =
+        box(at(-121, 256), at(-121, 256), at(-121, 256), at(39, 256), at(39, 256), at(39, 256));
+    const TriMesh b =
+        box(at(-25, 256), at(-25, 256), at(-25, 256), at(135, 256), at(135, 256), at(135, 256));
+    return {concat(a, b), a, b};
+}
+
+/// ケース 20a: **PWN な非多様体入力**（辺を共有して貼り合わせた 2 つの閉曲面）。
+///
+/// 共有辺には 4 枚が集まりますが、**各箱が個別に $\partial = 0$ なので和も 0** です。
+/// **`edge_manifold` は落ちますが PWN です。** 受け入れられることを突きます。
+inline std::vector<TriMesh> case20a() {
+    // **$z$ 方向の辺を共有します**（$x=7$, $y=7$ の鉛直線）。
+    // 角ではなく辺で接するので、共有辺には 4 枚が集まります。
+    const TriMesh a =
+        box(at(-121, 256), at(-121, 256), at(-121, 256), at(7, 256), at(7, 256), at(135, 256));
+    const TriMesh b =
+        box(at(7, 256), at(7, 256), at(-121, 256), at(135, 256), at(135, 256), at(135, 256));
+    // **溶接します。** 連結しただけでは頂点が重複し、組合せ的には多様体のままです
+    return {weld(concat(a, b)), a, b};
+}
+
+/// ケース 20b: **PWN でない入力**（1 辺に 3 枚）。**拒否できることを突きます。**
+///
+/// 箱に三角形を 1 枚足すと、その辺の向き付き係数の和が $\pm1$ になり $\partial S \ne 0$。
+/// **奇数個の $\pm1$ の和は 0 になりません。**
+inline TriMesh case20b() {
+    TriMesh m =
+        box(at(-121, 256), at(-121, 256), at(-121, 256), at(135, 256), at(135, 256), at(135, 256));
+    const auto v = static_cast<std::uint32_t>(m.vertices.size());
+    m.vertices.push_back({at(7, 256), at(7, 256), at(200, 256)});
+    m.triangles.push_back({m.triangles[0][0], m.triangles[0][1], v});
+    return m;
+}
+
 /// ケース 23: **20 個の立方体が同じ上下面（と側面）を共有**（EMBER Fig. 25）。
 ///
 /// **共平面重複が 20 枚**になります。`SPEC-phase2.md` §4.3.2 の選択規則は
@@ -735,6 +873,8 @@ struct NaryCase {
         RepeatedDifference,
         /// $\bigcup_i M_i = E$（`expect` が返す立体）
         UnionOfMany,
+        /// $\mathrm{selfunion}(M_0) = M_1 \cup M_2$（`make` は $\{M_0, M_1, M_2\}$）
+        SelfUnion,
     };
     const char* id;
     const char* what;
@@ -752,8 +892,27 @@ inline const std::vector<NaryCase>& nary_corpus() {
          cases::case17, 0},
         {"18", "同一形状を 5 回引く（中間結果を経由しない）", NaryCase::Kind::RepeatedDifference,
          cases::case18, 5},
+        {"19", "自己交差メッシュの self-union（修復として機能すること）", NaryCase::Kind::SelfUnion,
+         cases::case19, 0},
+        {"20a", "PWN な非多様体入力（辺を共有した 2 つの閉曲面）", NaryCase::Kind::SelfUnion,
+         cases::case20a, 0},
         {"23", "20 個の立方体が同じ上下面を共有（共平面重複 20 枚）", NaryCase::Kind::UnionOfMany,
          cases::case23, 0, cases::case23_expect},
+    };
+    return k;
+}
+
+/// **スープ経路だけで回すケース**（`SPEC-phase3.md` §9 のケース 21）。
+///
+/// > **二項実装は非凸な面を扱えません。** `build_faces` が共平面の三角形を面に
+/// > まとめ、**扇で三角形化**するので、非凸な面では別の立体になります
+/// > （穴あきの面では境界ループが 2 本になり、そもそも構築が止まります）。
+/// >
+/// > **§4.1 の凸分割は性能の最適化ではなく、非凸な面を扱う唯一の経路です。**
+/// > だから主コーパス（二項正解器と突き合わせるもの）には入れられません。
+inline const std::vector<Case>& soup_only_corpus() {
+    static const std::vector<Case> k = {
+        {"21", "非凸の面（L 字柱 と 穴あき平板）", cases::case21_a, cases::case21_b},
     };
     return k;
 }
