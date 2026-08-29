@@ -242,25 +242,41 @@ void test_thread_local_cache() {
     const kritest::Case& c = kritest::corpus()[0];
     const TriMesh a = c.make_a(), b = c.make_b();
     std::size_t hits1 = 0, hits8 = 0, entries1 = 0, entries8 = 0;
-    for (unsigned th : {1u, 8u}) {
-        krisite::par::ThreadPool pool(th);
-        BoolStats st{};
-        boolean(from_mesh(a), from_mesh(b), BoolOp::Union, all_on(3, true, th, &pool), &st);
-        if (th == 1) {
-            hits1 = st.cache_hits;
-            entries1 = st.cache_entries;
-        } else {
-            hits8 = st.cache_hits;
-            entries8 = st.cache_entries;
+    // **空回りを許さないこと。** `entries8 == entries1` は「共有していない」ではなく
+    // 「**8 スレッドで走っていない**」（呼び出し元が全部さらった）ときにも起きます。
+    // 等号で通すと、検査が黙って無意味になります（`CLAUDE.md`）。
+    //
+    // スケジューリングは保証できないので、**複数回試して 1 度も並列に走らなければ
+    // 落とします。**
+    constexpr int kTries = 8;
+    int tries = 0;
+    for (; tries < kTries; ++tries) {
+        for (unsigned th : {1u, 8u}) {
+            krisite::par::ThreadPool pool(th);
+            BoolStats st{};
+            boolean(from_mesh(a), from_mesh(b), BoolOp::Union, all_on(3, true, th, &pool), &st);
+            if (th == 1) {
+                hits1 = st.cache_hits;
+                entries1 = st.cache_entries;
+            } else {
+                hits8 = st.cache_hits;
+                entries8 = st.cache_entries;
+            }
         }
+        // **項目数はスレッド数に比例して増えるはず**（同じ点が複数のキャッシュに入る）。
+        // 減っていたら共有されています
+        KRI_CHECK_MSG(entries8 >= entries1,
+                      "**キャッシュの項目数がスレッド数で減った。** 共有されていませんか" +
+                          kritest::pair_msg(entries1, entries8));
+        if (entries8 > entries1) break;
     }
-    // **項目数はスレッド数に比例して増えるはず**（同じ点が複数のキャッシュに入る）。
-    // 減っていたら共有されています
-    KRI_CHECK_MSG(entries8 >= entries1,
-                  "**キャッシュの項目数がスレッド数で減った。** 共有されていませんか" +
-                      kritest::pair_msg(entries1, entries8));
-    std::printf("    キャッシュ: 1 スレッド 命中 %zu / 項目 %zu → 8 スレッド 命中 %zu / 項目 %zu\n",
-                hits1, entries1, hits8, entries8);
+    KRI_CHECK_MSG(tries < kTries,
+                  "**8 スレッドで一度も並列に走りませんでした。** この検査は空回りしています"
+                  "（§7.3）。項目数が増えないなら、共有の有無を見ていません");
+    std::printf(
+        "    キャッシュ: 1 スレッド 命中 %zu / 項目 %zu → 8 スレッド 命中 %zu / 項目 %zu"
+        "（%d 回目で並列を確認）\n",
+        hits1, entries1, hits8, entries8, tries + 1);
 }
 
 }  // namespace
