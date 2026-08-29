@@ -36,13 +36,16 @@
 #ifndef KRISITE_MESH_SPLIT_HPP
 #define KRISITE_MESH_SPLIT_HPP
 
+#include <chrono>
 #include <cstdint>
 #include <map>
+#include <mutex>
 #include <utility>
 #include <vector>
 
 #include "krisite/mesh/topology.hpp"
 #include "krisite/mesh/tri_mesh.hpp"
+#include "krisite/par/thread_pool.hpp"
 
 namespace krisite::mesh {
 
@@ -74,6 +77,15 @@ struct SplitStats {
     /// CP5 の相互作用「early-out × 分裂」が**実際に通ったこと**の指標です。
     /// 省いたセルの断片は分割されないまま分裂に回るので、単独の検査では通りません。
     std::size_t split_from_early_out = 0;
+
+    // ---- 段ごとの時間（`SPEC-phase4.md` §6.2。**逐次部分を見るため**） ----
+    double ms_edges = 0.0;  ///< 辺→三角形 / 頂点→三角形の表を作る（逐次）
+    double ms_diag = 0.0;   ///< 診断と成分分け（逐次）
+    double ms_fan = 0.0;    ///< 扇の計算（**並列**）
+    double ms_apply = 0.0;  ///< ID の割り当てと書き戻し（逐次）
+    /// §5.5 の検算（`check_topology` を 2 回）。**仕事ではなく検査です。**
+    /// 分けて計上しないと、並列化の余地を見誤ります（`IMPL-phase4.md` §2.3）
+    double ms_verify = 0.0;
 };
 
 namespace detail {
@@ -111,7 +123,14 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
                                        std::vector<std::uint32_t>* origin,
                                        SplitStats* stats = nullptr,
                                        const std::vector<int>* owner = nullptr,
-                                       const std::vector<char>* from_early_out = nullptr) {
+                                       const std::vector<char>* from_early_out = nullptr,
+                                       par::ThreadPool* pool = nullptr) {
+    using clk = std::chrono::steady_clock;
+    const auto ms_since = [](clk::time_point a) {
+        return std::chrono::duration<double, std::milli>(clk::now() - a).count();
+    };
+    auto t_edges = clk::now();
+
     // ---- 無向辺 → 接する三角形 ----
     std::map<std::pair<VertexId, VertexId>, std::vector<std::size_t>> edge_tris;
     for (std::size_t t = 0; t < tris.size(); ++t) {
@@ -127,6 +146,8 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
     }
 
     SplitStats st;
+    st.ms_edges = ms_since(t_edges);
+    auto t_diag = clk::now();
     // 次数 3 以上の辺の診断（§5.5 の予測に使う）
     std::vector<char> endpoint_of_excess(vertex_count, 0);
     for (const auto& kv : edge_tris) {
@@ -178,65 +199,137 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
     }
 
     // ---- 頂点ごとに扇を数え、複製の割り当てを決める ----
+    //
+    // **扇の計算は頂点ごとに独立です**（`SPEC-phase4.md` §3）。読むのは `tris` /
+    // `edge_tris` / `edge_groups` だけで、書くのは自分のスロットだけ。
+    //
+    // **ID の割り当ては逐次で行います。** `next_id++` は共有の状態なので、
+    // 並列に配ると番号がスケジューリングに依存します（§4.2）。
+    // **頂点の順に配れば、スレッド数に依らず同じ番号になります。**
     std::vector<Tri> out = tris;
     std::vector<std::uint32_t> new_origin;
     auto next_id = static_cast<std::uint32_t>(vertex_count);
 
-    for (std::size_t v = 0; v < vertex_count; ++v) {
+    /// 頂点ごとの扇の割り当て（`fan_of[i]` = `at[v][i]` が属する扇の番号）。
+    struct FanPlan {
+        std::vector<std::uint32_t> fan_of;
+        std::size_t fans = 0;
+    };
+    std::vector<FanPlan> plan(vertex_count);
+    st.ms_diag = ms_since(t_diag);
+
+    // **スレッド局所のスクラッチ**（`SPEC-phase4.md` §1.1）。
+    //
+    // **頂点ごとに `std::map` と `std::vector` を作ってはいけません。** 頂点数が
+    // 数万になると、確保だけで並列化の利得が消えます（実測: 並列化しても 1.19 倍。
+    // `IMPL-phase4.md` §2.3）。**器を使い回せば確保は 1 スレッドあたり数回**です。
+    struct Scratch {
+        std::vector<std::size_t> parent;  ///< DSU
+        std::vector<std::size_t> root;    ///< 初出順の根
+    };
+    const unsigned nthreads = (pool != nullptr) ? pool->size() : 1u;
+    std::vector<Scratch> tl(nthreads);
+
+    const auto compute = [&](std::size_t v, unsigned tid) {
         const std::vector<std::size_t>& inc = at[v];
-        if (inc.size() < 2) continue;
+        if (inc.size() < 2) return;
 #if defined(KRISITE_MUTATION_NO_EDGE_SPLIT)
         // SPEC-phase2 §9.3 の変異 8a: **辺の分裂だけを無効化**（頂点分裂は残す）。
         // **頂点分裂だけでは 11b が直りません**（§5.1）。扇の最大が 1 で適用対象がない
-        if (endpoint_of_excess[v]) continue;
+        if (endpoint_of_excess[v]) return;
 #endif
 #if defined(KRISITE_MUTATION_NO_VERTEX_SPLIT)
         // 変異 8b: **頂点の分裂だけを無効化**（辺分裂は残す）。4T / 4T′ が直らなくなる
-        if (!endpoint_of_excess[v]) continue;
+        if (!endpoint_of_excess[v]) return;
 #endif
-
-        std::map<std::size_t, std::size_t> local;
-        for (std::size_t i = 0; i < inc.size(); ++i) local[inc[i]] = i;
-        detail::SmallDsu dsu(inc.size());
+        Scratch& sc = tl[tid];
+        const std::size_t n = inc.size();
+        // **`inc` は小さい**（頂点まわりの三角形数）ので、線形探索が表より速い
+        const auto index_of = [&inc, n](std::size_t t) {
+            for (std::size_t i = 0; i < n; ++i) {
+                if (inc[i] == t) return i;
+            }
+            return n;
+        };
+        sc.parent.resize(n);
+        for (std::size_t i = 0; i < n; ++i) sc.parent[i] = i;
+        const auto find = [&sc](std::size_t x) {
+            while (sc.parent[x] != x) x = sc.parent[x] = sc.parent[sc.parent[x]];
+            return x;
+        };
+        const auto unite = [&sc, &find](std::size_t a, std::size_t b) {
+            a = find(a);
+            b = find(b);
+            if (a != b) sc.parent[a] = b;
+        };
 
         for (std::size_t t : inc) {
             for (int k = 0; k < 3; ++k) {
                 const VertexId a = tris[t][k], b = tris[t][(k + 1) % 3];
                 if (a != v && b != v) continue;  // v に接する辺だけ
                 const auto key = detail::undirected(a, b);
-                const auto& sh = edge_tris[key];
+                // **`operator[]` を使わないこと。** 無ければ挿入するので、
+                // 並列に読むと表を壊します（`const` な `find` で引きます）
+                const auto eit = edge_tris.find(key);
+                if (eit == edge_tris.end()) continue;
+                const std::vector<std::size_t>& sh = eit->second;
                 if (sh.size() == 2) {
                     // 多様体な辺は扇を繋ぐ
-                    dsu.unite(local[sh[0]], local[sh[1]]);
+                    const std::size_t i0 = index_of(sh[0]), i1 = index_of(sh[1]);
+                    if (i0 < n && i1 < n) unite(i0, i1);
                 } else {
                     // **過剰な辺は「同じ組」の中だけ繋ぐ**（§5.1.2）
-                    auto it = edge_groups.find(key);
+                    const auto it = edge_groups.find(key);
                     if (it == edge_groups.end()) continue;  // 分けられなかった辺
                     for (const auto& grp : it->second) {
+                        const std::size_t i0 = index_of(grp[0]);
+                        if (i0 >= n) continue;
                         for (std::size_t j = 1; j < grp.size(); ++j) {
-                            dsu.unite(local[grp[0]], local[grp[j]]);
+                            const std::size_t ij = index_of(grp[j]);
+                            if (ij < n) unite(i0, ij);
                         }
                     }
                 }
             }
         }
 
-        std::map<std::size_t, std::uint32_t> fan_id;
-        for (std::size_t i = 0; i < inc.size(); ++i) {
-            const std::size_t r = dsu.find(i);
-            if (fan_id.find(r) == fan_id.end()) {
-                if (fan_id.empty()) {
-                    fan_id[r] = static_cast<std::uint32_t>(v);  // 最初の扇は元の ID を使う
-                } else {
-                    fan_id[r] = next_id++;
-                    new_origin.push_back(static_cast<std::uint32_t>(v));
+        // **扇の番号は `inc` の順で初出順に振ります**（正準な順序）
+        sc.root.clear();
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::size_t r = find(i);
+            bool seen = false;
+            for (std::size_t k = 0; k < sc.root.size() && !seen; ++k) {
+                if (sc.root[k] == r) seen = true;
+            }
+            if (!seen) sc.root.push_back(r);
+        }
+        // **扇が 1 つなら何も残しません。** ほとんどの頂点がこれで、
+        // ここで確保しないことが効きます
+        if (sc.root.size() <= 1) return;
+
+        FanPlan& fp = plan[v];
+        fp.fans = sc.root.size();
+        fp.fan_of.resize(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::size_t r = find(i);
+            for (std::size_t k = 0; k < sc.root.size(); ++k) {
+                if (sc.root[k] == r) {
+                    fp.fan_of[i] = static_cast<std::uint32_t>(k);
+                    break;
                 }
             }
         }
-        if (fan_id.size() <= 1) continue;
+    };
+
+    /// **1 頂点分の ID を配ります。** 呼ぶ順序が番号を決めるので、
+    /// 既定では**頂点の順**に呼びます（§4.2。スレッド数に依らず同じ番号）。
+    const auto assign_ids = [&](std::size_t v) {
+        const FanPlan& fp = plan[v];
+        if (fp.fans <= 1) return;
+        const std::vector<std::size_t>& inc = at[v];
 
         ++st.split_vertices;
-        st.max_fans = std::max(st.max_fans, fan_id.size());
+        st.max_fans = std::max(st.max_fans, fp.fans);
         // §13 の CP5:「early-out × 分裂」を通った回数
         if (from_early_out != nullptr) {
             for (std::size_t i = 0; i < inc.size(); ++i) {
@@ -246,16 +339,63 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
                 }
             }
         }
-        st.predicted_delta_v += fan_id.size() - 1;
+        st.predicted_delta_v += fp.fans - 1;
+
+        std::vector<std::uint32_t> id_of(fp.fans, 0);
+        id_of[0] = static_cast<std::uint32_t>(v);  // 最初の扇は元の ID を使う
+        for (std::size_t k = 1; k < fp.fans; ++k) {
+            id_of[k] = next_id++;
+            new_origin.push_back(static_cast<std::uint32_t>(v));
+        }
         for (std::size_t i = 0; i < inc.size(); ++i) {
-            const std::uint32_t id = fan_id[dsu.find(i)];
+            const std::uint32_t id = id_of[fp.fan_of[i]];
             for (auto& vid : out[inc[i]]) {
                 if (vid == v) vid = id;
             }
         }
+    };
+
+#if defined(KRISITE_MUTATION_NO_EXIT_BARRIER)
+    // 変異 23: **扇の計算と ID の割り当ての間のバリアを外す**（`SPEC-phase4.md` §7.5）。
+    //
+    // 排他は取るので**競合はありません。** 番号が**完了した順**に配られるだけです。
+    // 幾何は同じなので位相も体積も区別せず、**決定性でしか捕まりません。**
+    std::mutex mut_id;
+    const auto compute_fused = [&](std::size_t v, unsigned tid) {
+        compute(v, tid);
+        const FanPlan& fp = plan[v];
+        if (fp.fans <= 1) return;
+        const std::lock_guard<std::mutex> g(mut_id);
+        assign_ids(v);
+    };
+#endif
+    auto t_fan = clk::now();
+#if defined(KRISITE_MUTATION_NO_EXIT_BARRIER)
+    if (pool != nullptr) {
+        pool->run(vertex_count, compute_fused);
+    } else {
+        for (std::size_t v = 0; v < vertex_count; ++v) compute_fused(v, 0u);
     }
+    st.ms_fan = ms_since(t_fan);
+    auto t_apply = clk::now();
+#else
+    if (pool != nullptr) {
+        pool->run(vertex_count, compute);
+    } else {
+        for (std::size_t v = 0; v < vertex_count; ++v) compute(v, 0u);
+    }
+    st.ms_fan = ms_since(t_fan);
+    auto t_apply = clk::now();
+
+    // ---- ID の割り当て（**逐次**。頂点の順に配るので決定的）----
+    for (std::size_t v = 0; v < vertex_count; ++v) assign_ids(v);
+#endif
+
     st.predicted_delta_chi =
         static_cast<long long>(st.predicted_delta_v) - static_cast<long long>(st.predicted_delta_e);
+
+    st.ms_apply = ms_since(t_apply);
+    auto t_verify = clk::now();
 
     // ---- §5.5 の検算: 予測と実測を突き合わせる ----
     const TopologyReport before = check_topology(tris);
@@ -270,6 +410,7 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
     // かかります。**到達した配置を記録してください**（radial sort の必要性の判断材料）
     if (!before.empty && !(after.edge_manifold && after.vertex_manifold)) ++st.unresolved;
 
+    st.ms_verify = ms_since(t_verify);
     if (origin != nullptr) *origin = std::move(new_origin);
     if (stats != nullptr) *stats = st;
     return out;

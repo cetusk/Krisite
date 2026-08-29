@@ -96,6 +96,11 @@ void test_determinism() {
                 for (std::size_t ti = 0; ti < std::size(kThreads); ++ti) {
                     ToMeshOptions tm;
                     tm.split_contacts = true;
+                    // **出口にもプールを渡すこと。** 渡さないと `to_mesh` は
+                    // 1 スレッドで回り、**出口の並列化が検査の外に出ます**
+                    // （変異 23 が素通りしていました。`IMPL-phase4.md` §2.4）
+                    tm.threads = kThreads[ti];
+                    tm.pool = pools[ti].get();
                     const BoolOptions o = all_on(d, d == kMaxDepth, kThreads[ti], pools[ti].get());
                     const std::string s =
                         bytes(to_mesh(boolean(from_mesh(a), from_mesh(b), op, o), tm));

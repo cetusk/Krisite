@@ -33,6 +33,7 @@
 #include <vector>
 
 #include "krisite/csg/plane_table.hpp"
+#include "krisite/par/thread_pool.hpp"
 #include "krisite/geom/point.hpp"
 #include "krisite/geom/predicates.hpp"
 
@@ -67,21 +68,61 @@ struct TJunctionStats {
 /// > 同じ交線を与える）。同じ幾何辺が切る順序によって別の平面で記録されるので、
 /// > 平面対で引くと**別名で記録された頂点を取りこぼします。**
 /// > 取りこぼすと T 字接合がそのまま残り、次数 1 の辺が出ます。**実際に踏みました。**
+namespace detail {
+
+/// スレッド局所に貯めた T 解決の統計を集約する（`SPEC-phase4.md` §1.1）。
+///
+/// **和と最大を取り違えないこと。** `max_per_edge` を足すと、スレッド数に比例して
+/// 増える値になります。
+inline void merge_tjunction_stats(TJunctionStats& a, const TJunctionStats& b) {
+    a.inserted += b.inserted;
+    a.candidates += b.candidates;
+    a.degenerate_kept += b.degenerate_kept;
+    a.apex_fallback += b.apex_fallback;
+    a.edges_scanned += b.edges_scanned;
+    a.inserted_from_cache += b.inserted_from_cache;
+    a.max_per_edge = std::max(a.max_per_edge, b.max_per_edge);
+}
+
+}  // namespace detail
+
 class PlaneVertexIndex {
 public:
     /// `planes` の各平面について、その上に載る頂点を集める。
     ///
     /// 計算量は（平面数 × 頂点数）回の `side` です。平面ごとに 1 度だけなので、
     /// 辺ごとに全頂点を走査するより桁で軽くなります。
+    /// **平面ごとに独立なので並列にできます**（`SPEC-phase4.md` §3）。
+    ///
+    /// **結果は平面 ID をキーにした表なので、順序に依存しません**（§4.2）。
+    ///
+    /// > **計算量は $O(\text{平面数} \times \text{頂点数})$ のままです。** 規模の
+    /// > あるコーパスではここが出口の 88% を占めます（`BENCH.md`）。
+    /// > **並列化は定数倍しか下げません。** 空間索引で $O(V \log V)$ にするのは
+    /// > Phase 5 の課題です。
     void build(const PlaneTable& table, const std::vector<geom::HPointD>& verts,
-               const std::vector<PlaneId>& planes) {
+               const std::vector<PlaneId>& planes, par::ThreadPool* pool = nullptr) {
+        std::vector<PlaneId> uniq;
+        uniq.reserve(planes.size());
         for (PlaneId p : planes) {
-            if (map_.find(p) != map_.end()) continue;
-            std::vector<std::uint32_t>& v = map_[p];
-            for (std::uint32_t i = 0; i < verts.size(); ++i) {
-                if (geom::side(table.at(p), verts[i]) == 0) v.push_back(i);
-            }
+            if (map_.find(p) == map_.end()) uniq.push_back(p);
         }
+        std::sort(uniq.begin(), uniq.end());
+        uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
+
+        std::vector<std::vector<std::uint32_t>> slot(uniq.size());
+        const auto work = [&](std::size_t k, unsigned) {
+            std::vector<std::uint32_t>& v = slot[k];
+            for (std::uint32_t i = 0; i < verts.size(); ++i) {
+                if (geom::side(table.at(uniq[k]), verts[i]) == 0) v.push_back(i);
+            }
+        };
+        if (pool != nullptr) {
+            pool->run(uniq.size(), work);
+        } else {
+            for (std::size_t k = 0; k < uniq.size(); ++k) work(k, 0u);
+        }
+        for (std::size_t k = 0; k < uniq.size(); ++k) map_[uniq[k]] = std::move(slot[k]);
     }
 
     /// 平面 `p` の上にある頂点。登録していなければ `nullptr`。
