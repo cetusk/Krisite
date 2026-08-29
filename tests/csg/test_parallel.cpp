@@ -86,7 +86,16 @@ void test_determinism() {
     // **`ThreadPool` はコピーも move もできません**（所有するスレッドがあるため）。
     // 器に入れるときは間接参照で持ちます
     std::vector<std::unique_ptr<krisite::par::ThreadPool>> pools;
-    for (unsigned t : kThreads) pools.push_back(std::make_unique<krisite::par::ThreadPool>(t));
+    for (unsigned t : kThreads) {
+        pools.push_back(std::make_unique<krisite::par::ThreadPool>(t));
+        // **ディスパッチの下限を外します**（`SPEC-phase4.md` §6.3）。
+        //
+        // 下限は**性能のための機構**で、項目数が少ない段を逐次に落とします。
+        // **そのままだと、このコーパスでは扇が常に逐次になり**（頂点は最大 254、
+        // 下限は 256）、**並列の経路が検査されません。** 実際に変異 23 の検出器が
+        // 消えます。**「後段で埋める機構は、上流の誤りを覆い隠します」**（`CLAUDE.md`）。
+        pools.back()->set_min_items(0);
+    }
 
     for (const kritest::Case& c : kritest::corpus()) {
         const TriMesh a = c.make_a(), b = c.make_b();
@@ -141,7 +150,16 @@ std::size_t g_cmp_soup = 0, g_cmp_nary = 0;
 void test_determinism_all_corpora() {
     constexpr unsigned kThreads[] = {1, 2, 4, 8};
     std::vector<std::unique_ptr<krisite::par::ThreadPool>> pools;
-    for (unsigned t : kThreads) pools.push_back(std::make_unique<krisite::par::ThreadPool>(t));
+    for (unsigned t : kThreads) {
+        pools.push_back(std::make_unique<krisite::par::ThreadPool>(t));
+        // **ディスパッチの下限を外します**（`SPEC-phase4.md` §6.3）。
+        //
+        // 下限は**性能のための機構**で、項目数が少ない段を逐次に落とします。
+        // **そのままだと、このコーパスでは扇が常に逐次になり**（頂点は最大 254、
+        // 下限は 256）、**並列の経路が検査されません。** 実際に変異 23 の検出器が
+        // 消えます。**「後段で埋める機構は、上流の誤りを覆い隠します」**（`CLAUDE.md`）。
+        pools.back()->set_min_items(0);
+    }
 
     // ---- スープ専用（凸分割）----
     FromMeshOptions fm;

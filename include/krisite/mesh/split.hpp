@@ -372,7 +372,7 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
     auto t_fan = clk::now();
 #if defined(KRISITE_MUTATION_NO_EXIT_BARRIER)
     if (pool != nullptr) {
-        pool->run(vertex_count, compute_fused);
+        pool->run(vertex_count, compute_fused, 256);
     } else {
         for (std::size_t v = 0; v < vertex_count; ++v) compute_fused(v, 0u);
     }
@@ -380,7 +380,9 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
     auto t_apply = clk::now();
 #else
     if (pool != nullptr) {
-        pool->run(vertex_count, compute);
+        // **扇は 1 項目あたりが軽い**（0.6 µs）ので、下限を既定より上げます
+        // （損益分岐 ≈ 50。`SPEC-phase4.md` §6.3）
+        pool->run(vertex_count, compute, 256);
     } else {
         for (std::size_t v = 0; v < vertex_count; ++v) compute(v, 0u);
     }

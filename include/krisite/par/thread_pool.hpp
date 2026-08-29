@@ -20,6 +20,32 @@
 // 各タスクは自分の添字のスロットにだけ書き、結合は添字順に行うこと。
 //
 // **`run` は入れ子にできません。** 所有スレッドからだけ呼んでください。
+//
+// ---
+//
+// ## ディスパッチの下限（`SPEC-phase4.md` §6.3）★
+//
+// **項目数が少ない段は、並列にすると遅くなります。**
+//
+//   索引       0.9 ms → 2.9 ms（**3 倍遅い**）
+//   分裂・扇   2.8 ms → 3.8 ms（1.4 倍遅い）
+//
+// **1 項目あたりの仕事がディスパッチのコストを下回る**ためです。
+// そこで `min_items` を下回る呼び出しは**その場で逐次実行**します。
+//
+// **項目数だけでは段を分けられません。** 1 項目あたりの仕事が段ごとに違うからです。
+//
+//   索引       8 項目で **損**（1 項目 1.7 µs、1 回 0.014 ms）
+//   三角形化  72 項目で **得**（1 項目 2.2 µs、1 回 0.155 ms）
+//
+// 効くかどうかを決めるのは **1 回あたりの仕事とディスパッチのコストの比**です。
+// そこで**下限は呼び出しごとに渡せる**ようにし、既定はプールが持ちます。
+//
+// 損益分岐は $\text{ディスパッチ} / (1 \text{項目あたりの仕事})$ で、
+// ディスパッチは実測 **0.030 ms/回**（索引が 0.9 → 2.9 ms、66 回）。
+//
+// **これは「遅くならない」保証であって、最適な閾値ではありません。**
+// 精密なチューニングは Phase 5 です（`IMPL-phase4.md` §4）。
 #ifndef KRISITE_PAR_THREAD_POOL_HPP
 #define KRISITE_PAR_THREAD_POOL_HPP
 
@@ -35,6 +61,12 @@ namespace krisite::par {
 
 class ThreadPool {
 public:
+    /// **ディスパッチの下限の既定値**（`SPEC-phase4.md` §6.3）。
+    ///
+    /// 項目数がこれ未満なら逐次で回します。**実測から決めた値**で、最適値では
+    /// ありません（`IMPL-phase4.md` §4.1）。
+    static constexpr std::size_t kDefaultMinItems = 64;
+
     /// `threads` 本で動く（0 か 1 なら**スレッドを作らない**）。
     explicit ThreadPool(unsigned threads) : n_(threads == 0 ? 1u : threads) {
         if (n_ <= 1) return;
@@ -58,13 +90,28 @@ public:
 
     unsigned size() const noexcept { return n_; }
 
+    /// ディスパッチの下限（**実行時パラメータ**。§6.3）。
+    ///
+    /// **0 を渡すと下限そのものを無効化します**（呼び出しごとの上書きも効きません）。
+    /// 検査で「必ず並列の経路を通す」ために要ります。
+    /// **下限は性能のための機構なので、正しさの検査では外してください**
+    /// （`IMPL-phase4.md` §4.2）。
+    std::size_t min_items() const noexcept { return min_items_; }
+    void set_min_items(std::size_t n) noexcept { min_items_ = n; }
+
     /// `fn(i, tid)` を $i = 0 \dots n-1$ について実行し、全部終わるまで待つ。
     ///
     /// **順序は保証しません。** `tid` は $0 \dots \text{size}()-1$ で、
     /// スレッド局所の器を引くための添字です。
+    /// `min_items` を渡すと、この呼び出しだけ下限を上書きします（§6.3）。
+    /// **1 項目あたりの仕事が軽い段では、既定より大きくしてください。**
     template <class F>
-    void run(std::size_t n, F&& fn) {
-        if (n_ <= 1 || n <= 1) {
+    void run(std::size_t n, F&& fn, std::size_t min_items = 0) {
+        // **プールが 0 なら下限は無効**。呼び出しごとの上書きより強い
+        const std::size_t floor =
+            (min_items_ == 0) ? 0 : ((min_items != 0) ? min_items : min_items_);
+        // **下限を下回る呼び出しは、その場で回します**（§6.3）
+        if (n_ <= 1 || n < floor) {
             for (std::size_t i = 0; i < n; ++i) fn(i, 0u);
             return;
         }
@@ -130,6 +177,7 @@ private:
     unsigned running_ = 0;
     /// 世代を閉じた印。**遅れて起きたワーカーへの合図**です
     bool closed_ = true;
+    std::size_t min_items_ = kDefaultMinItems;
 };
 
 }  // namespace krisite::par
