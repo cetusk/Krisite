@@ -653,12 +653,102 @@ inline const std::vector<Case>& corpus() {
     return k;
 }
 
+// ---- $n$ 項のケース（`SPEC-phase3.md` §9 のケース 17 / 18）--------------------
+//
+// **二項の連鎖とは突き合わせられません。** 二項の `boolean_op` は `BoolMesh` を返し、
+// 構成点が有理数なので**入力に戻せない**からです（それが $n$ 項にした理由でもあります）。
+//
+// そこで**別の演算木で同じ立体を作る**のを正解器にします。集合の恒等式なので、
+// **答えのレベルで独立**です（自己整合の検査ではありません）。
+
+namespace cases {
+
+/// ケース 17: $n=3$。**共平面で接する 2 箱を、斜めの角柱が貫く。**
+///
+/// A と B は $x$ で重なり、$y$ / $z$ の 4 面が**完全に共平面**です（§9.1 の退化）。
+/// C は菱形断面の角柱で、**斜面**を持ちます（軸平行だけでは 4 平面同時交差を
+/// 突けません。`SPEC-phase1.md` §9.1）。
+inline std::vector<TriMesh> case17() {
+    const TriMesh a =
+        box(at(-121, 256), at(-121, 256), at(-121, 256), at(7, 256), at(135, 256), at(135, 256));
+    const TriMesh b =
+        box(at(-7, 256), at(-121, 256), at(-121, 256), at(135, 256), at(135, 256), at(135, 256));
+    // 菱形 $|x-7| + |y-7| = 64$。**中心を原点からずらす**（対称性はバグを隠します）
+    const std::int32_t px[4] = {at(71, 256), at(7, 256), at(-57, 256), at(7, 256)};
+    const std::int32_t py[4] = {at(7, 256), at(71, 256), at(7, 256), at(-57, 256)};
+    const TriMesh c = prism4(px, py, at(-140, 256), at(140, 256));
+    return {a, b, c};
+}
+
+/// ケース 18: **同一形状を 5 回引く**（$W - T - T - T - T - T$）。
+///
+/// **内外の 1 ビットでは表せません。** 同じ曲面を何度も跨ぐので、真偽値版では
+/// 2 回目以降の減算が「既に外側」と衝突します（`IMPL-phase3.md` §2.4）。
+/// **巻き数なら $w_T$ が 5 つ並ぶだけ**です。
+///
+/// T は W を $z$ 方向に貫くので、結果は**種数 1**（菱形の穴が開いた箱）になります。
+inline std::vector<TriMesh> case18() {
+    const TriMesh w =
+        box(at(-121, 256), at(-121, 256), at(-121, 256), at(135, 256), at(135, 256), at(135, 256));
+    const std::int32_t px[4] = {at(97, 256), at(7, 256), at(-83, 256), at(7, 256)};
+    const std::int32_t py[4] = {at(7, 256), at(97, 256), at(7, 256), at(-83, 256)};
+    const TriMesh t = prism4(px, py, at(-140, 256), at(140, 256));
+    return {w, t};
+}
+
+}  // namespace cases
+
+/// $n$ 項のケース。**恒等式とセットで持ちます。**
+struct NaryCase {
+    enum class Kind {
+        /// $(A \cup B) \setminus C = (A \setminus C) \cup (B \setminus C)$
+        Distributive,
+        /// $W - T - \dots - T = W - T$（`repeat` 回引く）
+        RepeatedDifference,
+    };
+    const char* id;
+    const char* what;
+    Kind kind;
+    std::vector<TriMesh> (*make)();
+    int repeat = 0;
+};
+
+inline const std::vector<NaryCase>& nary_corpus() {
+    static const std::vector<NaryCase> k = {
+        {"17", "n=3。共平面で接する 2 箱を斜めの角柱が貫く", NaryCase::Kind::Distributive,
+         cases::case17, 0},
+        {"18", "同一形状を 5 回引く（中間結果を経由しない）", NaryCase::Kind::RepeatedDifference,
+         cases::case18, 5},
+    };
+    return k;
+}
+
 /// §9.0 (1) のサイズ規律: 両入力の AABB の和が各軸で座標範囲の半分以上あるか。
 inline bool size_discipline_ok(const TriMesh& a, const TriMesh& b) {
     std::int64_t lo[3] = {krisite::kCoordMax, krisite::kCoordMax, krisite::kCoordMax};
     std::int64_t hi[3] = {krisite::kCoordMin, krisite::kCoordMin, krisite::kCoordMin};
     for (const TriMesh* m : {&a, &b}) {
         for (const IPoint& p : m->vertices) {
+            const std::int64_t c[3] = {p.x, p.y, p.z};
+            for (int t = 0; t < 3; ++t) {
+                lo[t] = (c[t] < lo[t]) ? c[t] : lo[t];
+                hi[t] = (c[t] > hi[t]) ? c[t] : hi[t];
+            }
+        }
+    }
+    const std::int64_t need = -static_cast<std::int64_t>(krisite::kCoordMin);  // 2^(b-1)
+    for (int t = 0; t < 3; ++t) {
+        if (hi[t] - lo[t] < need) return false;
+    }
+    return true;
+}
+
+/// §9.0 (1) のサイズ規律の $n$ 項版。**全メッシュの AABB の和**で見ます。
+inline bool size_discipline_ok(const std::vector<TriMesh>& ms) {
+    std::int64_t lo[3] = {krisite::kCoordMax, krisite::kCoordMax, krisite::kCoordMax};
+    std::int64_t hi[3] = {krisite::kCoordMin, krisite::kCoordMin, krisite::kCoordMin};
+    for (const TriMesh& m : ms) {
+        for (const IPoint& p : m.vertices) {
             const std::int64_t c[3] = {p.x, p.y, p.z};
             for (int t = 0; t < 3; ++t) {
                 lo[t] = (c[t] < lo[t]) ? c[t] : lo[t];

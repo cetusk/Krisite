@@ -77,6 +77,8 @@ krisite_add_test(cp3           csg/test_cp3.cpp)
 krisite_add_test(cp5           csg/test_cp5.cpp)
 # **Phase 3 の CP5**（n 項 / スープ経路）。Phase 2 の `cp5` は二項経路のままです。
 krisite_add_test(cp5n          csg/test_cp5n.cpp)
+# **n 項のケース 17 / 18**（SPEC-phase3 §9）。別の演算木で同じ立体を作る恒等式。
+krisite_add_test(nary          csg/test_nary.cpp)
 # SPEC-phase3 §3.1 / §2.1 の CP1。辺平面の構成（軸方向との外積）と、
 # 断片の相対内部の点。**両方の経路が使われることを固定する**（空回りの番人）
 krisite_add_test(interior      csg/test_interior.cpp)
@@ -295,6 +297,7 @@ if(KRISITE_BUILD_MUTANTS)
     #
     # **キャッシュ無効のテストは素通りします。** 変異が発火しないので当然です。
     krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 cache     FAIL)
+    krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 nary      FAIL)
     krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 adaptive  PASS)
     krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 early_out PASS)
     krisite_add_mutant(7 KRISITE_MUTATION_CACHE_KEY_DROP=1 cp3       PASS)
@@ -414,6 +417,7 @@ if(KRISITE_BUILD_MUTANTS)
     # **(C, χ) は面の向きを反転しても変わりません。** 正解器との (C, χ) 比較は
     # **素通りします** — それがこの誤りが CP2 から CP3 まで残った理由です。
     krisite_add_mutant(15 KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED=1 soup            FAIL)
+    krisite_add_mutant(15 KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED=1 nary            FAIL)
     krisite_add_mutant(15 KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED=1 cp3             PASS)
     krisite_add_mutant(15 KRISITE_MUTATION_ORIENT_IGNORE_FLIPPED=1 depth_monotonic PASS)
     if(KRISITE_GMP_FOUND)
@@ -428,6 +432,7 @@ if(KRISITE_BUILD_MUTANTS)
     #
     # **二項実装は過剰分割のままなので、`cp3` などは素通りします。**
     krisite_add_mutant(16 KRISITE_MUTATION_BSP_NEVER_CUT=1 soup FAIL)
+    krisite_add_mutant(16 KRISITE_MUTATION_BSP_NEVER_CUT=1 nary FAIL)
     krisite_add_mutant(16 KRISITE_MUTATION_BSP_NEVER_CUT=1 cp3  PASS)
     if(KRISITE_GMP_FOUND)
         krisite_add_mutant(16 KRISITE_MUTATION_BSP_NEVER_CUT=1 volume_gmp FAIL GMP)
@@ -445,6 +450,10 @@ if(KRISITE_BUILD_MUTANTS)
     # **二項実装は別経路なので `cp3` などは素通りします。**
     krisite_add_mutant(17 KRISITE_MUTATION_HALF_OPEN_PRESENCE=1 cp5n FAIL)
     krisite_add_mutant(17 KRISITE_MUTATION_HALF_OPEN_PRESENCE=1 cp3  PASS)
+    # **`nary` も素通りします。** 面がセルの上側境界に乗る配置がケース 17 / 18 に
+    # 無いためで、**`cp5n` が唯一の検出器**であることの記録です。
+    # ここが FAIL に転じたら検出器が増えたということなので、表を更新してください。
+    krisite_add_mutant(17 KRISITE_MUTATION_HALF_OPEN_PRESENCE=1 nary PASS)
 
     # ---- CP5 の組合せでも検出されること（SPEC-phase2 §13）--------------------
     #
