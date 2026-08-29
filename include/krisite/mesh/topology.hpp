@@ -314,6 +314,40 @@ inline TopologyReport check_topology(const std::vector<Tri>& tris) {
     return r;
 }
 
+/// **入力が PWN か**（`SPEC-phase3.md` §4.0）。向き付き 2 次鎖として $\partial S = 0$。
+///
+/// 各無向辺について、接する面が入れる向き付き係数の和が 0 であることを見ます。
+/// **PWN の必要十分条件で、しかも安い**（$O(F)$、整数の数え上げのみ）。
+///
+/// | 入力 | $\partial S$ | |
+/// |---|---|---|
+/// | 閉多様体 | 0 | 受け入れ |
+/// | **自己交差した閉曲面** | **0** | **受け入れ**（self-union で修復できます） |
+/// | **辺を共有して貼り合わせた 2 つの閉曲面** | **0** | **受け入れ**（非多様体だが PWN） |
+/// | 1 辺に 3 枚 | $\ne 0$ | 拒否（奇数個の $\pm1$ の和） |
+/// | 開曲面 | $\ne 0$ | 拒否 |
+///
+/// > **`edge_manifold` とは別の検査です。** あちらは「各辺がちょうど 2 枚」で、
+/// > 非多様体な PWN 入力を落としてしまいます。**受け入れる範囲が違います。**
+inline bool boundary_is_zero(const std::vector<Tri>& tris) {
+    std::map<std::pair<VertexId, VertexId>, int> acc;
+    for (const Tri& t : tris) {
+        for (int i = 0; i < 3; ++i) {
+            const VertexId a = t[i], b = t[(i + 1) % 3];
+            if (a == b) continue;  // 退化辺は寄与しません
+            acc[detail::undirected(a, b)] += (a < b) ? +1 : -1;
+        }
+    }
+    for (const auto& kv : acc) {
+        if (kv.second != 0) return false;
+    }
+    return true;
+}
+
+inline bool boundary_is_zero(const TriMesh& m) {
+    return boundary_is_zero(m.triangles);
+}
+
 inline TopologyReport check_topology(const TriMesh& m) {
     return check_topology(m.triangles);
 }

@@ -130,19 +130,6 @@ TriMesh hex_prism() {
     return prism(px, py, at(-128, 256), at(128, 256));
 }
 
-/// L 字（**非凸**）。**面は 1 つに併合できない。**
-///
-/// 併合の凸性判定が壊れていれば、半空間の交わりは**凸包**になるので、
-/// 点集合が変わって差が空になりません。
-TriMesh l_prism() {
-    using kritest::at;
-    const std::vector<std::int32_t> px = {at(-121, 256), at(135, 256), at(135, 256),
-                                          at(7, 256),    at(7, 256),   at(-121, 256)};
-    const std::vector<std::int32_t> py = {at(-121, 256), at(-121, 256), at(7, 256),
-                                          at(7, 256),    at(135, 256),  at(135, 256)};
-    return prism(px, py, at(-128, 256), at(128, 256));
-}
-
 /// **点集合として一致するか**（両方向の差が空。`test_nary.cpp` と同じ形）。
 ///
 /// $(C,\chi)$ は形が変わっても保たれることがあります。**凸性の判定が壊れて
@@ -172,7 +159,9 @@ void test_shapes() {
         TriMesh (*make)();
         std::size_t want_max_edges;
     };
-    const Item items[] = {{"六角柱（凸）", hex_prism, 6}, {"L 字柱（非凸）", l_prism, 4}};
+    // **L 字柱はコーパスへ移しました**（`soup_only_corpus`）。ここは
+    // **5 辺以上への併合**を突くためだけに残します（コーパスの面は四角形以下）。
+    const Item items[] = {{"六角柱（凸）", hex_prism, 6}};
     for (const Item& it : items) {
         const TriMesh m = it.make();
         const PolySoup b = from_mesh(m, cvx_opt());
@@ -204,7 +193,9 @@ void test_shapes() {
 void test_entry() {
     std::size_t t = 0, p_tri = 0, p_cvx = 0, pl_tri = 0, pl_cvx = 0, n = 0;
     std::size_t max_edges = 0;
-    for (const kritest::Case& c : kritest::corpus()) {
+    std::vector<kritest::Case> all = kritest::corpus();
+    all.insert(all.end(), kritest::soup_only_corpus().begin(), kritest::soup_only_corpus().end());
+    for (const kritest::Case& c : all) {
         for (int w = 0; w < 2; ++w) {
             const TriMesh m = (w == 0) ? c.make_a() : c.make_b();
             const PolySoup a = from_mesh(m, tri_opt());
@@ -250,7 +241,9 @@ void test_entry() {
 /// 2. ブール演算を通した比較 — $(C, \chi)$ は一致し、三角形の集合は一致しない。
 void test_boolean() {
     std::size_t tri_frags = 0, cvx_frags = 0;
-    for (const kritest::Case& c : kritest::corpus()) {
+    std::vector<kritest::Case> all = kritest::corpus();
+    all.insert(all.end(), kritest::soup_only_corpus().begin(), kritest::soup_only_corpus().end());
+    for (const kritest::Case& c : all) {
         const TriMesh a = c.make_a(), b = c.make_b();
         for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
             for (std::size_t pass = 0; pass < kPasses; ++pass) {
@@ -286,7 +279,8 @@ void test_boolean() {
     KRI_CHECK_MSG(g_differ_tris > 0,
                   "**三角形の集合が 1 件も変わらない**（凸分割が下流に届いていない）");
     KRI_CHECK_MSG(cvx_frags < tri_frags, "**断片数が減っていない**（§4.1.1）");
-    const std::size_t want = kritest::corpus().size() * 3 * kPasses;
+    const std::size_t want =
+        (kritest::corpus().size() + kritest::soup_only_corpus().size()) * 3 * kPasses;
     KRI_CHECK_MSG(g_cmp == want, "比較数が式と合わない" + kritest::pair_msg(want, g_cmp));
     std::printf("    ブール %zu 件: 断片 %zu → %zu（%.1f%%）, 三角形が変わった %zu 件\n", g_cmp,
                 tri_frags, cvx_frags,

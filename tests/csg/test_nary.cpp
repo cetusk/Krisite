@@ -154,6 +154,23 @@ void run_union_of_many(const kritest::NaryCase& c, const BoolOptions& o, const s
     check_same(lhs, from_mesh(c.expect()), o, tag);
 }
 
+/// ケース 19 / 20a: **1 つのメッシュとして与えた 2 つの閉曲面**が、
+/// 別々に与えて和を取った結果と一致すること。
+///
+/// **入力は PWN です**（各閉曲面が個別に $\partial = 0$）。多様体である必要は
+/// ありません。**受け入れられることと、正しく解けることの両方**を見ます。
+void run_self_union(const kritest::NaryCase& c, const BoolOptions& o, const std::string& tag) {
+    const std::vector<TriMesh> m = c.make();
+    KRI_CHECK_MSG(m.size() == 3, tag + ": メッシュが 3 枚でない");
+    KRI_CHECK_MSG(krisite::mesh::boundary_is_zero(m[0]), tag + ": 入力が PWN でない（∂S ≠ 0）");
+
+    // self-union: 同じスープを 2 度使う和 = 「$w \ne 0$」の領域
+    const PolySoup self = from_mesh(m[0]);
+    const PolySoup lhs = boolean(self, from_mesh(m[0]), BoolOp::Union, o);
+    const PolySoup rhs = boolean(from_mesh(m[1]), from_mesh(m[2]), BoolOp::Union, o);
+    check_same(lhs, rhs, o, tag);
+}
+
 void run_case(const kritest::NaryCase& c) {
     // §9.0 (1) のサイズ規律
     KRI_CHECK_MSG(kritest::size_discipline_ok(c.make()),
@@ -174,15 +191,60 @@ void run_case(const kritest::NaryCase& c) {
             case kritest::NaryCase::Kind::UnionOfMany:
                 run_union_of_many(c, o, tag);
                 break;
+            case kritest::NaryCase::Kind::SelfUnion:
+                run_self_union(c, o, tag);
+                break;
         }
     }
+}
+
+/// **入口の契約の検査**（`SPEC-phase3.md` §4.0）。
+///
+/// **受け入れる例と拒否する例を対で置きます**（`CLAUDE.md`「前提を書いたら、検査も
+/// 書いてください。…受け入れる例と拒否する例の**対**で」）。片方だけでは
+///
+/// - 受け入れだけ → 「どこまで受け入れるか」が分からない
+/// - 拒否だけ → 「非多様体を本当に受け入れられるか」が分からない
+///
+/// `from_mesh` は表明で止まりますが、**表明は検査ビルドでしか効きません。**
+/// 契約の窓口は `mesh::boundary_is_zero` のほうで、ここではその述語を直接見ます。
+void test_pwn_contract() {
+    struct Item {
+        const char* id;
+        const char* what;
+        TriMesh mesh;
+        bool want_pwn;
+        bool want_edge_manifold;
+    };
+    const std::vector<Item> items = {
+        {"20a", "辺を共有した 2 つの閉曲面", kritest::cases::case20a()[0], true, false},
+        {"20b", "1 辺に 3 枚", kritest::cases::case20b(), false, false},
+        {"19", "自己交差した閉曲面", kritest::cases::case19()[0], true, true},
+    };
+    for (const Item& it : items) {
+        const bool pwn = krisite::mesh::boundary_is_zero(it.mesh);
+        const TopologyReport r = check_topology(it.mesh.triangles);
+        KRI_CHECK_MSG(pwn == it.want_pwn, std::string("ケース ") + it.id + "（" + it.what +
+                                              "）: PWN の判定が想定と違う");
+        KRI_CHECK_MSG(r.edge_manifold == it.want_edge_manifold,
+                      std::string("ケース ") + it.id + ": 辺多様体の判定が想定と違う");
+        std::printf("    ケース %-3s %-24s PWN=%d 辺多様体=%d\n", it.id, it.what, (int)pwn,
+                    (int)r.edge_manifold);
+    }
+    // **非多様体でも PWN なら受け入れる**ことが要点です。両者が一致するなら、
+    // `edge_manifold` で代用できてしまい、§4.0 の検査を足す意味がありません
+    KRI_CHECK_MSG(krisite::mesh::boundary_is_zero(kritest::cases::case20a()[0]) &&
+                      !check_topology(kritest::cases::case20a()[0].triangles).edge_manifold,
+                  "**PWN かつ非多様体の例が無い。** §4.0 の検査が `edge_manifold` と"
+                  "区別できていません");
 }
 
 }  // namespace
 
 int main() {
-    std::printf("\n  n 項のケース 17 / 18 / 23（SPEC-phase3 §9）\n");
+    std::printf("\n  n 項のケース 17 / 18 / 19 / 20 / 23（SPEC-phase3 §9）\n");
     KRI_CHECK_MSG(!kritest::nary_corpus().empty(), "n 項のコーパスが空");
+    test_pwn_contract();
     for (const kritest::NaryCase& c : kritest::nary_corpus()) {
         std::printf("    ケース %-3s %s\n", c.id, c.what);
         run_case(c);

@@ -32,6 +32,7 @@
 #include "krisite/csg/fragment.hpp"
 #include "krisite/csg/plane_table.hpp"
 #include "krisite/geom/plane.hpp"
+#include "krisite/mesh/topology.hpp"
 #include "krisite/mesh/tri_mesh.hpp"
 #include "krisite/octree/uniform_grid.hpp"
 
@@ -282,7 +283,16 @@ inline std::vector<std::uint32_t> splice(const std::vector<std::uint32_t>& a, st
 
 }  // namespace detail
 
+/// **入口の契約は PWN です**（`SPEC-phase3.md` §1.1 / §4.0）。
+///
+/// > **前提を書いたら、検査も書くこと**（`CLAUDE.md`）。仕様に「入力は PWN」と
+/// > 書くだけでは、破られたときに何が起きるかが未定義のまま残ります。
+///
+/// 判定そのものは `mesh::boundary_is_zero` として公開しています。**呼び出し側が
+/// 拒否できるようにするため**で、`from_mesh` 自身は表明で止まります
+/// （表明は検査ビルドでのみ効くので、**契約の窓口は述語のほう**です）。
 inline PolySoup from_mesh(const mesh::TriMesh& m, const FromMeshOptions& opt = {}) {
+    KRISITE_CHECK(mesh::boundary_is_zero(m), "from_mesh: 入力が PWN でない（∂S ≠ 0）。§4.0 / §1.1");
     PolySoup s;
     s.sources.push_back(m);
     s.indicator = indicator_source(0);  // 「source 0 の内側」
