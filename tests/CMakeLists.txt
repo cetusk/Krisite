@@ -536,6 +536,19 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(23 KRISITE_MUTATION_NO_EXIT_BARRIER=1 nary     PASS)
     krisite_add_mutant(23 KRISITE_MUTATION_NO_EXIT_BARRIER=1 cp5n     PASS)
 
+    # 変異 24: **同値な構成点の代表を正準に選ぶのをやめる**（`SPEC-phase4.md` §4.4）。
+    #   **主検出器: parallel（並べ替え不変性）**
+    #
+    # 最初に来た点を代表にします。**幾何も位相も体積も変わりません。**
+    # 同じ点の同次座標のスカラー倍が変わるだけです。
+    #
+    # **§7.1 の決定性でも捕まりません。** あれは同じコードどうしの比較なので、
+    # 代表の選び方が非正準でも一致します。**多角形の並びを変える検査だけが捕まえます。**
+    krisite_add_mutant(24 KRISITE_MUTATION_NO_CANONICAL_REPR=1 parallel FAIL)
+    krisite_add_mutant(24 KRISITE_MUTATION_NO_CANONICAL_REPR=1 soup     PASS)
+    krisite_add_mutant(24 KRISITE_MUTATION_NO_CANONICAL_REPR=1 nary     PASS)
+    krisite_add_mutant(24 KRISITE_MUTATION_NO_CANONICAL_REPR=1 cp5n     PASS)
+
     # ---- CP5 の組合せでも検出されること（SPEC-phase2 §13）--------------------
     #
     # **CP5 は機構を全部有効にした状態です。** 機構が増えると検出器は移動し、

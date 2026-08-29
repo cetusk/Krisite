@@ -54,7 +54,12 @@ struct ToMeshStats {
 
     std::size_t constructed_points = 0;  ///< 第1段（平面3つ組）で作った点
     std::size_t merged_points = 0;       ///< 第2段（値）の併合後
-    std::size_t merged_by_value = 0;     ///< 第2段が併合した数
+    std::size_t merged_by_value = 0;
+    /// §4.4 の正準化で、**最初に来た点以外が代表になった回数**。
+    ///
+    /// **0 なら機構が空回りしています**（`CLAUDE.md`「足した機構が実際に発火した
+    /// ことを、テスト自身に確かめさせること」）。
+    std::size_t canonical_swaps = 0;  ///< 第2段が併合した数
     TJunctionStats t{};
     mesh::SplitStats split{};
 };
@@ -135,11 +140,23 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
     for (std::size_t i = 0; i < order.size();) {
         std::size_t j = i;
         const auto id = static_cast<std::uint32_t>(out.vertices.size());
-        out.vertices.push_back(points[order[i]]);
+        // **代表は組の中で表現の辞書順が最小のものを選びます**（`SPEC-phase4.md` §4.4）。
+        //
+        // `lex_less` は同値な点に順序を付けないので、**何もしないと「どれが残るか」が
+        // 入力の並び次第**になり、並びに触れる変更のたびに出力のバイト列が漂います。
+        // **構成点の集合が同じ限り、これで代表は一意です**（集合が変われば変わり得ます）。
+        std::size_t best = i;
         while (j < order.size() && geom::h_equal(points[order[i]], points[order[j]])) {
+#if !defined(KRISITE_MUTATION_NO_CANONICAL_REPR)
+            // 変異 24: **正準化をやめる**（最初に来た点を代表にする）。
+            // 幾何も位相も体積も変わらないので、**並べ替え不変性でしか捕まりません**
+            if (geom::repr_less(points[order[j]], points[order[best]])) best = j;
+#endif
             remap[order[j]] = id;
             ++j;
         }
+        if (best != i) ++st.canonical_swaps;
+        out.vertices.push_back(points[order[best]]);
         if (j - i > 1) st.merged_by_value += (j - i - 1);
         i = j;
     }

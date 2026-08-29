@@ -19,6 +19,7 @@
 // たまたま顕在化しないことがあります。**TSan は実行された経路上の競合を、
 // 顕在化していなくても検出します。** CI の別ジョブが担当します。
 #include <cstdio>
+#include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
@@ -248,7 +249,15 @@ void test_thread_local_cache() {
     //
     // スケジューリングは保証できないので、**複数回試して 1 度も並列に走らなければ
     // 落とします。**
-    constexpr int kTries = 8;
+    //
+    // **回数はコア数への依存を実測して決めました**（`IMPL-phase4.md` §6.1）。
+    //
+    //   4 コア   1 回目（GitHub Actions の標準ランナーはここ）
+    //   2 コア   1 回目
+    //   1 コア   2〜16 回目（呼び出し元が全部さらってしまう）
+    //
+    // 1 回が約 2 ms なので、32 回でも 70 ms 程度です。
+    constexpr int kTries = 32;
     int tries = 0;
     for (; tries < kTries; ++tries) {
         for (unsigned th : {1u, 8u}) {
@@ -271,12 +280,65 @@ void test_thread_local_cache() {
         if (entries8 > entries1) break;
     }
     KRI_CHECK_MSG(tries < kTries,
-                  "**8 スレッドで一度も並列に走りませんでした。** この検査は空回りしています"
-                  "（§7.3）。項目数が増えないなら、共有の有無を見ていません");
+                  "**8 スレッドで一度も並列に走りませんでした**（32 回試行）。"
+                  "この検査は空回りしています（§7.3）。項目数が増えないなら、"
+                  "共有の有無を見ていません。**実行環境のコア数を確認してください**");
     std::printf(
         "    キャッシュ: 1 スレッド 命中 %zu / 項目 %zu → 8 スレッド 命中 %zu / 項目 %zu"
         "（%d 回目で並列を確認）\n",
         hits1, entries1, hits8, entries8, tries + 1);
+}
+
+/// §4.4: **同値な構成点の代表が正準であること。**
+///
+/// `lex_less` は同値な点に順序を付けないので、**何もしないと「どれが残るか」が
+/// 入力の並び次第**になります。**多角形の並びを逆にして、頂点の列が
+/// バイト単位で変わらないこと**で確かめます。
+///
+/// > **幾何も位相も体積も、表現の違いを見ません。** §7.1 の決定性検査も、
+/// > 同じコードどうしの比較なので素通りします。**この検査だけが捕まえます。**
+///
+/// **到達点は「構成点の集合が同じ限り一意」です**（§4.4）。幾何だけの関数では
+/// ありません。GCD 正規化には除算が要ります。
+void test_canonical_representative() {
+    std::size_t n = 0, swaps = 0, merged = 0;
+    for (const kritest::Case& c : kritest::corpus()) {
+        const TriMesh a = c.make_a(), b = c.make_b();
+        for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
+            for (unsigned d = 0; d <= kMaxDepth; ++d) {
+                const BoolOptions o = all_on(d, d == kMaxDepth, 1u, nullptr);
+                PolySoup r = boolean(from_mesh(a), from_mesh(b), op, o);
+                ToMeshOptions tm;
+                tm.split_contacts = true;
+                ToMeshStats ts{};
+                const SoupMesh m1 = to_mesh(r, tm, &ts);
+                swaps += ts.canonical_swaps;
+                merged += ts.merged_by_value;
+                // **並びだけを変えます。** 断片の集合は同じです
+                std::reverse(r.polys.begin(), r.polys.end());
+                const SoupMesh m2 = to_mesh(r, tm);
+                const std::string tag = std::string("ケース ") + c.id + " " + op_name(op) +
+                                        "（深度 " + std::to_string(d) + "）";
+                KRI_CHECK_MSG(m1.vertices.size() == m2.vertices.size(),
+                              tag + ": 並べ替えで頂点数が変わった");
+                bool eq = true;
+                for (std::size_t i = 0; i < m1.vertices.size() && eq; ++i) {
+                    eq = std::memcmp(&m1.vertices[i], &m2.vertices[i], sizeof m1.vertices[i]) == 0;
+                }
+                KRI_CHECK_MSG(eq, tag +
+                                      ": **多角形の並びで同次座標の表現が変わった**"
+                                      "（§4.4 の代表が正準でない）");
+                ++n;
+            }
+        }
+    }
+    // **空回りを許さないこと。** 代表が一度も入れ替わらないなら、この検査は
+    // 「正準化が効いている」ではなく「正準化する場面が無い」を見ています
+    KRI_CHECK_MSG(swaps > 0,
+                  "**代表が一度も入れ替わっていません。** §4.4 の機構が空回りしています");
+    KRI_CHECK_MSG(merged > 0, "**値で併合した点が 0 件。** 同値な組がありません");
+    std::printf("    正準な代表 %zu 構成（代表の入れ替え %zu 回 / 値の併合 %zu 回）\n", n, swaps,
+                merged);
 }
 
 }  // namespace
@@ -286,6 +348,7 @@ int main() {
     KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
     test_determinism();
     test_determinism_all_corpora();
+    test_canonical_representative();
     test_thread_local_cache();
     std::printf("\n");
     return kritest::finish("csg/parallel");

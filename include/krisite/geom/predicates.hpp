@@ -266,6 +266,51 @@ inline bool h_equal(const HPointD& h1, const HPointD& h2) noexcept {
     return cmp_h_lex(h1, h2) == 0;
 }
 
+// ---- 同値な構成点の代表を正準に選ぶ（`SPEC-phase4.md` §4.4）★ -----------------
+//
+// **`h_equal` は「同じ点か」しか言いません。** 同じ点の同次座標は
+// スカラー倍の分だけ何通りもあり、**どの倍数が出るかは、その点をどの断片が
+// 作ったかで決まります**（`intersect3` の行列式が support / edge の役割で変わる）。
+//
+// 代表を決めないと、**並びに触れる変更のたびに出力のバイト列が漂います。**
+// 実測: 平面の intern を並列区間の外に出しただけで、264 構成のうち 28 件で
+// 表現がずれました（幾何・位相・三角形の並びはすべて一致）。
+//
+// **到達点を正確に**（§4.4）:
+//
+//   得られる     構成点の集合が同じ限り、代表は一意
+//   得られない   「幾何だけの関数」。**集合に現れる倍数が変われば代表も変わり得ます**
+//
+// 幾何だけの関数にするには GCD で正規化して $w > 0$ に固定する必要がありますが、
+// **除算は `SPEC-phase0.md` §5 の演算集合にありません。** 表現差が再発したら、
+// そのとき検討してください。
+
+namespace detail {
+
+/// 同じ幅の 2 の補数表現どうしの数値比較（最上位リムだけ符号を見る）。
+template <std::size_t N>
+inline int cmp_repr(const arith::fixed_int<N>& a, const arith::fixed_int<N>& b) noexcept {
+    const bool na = arith::is_negative(a), nb = arith::is_negative(b);
+    if (na != nb) return na ? -1 : 1;
+    for (std::size_t i = N; i-- > 0;) {
+        if (a[i] != b[i]) return (a[i] < b[i]) ? -1 : 1;
+    }
+    return 0;
+}
+
+}  // namespace detail
+
+/// **表現の辞書順**（$w$, $x$, $y$, $z$ の順に数値で比較）。
+///
+/// **`lex_less` とは別物です。** あちらは幾何の位置、こちらは**同じ点の表現の中での
+/// 順序**です。同値な組の代表を正準に選ぶためだけに使います。
+inline bool repr_less(const HPointD& h1, const HPointD& h2) noexcept {
+    if (const int c = detail::cmp_repr(h1.w, h2.w); c != 0) return c < 0;
+    if (const int c = detail::cmp_repr(h1.x, h2.x); c != 0) return c < 0;
+    if (const int c = detail::cmp_repr(h1.y, h2.y); c != 0) return c < 0;
+    return detail::cmp_repr(h1.z, h2.z) < 0;
+}
+
 // ---- 平面の同一判定と全順序（SPEC-phase1.md §3.1）----------------------------
 //
 // GCD による正準化は行いません。除算・剰余・GCD は arith/ に無く、Phase 1 のために
