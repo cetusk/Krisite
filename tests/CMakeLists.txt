@@ -79,6 +79,8 @@ krisite_add_test(cp5           csg/test_cp5.cpp)
 krisite_add_test(cp5n          csg/test_cp5n.cpp)
 # **n 項のケース 17 / 18**（SPEC-phase3 §9）。別の演算木で同じ立体を作る恒等式。
 krisite_add_test(nary          csg/test_nary.cpp)
+# **凸分割**（SPEC-phase3 §4.1）。三角形化との比較と、決定性。
+krisite_add_test(convex        csg/test_convex.cpp)
 # SPEC-phase3 §3.1 / §2.1 の CP1。辺平面の構成（軸方向との外積）と、
 # 断片の相対内部の点。**両方の経路が使われることを固定する**（空回りの番人）
 krisite_add_test(interior      csg/test_interior.cpp)
@@ -477,6 +479,18 @@ if(KRISITE_BUILD_MUTANTS)
     if(KRISITE_GMP_FOUND)
         krisite_add_mutant(18 KRISITE_MUTATION_BSP_DROP_ONE_CUT=1 volume_gmp FAIL GMP)
     endif()
+
+    # 変異 19: **凸分割で凸性を確かめずに併合する**（`SPEC-phase3.md` §4.1.2）。
+    #   **主検出器: convex（点集合として同じか）**
+    #
+    # `Fragment` は半空間の交わりなので、非凸なループを渡すと**凸包**になります。
+    # **位相は保たれることがあります**（$\chi$ も $C$ も変わらない）。
+    # 「三角形化と凸分割で両方向の差が空」でしか出ません。
+    #
+    # **既定は三角形化なので、`soup` や `cp5n` は素通りします。**
+    krisite_add_mutant(19 KRISITE_MUTATION_MERGE_IGNORE_CONVEXITY=1 convex FAIL)
+    krisite_add_mutant(19 KRISITE_MUTATION_MERGE_IGNORE_CONVEXITY=1 soup   PASS)
+    krisite_add_mutant(19 KRISITE_MUTATION_MERGE_IGNORE_CONVEXITY=1 cp5n   PASS)
 
     # ---- CP5 の組合せでも検出されること（SPEC-phase2 §13）--------------------
     #

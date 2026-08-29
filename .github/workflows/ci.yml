@@ -475,7 +475,7 @@ jobs:
           # 時点で 71 → 3 に見えました（番人が黙って壊れる形です）。
           n=$(ctest --test-dir build -N -L '^mutation$' | sed -n 's/^Total Tests: *//p')
           echo "登録されている変異テスト: $n 件"
-          test "$n" -eq 86 || { echo "変異テストの件数が想定と違います（期待 86）"; exit 1; }
+          test "$n" -eq 89 || { echo "変異テストの件数が想定と違います（期待 89）"; exit 1; }
           ctest --test-dir build --no-tests=error -L '^mutation$' --output-on-failure --parallel 4
       - name: 変異 3 は検査ビルドでは表明が止めること
         # もう一方の検出経路。位相検査に届く前に fragment_sign の不変条件が落とす。
