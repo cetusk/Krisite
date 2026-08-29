@@ -72,6 +72,32 @@ inline bool tri_touches_plane(const geom::PlaneD& pl, const mesh::TriMesh& m, co
     return false;
 }
 
+#if defined(KRISITE_EXPERIMENT_BSP_SKIP_DISJOINT)
+/// 断片が箱と**分離している**か（どれかの軸で厳密に外側にあるか）。
+///
+/// **最適化の候補**であって変異ではありません（`ROADMAP.md`「切断候補の絞り込み」）。
+/// **軸平行平面に対する `side` だけ**で判定できます。
+inline bool fragment_outside_box(const PlaneTable& t, const Fragment& f, const octree::Aabb& box,
+                                 PointCache* cache) {
+    const std::size_t n = vertex_count(f);
+    for (int k = 0; k < 3; ++k) {
+        const auto ax = static_cast<geom::Axis>(k);
+        // 箱の lo 面より手前（side < 0）に全頂点があるか
+        for (int side_sel = 0; side_sel < 2; ++side_sel) {
+            const geom::PlaneD pl =
+                geom::plane_axis_aligned(ax, side_sel == 0 ? box.lo[k] : box.hi[k]);
+            const int want = (side_sel == 0) ? -1 : +1;
+            bool all = true;
+            for (std::size_t i = 0; i < n && all; ++i) {
+                if (geom::side(pl, fragment_vertex(t, f, i, cache)) != want) all = false;
+            }
+            if (all) return true;
+        }
+    }
+    return false;
+}
+#endif
+
 }  // namespace detail
 
 /// 2 つのスープのブール演算（CP2）。**出力もスープなので連鎖できます。**
@@ -378,8 +404,48 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // （CP3 までの挙動 = §10.1 の正解器）。
             const std::vector<PlaneId>& cut_planes =
                 opt.local_bsp ? cuts_for(frag.support) : split_planes;
+            // 変異「局所 BSP の交差線分を 1 本落とす」（`SPEC-phase3.md` §10.5）。
+            //
+            // **落とすと断片が相手の曲面をまたいだまま残ります。** 代表点 1 点で
+            // 分類できる前提（定理 7.2）が崩れるので、位相か体積に出るはずです。
+            // **過剰分割の側では落としません**（そちらは正解器なので）。
+            std::size_t cut_begin = 0;
+#if defined(KRISITE_MUTATION_BSP_DROP_ONE_CUT)
+            if (opt.local_bsp && !cut_planes.empty()) cut_begin = 1;
+#endif
             std::vector<Fragment> pieces{frag};
-            for (PlaneId q : cut_planes) {
+            for (std::size_t ci = cut_begin; ci < cut_planes.size(); ++ci) {
+                const PlaneId q = cut_planes[ci];
+#if defined(KRISITE_EXPERIMENT_BSP_SKIP_DISJOINT)
+                // **切断候補の絞り込み（最適化の候補。Phase 5）。変異ではありません。**
+                //
+                // 三角形が断片と交わらないなら、その断片をその平面で切る必要はありません。
+                // **分類については健全です**（定理 7.2 の前提は保たれます）。
+                // 全コーパスで出力は 1 ビットも変わらず、8,169 回多く省きました。
+                //
+                // **採用には証明か専用のコーパスケースが要ります。** 残る経路は
+                // 「共平面に載る別々の多角形が違う切り方をして `region_key` が潰せなく
+                // なる」で、**「コーパスに配置が無い」だけでは否定できません**
+                // （`SPEC-phase2.md` §2.6）。Phase 3 は性能のフェーズではないので保留です。
+                {
+                    bool touches = false;
+                    const auto it = cell_tri_by_plane.find(q);
+                    if (it != cell_tri_by_plane.end()) {
+                        for (const auto& ref : it->second) {
+                            if (!detail::fragment_outside_box(
+                                    out.table, frag, src_aabb[ref.first][ref.second], cache)) {
+                                touches = true;
+                                break;
+                            }
+                        }
+                    }
+                    // **変異が発火したことを数えます。** 空回りの変異は変異ではありません
+                    if (!touches) {
+                        ++st.bsp_cuts_skipped;
+                        continue;
+                    }
+                }
+#endif
                 std::vector<Fragment> next;
                 next.reserve(pieces.size());
                 for (const Fragment& p : pieces) {
