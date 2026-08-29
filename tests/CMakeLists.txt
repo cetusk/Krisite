@@ -81,6 +81,8 @@ krisite_add_test(cp5n          csg/test_cp5n.cpp)
 krisite_add_test(nary          csg/test_nary.cpp)
 # **凸分割**（SPEC-phase3 §4.1）。三角形化との比較と、決定性。
 krisite_add_test(convex        csg/test_convex.cpp)
+# **並列化**（SPEC-phase4 §7）。決定性が主検出器。
+krisite_add_test(parallel      csg/test_parallel.cpp)
 # SPEC-phase3 §3.1 / §2.1 の CP1。辺平面の構成（軸方向との外積）と、
 # 断片の相対内部の点。**両方の経路が使われることを固定する**（空回りの番人）
 krisite_add_test(interior      csg/test_interior.cpp)
@@ -491,6 +493,31 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(19 KRISITE_MUTATION_MERGE_IGNORE_CONVEXITY=1 convex FAIL)
     krisite_add_mutant(19 KRISITE_MUTATION_MERGE_IGNORE_CONVEXITY=1 soup   PASS)
     krisite_add_mutant(19 KRISITE_MUTATION_MERGE_IGNORE_CONVEXITY=1 cp5n   PASS)
+
+    # 変異 20: **結合時の正準な整列を外す**（`SPEC-phase4.md` §7.5）。
+    #   **主検出器: parallel（決定性）**
+    #
+    # スロットに書かず、完了した順に共有の器へ積みます。排他は取るので**競合は
+    # ありません**が、並びがスケジューリングに依存します。
+    #
+    # **幾何は同じなので、位相も体積も区別しません。** `SPEC-phase3.md` の
+    # 「辺平面の軸選択」と同じ形で、**決定性の検査でしか捕まりません。**
+    krisite_add_mutant(20 KRISITE_MUTATION_JOIN_ORDER=1 parallel FAIL)
+    krisite_add_mutant(20 KRISITE_MUTATION_JOIN_ORDER=1 soup     PASS)
+    krisite_add_mutant(20 KRISITE_MUTATION_JOIN_ORDER=1 nary     PASS)
+    # 変異 21 / 22: **キャッシュと統計をスレッド間で共有する**（§7.5）。
+    #   **主検出器: ThreadSanitizer（CI の `tsan` ジョブ）**
+    #
+    # **通常のビルドでは登録しません。** 21 は `std::map` への同時挿入なので
+    # **落ち方が未定義**（実測では abort）で、`WILL_FAIL` はシグナル終了を拾えません。
+    # 22 は出力に現れないので、**決定性でも位相でも体積でも捕まりません。**
+    #
+    # 実測（TSan、8 スレッド、コーパス全件）:
+    #
+    #   KRISITE_MUTATION_SHARE_CACHE   警告 164 件
+    #   KRISITE_MUTATION_SHARE_STATS   警告  45 件
+    #
+    # **「TSan でしか捕まらない」ことが、TSan を置く理由そのものです。**
 
     # ---- CP5 の組合せでも検出されること（SPEC-phase2 §13）--------------------
     #

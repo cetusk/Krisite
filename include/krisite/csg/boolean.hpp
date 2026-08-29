@@ -38,6 +38,7 @@
 #include "krisite/mesh/tri_mesh.hpp"
 #include "krisite/octree/adaptive.hpp"
 #include "krisite/octree/uniform_grid.hpp"
+#include "krisite/par/thread_pool.hpp"
 
 namespace krisite::csg {
 
@@ -138,6 +139,16 @@ struct BoolStats {
 
     /// §5 の接触の分裂。**予測と実測の突き合わせもここに入ります**（§5.5）。
     mesh::SplitStats split{};
+
+    /// **段ごとの時間**（`SPEC-phase4.md` §9）。ミリ秒。
+    ///
+    /// **並列化の対象を選ぶために測ります。** どこに時間が行くかを知らずに
+    /// 並列化しても無駄になります（`CLAUDE.md`「最適化の前に比率を測る」）。
+    double ms_prepare = 0;   ///< 平面表の統合、source ごとの平面・AABB
+    double ms_leaves = 0;    ///< 葉の列挙（八分木の構築）
+    double ms_arrange = 0;   ///< セルごとの arrangement（§4）
+    double ms_stitch = 0;    ///< 縫合と重複の仕分け（§5 / §6）
+    double ms_classify = 0;  ///< 分類（§7）
 
     /// §2.4.3 の T 頂点の解決（SPEC-phase2）。
     ///
@@ -282,6 +293,25 @@ struct BoolOptions {
     ///
     /// **`soup_boolean` でのみ効きます**（二項の `boolean` は過剰分割のままです）。
     bool local_bsp = true;
+    /// **スレッド数**（`SPEC-phase4.md` §2 / §7.1）。**0 か 1 なら逐次**。
+    ///
+    /// **逐次経路はそのまま残ります。** `parallel_for` は `threads <= 1` で
+    /// スレッドを作らないので、§7.1 の「逐次実装との一致」を同一プロセスで
+    /// 比較できます（`SPEC-phase2.md` §0.1 と同じ構図）。
+    ///
+    /// **出力はスレッド数に依らずビット単位で同一**でなければなりません（§4）。
+    /// **`soup_boolean` でのみ効きます**（二項の `boolean_op` は逐次のままです）。
+#if defined(KRISITE_DEFAULT_THREADS)
+    unsigned threads = KRISITE_DEFAULT_THREADS;
+#else
+    unsigned threads = 1;
+#endif
+    /// **持ち回すスレッドプール**（`SPEC-phase4.md` §2）。`nullptr` なら呼び出しごとに作ります。
+    ///
+    /// **呼び出しが多い場面では必ず渡してください。** 生成・破棄のコストは
+    /// 8 スレッドで 1 回あたり 0.2 ms あり、**タスクが小さいと支配します**
+    /// （実測 132 回で 26.2 ms = 中核の 40%。`IMPL-phase4.md` §1.2）。
+    par::ThreadPool* pool = nullptr;
     /// **領域を逆順に分類する**（`SPEC-phase3.md` §14 の CP3 の判定）。
     ///
     /// 葉の分類が可変な共有状態に依存していれば、順序を変えると結果が変わります。

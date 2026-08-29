@@ -25,7 +25,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <map>
+#include <mutex>
 #include <vector>
 #if defined(KRISITE_DEBUG_SOUP)
 #include <cstdio>
@@ -36,6 +38,7 @@
 #include "krisite/csg/polysoup.hpp"
 #include "krisite/csg/raycast.hpp"
 #include "krisite/octree/adaptive.hpp"
+#include "krisite/par/thread_pool.hpp"
 
 namespace krisite::csg {
 
@@ -98,14 +101,52 @@ inline bool fragment_outside_box(const PlaneTable& t, const Fragment& f, const o
 }
 #endif
 
+/// スレッド局所に貯めた統計を集約する（`SPEC-phase4.md` §1.1）。
+///
+/// **和と最大を取り違えないこと。** 最大の項目を足すと、スレッド数に比例して
+/// 増える値になり、**決定性の検査を素通りしたまま数字だけが壊れます。**
+inline void merge_stats(BoolStats& a, const BoolStats& b) {
+    // ---- 和 ----
+    a.active_cells += b.active_cells;
+    a.empty_cells += b.empty_cells;
+    a.early_out_cells += b.early_out_cells;
+    a.early_out_raycasts += b.early_out_raycasts;
+    a.split_plane_slots += b.split_plane_slots;
+    a.split_planes_used += b.split_planes_used;
+    a.bsp_cut_slots += b.bsp_cut_slots;
+    a.bsp_cuts_used += b.bsp_cuts_used;
+    a.bsp_cuts_skipped += b.bsp_cuts_skipped;
+    a.regions += b.regions;
+    a.raycasts += b.raycasts;
+    a.interior.axis_line += b.interior.axis_line;
+    a.interior.corner_offset += b.interior.corner_offset;
+    a.interior.axis_failed += b.interior.axis_failed;
+    a.interior.corner_tries += b.interior.corner_tries;
+    a.cache_hits += b.cache_hits;
+    a.cache_misses += b.cache_misses;
+    a.cache_entries += b.cache_entries;
+    a.cache_bytes += b.cache_bytes;
+    // ---- 最大 ----
+    a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
+}
+
 }  // namespace detail
 
 /// 2 つのスープのブール演算（CP2）。**出力もスープなので連鎖できます。**
 inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const BoolOptions& opt,
                         BoolStats* stats = nullptr) {
     BoolStats st;
-    PointCache point_cache;
-    PointCache* const cache = opt.cache_points ? &point_cache : nullptr;
+    // **段ごとの時間を測ります**（`SPEC-phase4.md` §9）。
+    using Clock = std::chrono::steady_clock;
+    const auto t_begin = Clock::now();
+    auto lap = [](Clock::time_point& t0) {
+        const auto t1 = Clock::now();
+        const double ms =
+            std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(t1 - t0).count();
+        t0 = t1;
+        return ms;
+    };
+    auto t_stage = t_begin;
 
     PolySoup out;
     // ---- 1. sources と指示関数の合成（§5.2）----------------------------------
@@ -212,6 +253,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
     }
 
+    st.ms_prepare = lap(t_stage);
+
     // ---- 3. 葉の列挙（§3.1。固定深度は「常に最大深度」の特別な場合）----------
     const octree::SubdivisionPolicy policy{opt.depth, !opt.adaptive, opt.leaf_threshold};
     const std::vector<octree::Cell> leaves =
@@ -235,16 +278,77 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     }
     st.total_cells = leaves.size();
 
-    // ---- 4. セルごとの arrangement -------------------------------------------
+    st.ms_leaves = lap(t_stage);
+
+    // ---- 4. セルごとの arrangement（**並列**。`SPEC-phase4.md` §2）-------------
+    //
+    // **葉は先に列挙されているので、タスクは最初から全部そろっています。**
+    // 中央同期キューはアトミックな添字 1 本で足り、**burn-in がありません**
+    // （EMBER §5.3 の burn-in は再帰でタスクを生む構造に由来します）。
+    //
+    // **決定性のために、各葉は自分のスロットにだけ書きます**（§4.2）。
+    // 結合は葉の順（`build_leaves` が返す正準な順序）で行うので、
+    // **スレッド数に依らず出力はビット単位で同一**です。
     std::vector<Fragment> frags;
     std::vector<octree::Cell> frag_cell;
     std::vector<std::uint32_t> frag_src, frag_tag;
     /// セルで「多角形が 1 枚も無かった source」の内外（-1 = 未確定）。§3.2 の early-out
     std::vector<std::vector<std::int8_t>> frag_forced;
 
-    for (const octree::Cell& cell : leaves) {
+    // **セル面の平面は先に登録します。** 平面表は葉の処理中に伸ばせません
+    // （共有される可変状態になります）。セルだけで決まるので前に出せます。
+    struct CellPlane {
+        PlaneId id;
+        int keep;
+    };
+    std::vector<std::vector<CellPlane>> cell_planes_of(leaves.size());
+    for (std::size_t li = 0; li < leaves.size(); ++li) {
+        if (leaves[li].depth == 0) continue;
+        const auto ps = octree::cell_planes(leaves[li]);
+        for (int k = 0; k < 6; ++k) {
+            const PlaneRef r = out.table.intern(ps[k]);
+            const int base = (k % 2 == 0) ? +1 : -1;
+            cell_planes_of[li].push_back({r.id, r.flipped ? -base : base});
+        }
+    }
+
+    /// 1 つの葉が出すもの。**スロットに書いて、あとで葉の順に結合します。**
+    struct LeafOut {
+        std::vector<Fragment> frags;
+        std::vector<std::uint32_t> src, tag;
+        std::vector<std::int8_t> forced;
+        bool empty_cell = false;
+        bool active = false;
+    };
+    std::vector<LeafOut> leaf_out(leaves.size());
+
+    // **プールは持ち回します。** 渡されなければこの呼び出しの間だけ作ります
+    // （生成コストは 8 スレッドで 0.2 ms。呼び出しが多い場面では `opt.pool` を渡すこと）
+    const unsigned nthreads =
+        (opt.pool != nullptr) ? opt.pool->size() : ((opt.threads <= 1) ? 1u : opt.threads);
+    par::ThreadPool local_pool(opt.pool != nullptr ? 1u : nthreads);
+    par::ThreadPool& pool = (opt.pool != nullptr) ? *opt.pool : local_pool;
+    // **可変な器はスレッド局所に持ちます**（§1.1）。共有した瞬間に競合が入ります
+    std::vector<PointCache> tl_cache(nthreads);
+    std::vector<BoolStats> tl_stats(nthreads);
+
+    pool.run(leaves.size(), [&](std::size_t li, unsigned tid) {
+        const octree::Cell& cell = leaves[li];
+        LeafOut& outl = leaf_out[li];
+#if defined(KRISITE_MUTATION_SHARE_STATS)
+        // 変異 22: **統計を共有カウンタにする**（§7.5）。TSan が検出します
+        BoolStats& st = tl_stats[0];
+#else
+        BoolStats& st = tl_stats[tid];
+#endif
+#if defined(KRISITE_MUTATION_SHARE_CACHE)
+        // 変異 21: **構成点キャッシュをスレッド間で共有する**（§7.5）。
+        // 命中率は上がりますが、`std::map` への同時挿入で壊れます。TSan が検出します
+        PointCache* const cache = opt.cache_points ? &tl_cache[0] : nullptr;
+#else
+        PointCache* const cache = opt.cache_points ? &tl_cache[tid] : nullptr;
+#endif
         const octree::CellBox cbox = octree::box_of(cell);
-        const std::size_t frags_before = frags.size();
         std::vector<Fragment> local;
         std::vector<std::uint32_t> local_src, local_tag;
 
@@ -254,7 +358,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
         if (here.empty()) {
             ++st.empty_cells;
-            continue;
+            outl.empty_cell = true;
+            return;
         }
 
         // **曲面が 1 枚も横切らない source は、セル全体で内外が一定です。**
@@ -310,20 +415,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             if (any) ++st.early_out_cells;
         }
 
-        // セル面の平面（保持側つき）: lo 面は +、hi 面は -
-        struct CellPlane {
-            PlaneId id;
-            int keep;
-        };
-        std::vector<CellPlane> cps;
-        if (cell.depth > 0) {
-            const auto ps = octree::cell_planes(cell);
-            for (int k = 0; k < 6; ++k) {
-                const PlaneRef r = out.table.intern(ps[k]);
-                const int base = (k % 2 == 0) ? +1 : -1;
-                cps.push_back({r.id, r.flipped ? -base : base});
-            }
-        }
+        // セル面の平面（保持側つき）。**登録は並列区間の前で済ませています**
+        const std::vector<CellPlane>& cps = cell_planes_of[li];
 
         // 分割平面の絞り込み（`SPEC-phase2.md` §2.3）
         std::vector<PlaneId> culled;
@@ -533,18 +626,45 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             local_tag.swap(nt);
         }
 
-        for (std::size_t i = 0; i < local.size(); ++i) {
-            frags.push_back(std::move(local[i]));
-            frag_cell.push_back(cell);
-            frag_src.push_back(local_src[i]);
-            frag_tag.push_back(local_tag[i]);
-            frag_forced.push_back(forced);
+        outl.frags = std::move(local);
+        outl.src = std::move(local_src);
+        outl.tag = std::move(local_tag);
+        outl.forced = forced;
+        outl.active = !outl.frags.empty();
+        if (outl.active) ++st.active_cells;
+    });
+
+    // **葉の順に結合します**（§4.2 の正準な順序）。
+    //
+    // > **中核の出力は、実はこの順序に依存しません。** 縫合（§5）が構成点を
+    // > `lex_less` で整列してから番号を振り直すので、**下流で正準化されます。**
+    // > それでも葉の順で結合するのは、**依存していないことを確かめずに済ませない**
+    // > ためです（順序を変えても同じ、を偶然に頼らない）。
+    // >
+    // > **依存が残っているのは分類の結合のほうです**（出力の多角形の並びが変わります）。
+    for (std::size_t li = 0; li < leaves.size(); ++li) {
+        LeafOut& o = leaf_out[li];
+        for (std::size_t i = 0; i < o.frags.size(); ++i) {
+            frags.push_back(std::move(o.frags[i]));
+            frag_cell.push_back(leaves[li]);
+            frag_src.push_back(o.src[i]);
+            frag_tag.push_back(o.tag[i]);
+            frag_forced.push_back(o.forced);
         }
-        if (frags.size() != frags_before) ++st.active_cells;
     }
+    for (const BoolStats& t : tl_stats) detail::merge_stats(st, t);
     st.raw_fragments = frags.size();
 
+    st.ms_arrange = lap(t_stage);
+
     // ---- 5. 縫合（重複の仕分けに要る）----------------------------------------
+    //
+    // **ここが中核の逐次部分です**（実測 14.7%）。全構成点を大域の表に入れて
+    // 値で併合するので、そのままでは並列にできません。**中核だけを並列化したときの
+    // 上限は $1/0.161 = 6.2$ 倍**で、これは出口の頂点併合（`SPEC-phase4.md` §3.1）と
+    // 同じ形の問題です。**並列整列 + 区分ごとの併合**で崩せますが、CP1 では扱いません。
+    PointCache stitch_cache;
+    PointCache* const cache = opt.cache_points ? &stitch_cache : nullptr;
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
     std::vector<geom::HPointD> points;
     std::vector<std::vector<std::uint32_t>> raw(frags.size());
@@ -596,6 +716,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
     }
 
+    st.ms_stitch = lap(t_stage);
+
     // ---- 7. 分類（WNV。`SPEC-phase3.md` §5.1 / §14 の CP3 の変更 1）--------------
     //
     // **内外の 1 ビットではなく巻き数で持ちます。** 同じ曲面を 2 度跨ぐ配置
@@ -612,7 +734,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     struct Wnd {
         int w_other, c_front, c_back;
     };
-    std::map<std::pair<std::uint32_t, std::vector<std::int8_t>>, Wnd> wcache;
+    using WCache = std::map<std::pair<std::uint32_t, std::vector<std::int8_t>>, Wnd>;
 
     // **順序非依存の検査**（§14 の CP3 の判定）。分類が可変な共有状態に依存していれば、
     // 逆順にすると結果が変わります。依存していなければ幾何の多重集合は同じです。
@@ -621,7 +743,42 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     for (const auto& kv : regions) region_order.push_back(&kv);
     if (opt.reverse_regions) std::reverse(region_order.begin(), region_order.end());
 
-    for (const auto* kvp : region_order) {
+    // **分類も並列です**（`SPEC-phase4.md` §2）。領域は互いに独立で、
+    // source メッシュへの読み取り専用アクセスしかありません。
+    //
+    // **メモ化（`wcache` / `PointCache`）はスレッド局所に持ちます**（§1.1）。
+    // 命中率のために共有した瞬間に競合が入ります。**出力は 1 ビットも変わりません**
+    // （キャッシュの有無で結果が変わらないことは Phase 2 で確かめてあります）。
+    std::vector<WCache> tl_wcache(nthreads);
+    std::vector<PointCache> tl_cache2(nthreads);
+    std::vector<BoolStats> tl_stats2(nthreads);
+    // **領域ごとのスロット。** 結合は `region_order` の順で行うので、
+    // スレッド数に依らず出力はビット単位で同一になります（§4.2）
+    std::vector<Poly> region_poly(region_order.size());
+    std::vector<char> region_emit(region_order.size(), 0);
+#if defined(KRISITE_MUTATION_JOIN_ORDER)
+    // 変異 20: **結合時の正準な整列を外す**（`SPEC-phase4.md` §7.5）。
+    //
+    // スロットに書かず、**完了した順に共有の器へ直接積みます。** 排他は取るので
+    // 競合はありませんが、**並びがスレッドのスケジューリングに依存**します。
+    // 幾何は同じなので位相も体積も区別しません。**決定性の検査でしか捕まりません。**
+    std::mutex emit_mutex;
+#endif
+
+    pool.run(region_order.size(), [&](std::size_t ri, unsigned tid) {
+        const auto* kvp = region_order[ri];
+#if defined(KRISITE_MUTATION_SHARE_STATS)
+        BoolStats& st = tl_stats2[0];
+#else
+        BoolStats& st = tl_stats2[tid];
+#endif
+#if defined(KRISITE_MUTATION_SHARE_CACHE)
+        WCache& wcache = tl_wcache[0];
+        PointCache* const cache = opt.cache_points ? &tl_cache2[0] : nullptr;
+#else
+        WCache& wcache = tl_wcache[tid];
+        PointCache* const cache = opt.cache_points ? &tl_cache2[tid] : nullptr;
+#endif
         const auto& kv = *kvp;
         // 同じ領域に複数の断片が載っていても、出力するのは 1 枚です（§5.4.1）。
         // **巻き数は source のメッシュから決まる**ので、どの断片を代表に取っても同じです。
@@ -679,7 +836,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                          in_front == in_back ? "捨てる" : "出力");
         }
 #endif
-        if (in_front == in_back) continue;  // (in,in) / (out,out) は捨てる（§5.2）
+        if (in_front == in_back) return;  // (in,in) / (out,out) は捨てる（§5.2）
 
         Poly q;
         q.frag = f;
@@ -714,13 +871,33 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             detail::reverse_polygon(dummy, e);
             q.frag.edge = std::move(e);
         }
-        out.polys.push_back(std::move(q));
+#if defined(KRISITE_MUTATION_JOIN_ORDER)
+        {
+            const std::lock_guard<std::mutex> g(emit_mutex);
+            out.polys.push_back(std::move(q));
+        }
+        (void)ri;
+#else
+        region_poly[ri] = std::move(q);
+        region_emit[ri] = 1;
+#endif
+    });
+
+    // **領域の順に結合します**（§4.2）。**ここが出力の多角形の並びを決めます。**
+#if !defined(KRISITE_MUTATION_JOIN_ORDER)
+    for (std::size_t ri = 0; ri < region_order.size(); ++ri) {
+        if (region_emit[ri] != 0) out.polys.push_back(std::move(region_poly[ri]));
     }
+#endif
+    for (unsigned k = 0; k < nthreads; ++k) {
+        tl_stats2[k].cache_hits = tl_cache2[k].hits();
+        tl_stats2[k].cache_misses = tl_cache2[k].misses();
+        tl_stats2[k].cache_entries = tl_cache2[k].entries();
+        tl_stats2[k].cache_bytes = tl_cache2[k].bytes();
+        detail::merge_stats(st, tl_stats2[k]);
+    }
+    st.ms_classify = lap(t_stage);
     st.fragments = out.polys.size();
-    st.cache_hits = point_cache.hits();
-    st.cache_misses = point_cache.misses();
-    st.cache_entries = point_cache.entries();
-    st.cache_bytes = point_cache.bytes();
     if (stats != nullptr) *stats = st;
     return out;
 }

@@ -330,11 +330,12 @@ Details in [`docs/BENCH.md`](docs/BENCH.md); the reasoning behind them in
 | **Levy24** | Bruno Lévy. *Exact predicates, exact constructions and combinatorics for mesh CSG.* arXiv:2405.12949. |
 | **Shewchuk97** | Shewchuk. *Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric Predicates.* DCG 18(3), 1997. |
 
-**Only the papers' prose was read; no implementation was consulted.** The design
-adopts ideas described in them (the local BSP, half-open cell assignment,
-winding-number classification), while the bit-width derivation, the edge-plane
-construction, T-vertex resolution and the front/back decomposition of the classification
-were derived here.
+**The references are a starting point, not a source: the EMBER / OEBSP papers were not
+obtained until just before Phase 3.** Until then the design was derived from the
+structure of the problem. What was adopted after reading them (the local BSP, half-open
+cell assignment, winding-number classification) and what was derived here is recorded in
+[`docs/LOG-phase3-design.md`](docs/LOG-phase3-design.md) (Japanese).
+**No implementation was ever consulted.**
 
 **No GPL/LGPL code (CGAL, Indirect_Predicates, OpenMeshCraft, VCGlib and the like)
 has been consulted, quoted, or ported.**

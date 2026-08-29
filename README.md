@@ -308,10 +308,11 @@ Phase 1 が明らかにした構造的な数値も残ります。
 | **Levy24** | Bruno Lévy. *Exact predicates, exact constructions and combinatorics for mesh CSG.* arXiv:2405.12949. |
 | **Shewchuk97** | Shewchuk. *Adaptive Precision Floating-Point Arithmetic and Fast Robust Geometric Predicates.* DCG 18(3), 1997. |
 
-**論文は記述だけを読んでいます。実装は 1 行も参照していません。**
-設計には論文に述べられた考え方（局所 BSP、半開区間の割り当て、巻き数による分類など）を
-取り入れていますが、ビット幅の導出・辺平面の構成・T 頂点の解決・分類の分解などは
-自分で導いたものです。
+**参考文献は設計の出発点であり、EMBER / OEBSP の本文は Phase 3 の直前まで入手して
+いません。** それまでは構造から設計しています。精読したあとに取り入れた考え方
+（局所 BSP、半開区間の割り当て、巻き数による分類）と、自分で導いたものとの差分は
+[`docs/LOG-phase3-design.md`](docs/LOG-phase3-design.md) に記録しています。
+**実装は 1 行も参照していません。**
 
 **GPL / LGPL のコード（CGAL、Indirect_Predicates、OpenMeshCraft、VCGlib 等）は
 参照・引用・移植していません。**
