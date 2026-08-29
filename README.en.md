@@ -16,9 +16,10 @@
 `Krisite` is a header-only C++20 library for 3D data. The long-term goal is to unify
 point-cloud compression, meshing, and exact boolean operations.
 **Phase 0 (the arithmetic foundation), Phase 1 (minimal validation of output
-extraction), Phase 2 (adaptive subdivision and output semantics) and Phase 3 (core
-redesign) are complete.** The Phase 1 verdict was: continue. Work now heads toward
-**Phase 4 (work-stealing parallelism)**.
+extraction), Phase 2 (adaptive subdivision and output semantics), Phase 3 (core
+redesign) and Phase 4 (parallelism) are complete.** The Phase 1 verdict was:
+continue. Work now heads toward
+**Phase 5 (full Thingi10K validation and performance targets)**.
 [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single source of truth for where the
 project stands (Japanese).
 
@@ -29,6 +30,7 @@ project stands (Japanese).
 | `arith/` | Fixed-width exact integers — no dynamic allocation, no exceptions, no global state | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
 | `geom/` | Plane-based geometric predicates. **Widths live in the type**, so exceeding a derived bound is a compile error | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
 | `mesh/` `octree/` `csg/` | Exact booleans ($\cup$ / $\cap$ / $\setminus$, **$n$-ary**), topology checking, **adaptive subdivision + early-out + constructed-point reuse**, **local BSP**, **contact splitting**, **WNV classification**, a **convex split** at the entry | [`SPEC-phase1.md`](docs/SPEC-phase1.md) – [`SPEC-phase3.md`](docs/SPEC-phase3.md) |
+| `par/` | **Persistent thread pool.** Parallelism in the core and the exit. **The output is bit-identical regardless of thread count** | [`SPEC-phase4.md`](docs/SPEC-phase4.md) |
 
 **No floating point, no epsilons.** Every decision is the sign of an exact integer.
 
@@ -98,6 +100,37 @@ Because every predicate reduces to the sign of a fixed-width integer, and becaus
 there is no allocation, no exception and no global state, the whole thing
 parallelises as-is.
 
+### Parallelism does not change a single bit of the output
+
+```cpp
+#include <krisite/par/thread_pool.hpp>
+
+krisite::par::ThreadPool pool(8);
+
+csg::BoolOptions opt;
+opt.threads = 8;
+opt.pool = &pool;              // **reuse the pool** — creating one is expensive
+
+csg::ToMeshOptions tm;
+tm.threads = 8;
+tm.pool = &pool;               // without this the exit runs single-threaded
+
+const csg::SoupMesh out = csg::to_mesh(csg::boolean(X, Y, csg::BoolOp::Union, opt), tm);
+// The bytes of `out` are identical for thread counts 1 / 2 / 4 / 8
+```
+
+**Determinism is a requirement, not a by-product.** Each task writes only to its own
+indexed slot, and results are joined in index order. The sequential implementation
+(`threads = 1`) is therefore a *complete* oracle, which turns verification into its
+strongest form — **byte equality** rather than "volume and topology agree"
+(888 configurations checked).
+
+**The representative of a set of coincident constructed points is chosen
+canonically** as well, so that the homogeneous scale factor does not drift with
+ordering. What this buys is uniqueness *as long as the set of constructed points is
+unchanged*; it is not a function of the geometry alone (that would need GCD
+normalisation, hence division).
+
 ### Planes and points are both homogeneous 4-vectors
 
 A plane is stored as `[a, b, c, d]` meaning **`N·x + d = 0`** (with `d = -N·p₁`).
@@ -162,6 +195,7 @@ cmake --build build-rel
 | `KRISITE_BUILD_TESTS_WITH_MANIFOLD` | **OFF** | Manifold oracle (Apache-2.0, tests only) |
 | `KRISITE_BUILD_MUTANTS` | OFF | Mutation tests (requires checking OFF) |
 | `KRISITE_DEFAULT_ADAPTIVE` | OFF | Make adaptive subdivision + early-out + constructed-point reuse the default for boolean operations |
+| `KRISITE_DEFAULT_THREADS` | 1 | Default for `BoolOptions::threads` (used by the parallel-mode CI job) |
 | `KRISITE_BUILD_BENCH` | OFF | Build the benchmarks |
 
 `KRISITE_CHECKED_ARITH` is independent of `NDEBUG`. Passing
@@ -201,6 +235,10 @@ CI runs:
 | Manifold oracle | Compares component count and genus of boolean output against an independent implementation |
 | **Mutation tests** | Injects deliberate faults and pins down **both** which tests catch them **and** which combinations do not |
 | **Mutation tests with GMP** | Runs only the mutations for which volume is meaningful (2 detected + 4 deliberately not) |
+| **ThreadSanitizer** | Races that the determinism check cannot see (two mutations are caught by nothing else) |
+| **Parallel mode** | Runs **the entire Phase 1–3 test suite** with `KRISITE_DEFAULT_THREADS=8` |
+| $n$-ary / soup path | Exercises the convex split and indicator trees of depth 3 or more |
+| Benchmarks (baseline) | Predicate throughput, plus the entry/core/exit breakdown |
 | clang-format | Formatting |
 
 ## Documentation
@@ -210,7 +248,9 @@ The design documents are written in Japanese.
 | File | Contents |
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **Where the project stands. Start here** |
-| [`docs/SPEC-phase3.md`](docs/SPEC-phase3.md) | **Phase 3 spec.** The $n$-ary contract, WNV, core/post-processing split |
+| [`docs/SPEC-phase4.md`](docs/SPEC-phase4.md) | **Phase 4 spec.** The determinism requirement, how to state a prediction, the dispatch floor |
+| [`docs/IMPL-phase4.md`](docs/IMPL-phase4.md) | Phase 4 implementation notes (**as of completion**). **Eight things the measurements revealed** |
+| [`docs/SPEC-phase3.md`](docs/SPEC-phase3.md) | Phase 3 spec. The $n$-ary contract, WNV, core/post-processing split |
 | [`docs/IMPL-phase3.md`](docs/IMPL-phase3.md) | Phase 3 implementation notes (**as of completion**). Decisions, rationale, **and the mistakes that were corrected** |
 | [`docs/LOG-phase3-design.md`](docs/LOG-phase3-design.md) | The discussion log behind the Phase 3 spec |
 | [`docs/DECISION-core-contract.md`](docs/DECISION-core-contract.md) | How the core contract ($n$-ary, WNV, core/post-processing split) was decided |
@@ -220,7 +260,7 @@ The design documents are written in Japanese.
 | [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md) | Phase 1 implementation notes. Decisions, rationale, **and the mistakes that were corrected** |
 | [`docs/SPEC-phase0.md`](docs/SPEC-phase0.md) | Phase 0 spec: bit-width analysis, predicates, test requirements |
 | [`docs/IMPL-phase0.md`](docs/IMPL-phase0.md) | Phase 0 implementation notes. **Why it is built this way**, and how the tests were designed to have detection power |
-| [`docs/BENCH.md`](docs/BENCH.md) | Benchmark baseline and the Phase 1 / 2 / 3 measurements |
+| [`docs/BENCH.md`](docs/BENCH.md) | Benchmark baseline and the Phase 1 / 2 / 3 / 4 measurements |
 | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | Third-party components and the mechanisms that keep them out of the distributable |
 | [`docs/STYLE.md`](docs/STYLE.md) | Coding conventions |
 | [`assets/BRAND.md`](assets/BRAND.md) | Logo and theme colours |
@@ -245,9 +285,9 @@ build time rather than in prose.
 | 0 | Fixed-width exact integers + plane-based predicates | Complete (2026-08-26) |
 | 1 | Minimal validation of output extraction (fixed-depth subdivision, single-threaded) | Complete (2026-08-27) — **verdict: continue** |
 | **2** | **Adaptive subdivision, constructed-point reuse, output semantics** | **Complete (2026-08-28)** |
-| **3** | **Core redesign** ($n$-ary, WNV, local BSP, convex split; single-threaded) | **Complete (2026-08-29)** |
-| **4** | **Work-stealing parallelism** | **Next** |
-| 5 | Thingi10K full-corpus validation, performance targets | Not started |
+| 3 | **Core redesign** ($n$-ary, WNV, local BSP, convex split; single-threaded) | Complete (2026-08-29) |
+| **4** | **Parallelism** (core + exit; **determinism required**) | **Complete (2026-08-29)** |
+| **5** | **Thingi10K full-corpus validation, performance targets** | **Next** |
 | 6+ | Point-cloud codec, GWN, meshing | Not started |
 
 **Phase 1 was the decision point, and the verdict was: continue** (decided
@@ -274,6 +314,10 @@ Fragment subdivision moved from over-subdivision by every support plane to a **l
 (raw fragments down to 80.3%, canonicalised fragments to 78.6%). The entry now has a
 **convex split**, switchable at runtime against plain triangulation (pieces down to 54.5%,
 planes to 64.9%).
+
+**Phase 4 parallelised the core and the exit. Its completion criteria are not about
+speed but about "do you understand where the time goes"** (`SPEC-phase4.md` §6.3).
+**Determinism is a requirement**, and 888 configurations agree byte for byte.
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) (Japanese).
 
 ### Measurements (Phase 1 → Phase 2)
@@ -319,6 +363,41 @@ Details in [`docs/BENCH.md`](docs/BENCH.md); the reasoning behind them in
 [`docs/IMPL-phase1.md`](docs/IMPL-phase1.md),
 [`docs/IMPL-phase2.md`](docs/IMPL-phase2.md) and
 [`docs/IMPL-phase3.md`](docs/IMPL-phase3.md).
+
+### Measurements (Phase 4)
+
+**The performance corpus is separate from the correctness corpus**
+(`SPEC-phase4.md` §8.2). The existing corpus does about 1 ms of work per boolean,
+which is far too little to measure scaling.
+
+| Corpus | Threads | $k_c$ (core) | $k_e$ (exit) | Overall |
+|---|---|---:|---:|---:|
+| Two spheres (uniform) | 8 | 4.69 | 4.41 | **4.62** |
+| Two spheres (uniform) | 16 | 5.48 | 5.45 | **5.52** |
+| Cube grid × sphere (skewed) | 16 | 3.15 | 4.30 | **3.44** |
+| Small corpus (22 cases × 3 ops) | 8 | 1.59 | 1.11 | **1.41** |
+
+**On a skewed distribution the core saturates at 3.15.** The per-leaf workload varies
+too much; **load imbalance sets the ceiling**, not the mechanism.
+
+| Check | Result |
+|---|---|
+| Determinism (3 corpora × threads 1/2/4/8) | **888 configurations, byte-identical** |
+| Agreement with Phase 3 (sequential) | **geometry, topology and volume: 264 / 264** |
+| ThreadSanitizer | 30 / 30, zero warnings |
+| Prediction vs. measurement | **−0.7% … +1.6%** across 13 configurations |
+
+**The prediction composes $k_c$ and $k_e$ taken from two *separate* runs.** Written
+from a single run's breakdown,
+
+$$\text{prediction} = \frac{\text{total}_1}{\text{entry} + \text{core}_1/k_c + \text{exit}_1/k_e}$$
+
+has a denominator that is exactly $\text{total}_{th}$, so **agreement is algebraically
+forced** (`SPEC-phase4.md` §6.0). Composing a core-only-parallel run with an
+exit-only-parallel run makes the prediction fail if the two interfere.
+
+Details in [`docs/BENCH.md`](docs/BENCH.md); the reasoning in
+[`docs/IMPL-phase4.md`](docs/IMPL-phase4.md).
 
 ## References
 
