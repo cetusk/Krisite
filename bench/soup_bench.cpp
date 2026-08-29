@@ -69,6 +69,7 @@ void stage_timing() {
     std::printf("\n## 入口・中核・出口の内訳（全 %zu ケース × 3 演算、適応分割 + 全機構）\n\n",
                 kritest::corpus().size());
     double t_from = 0, t_bool = 0, t_mesh = 0;
+    double c_prepare = 0, c_leaves = 0, c_arrange = 0, c_stitch = 0, c_classify = 0;
     std::size_t polys_in = 0, planes_in = 0, frags = 0, tris = 0;
     std::size_t merged = 0, t_inserted = 0, raycasts = 0, regions = 0, eo_cells = 0, cells = 0;
     for (const kritest::Case& c : kritest::corpus()) {
@@ -84,6 +85,11 @@ void stage_timing() {
             t0 = Clock::now();
             const PolySoup r = boolean(sa, sb, op, all_on(3, true), &st);
             t_bool += ms_since(t0);
+            c_prepare += st.ms_prepare;
+            c_leaves += st.ms_leaves;
+            c_arrange += st.ms_arrange;
+            c_stitch += st.ms_stitch;
+            c_classify += st.ms_classify;
             frags += st.fragments;
             raycasts += st.raycasts;
             regions += st.regions;
@@ -102,6 +108,17 @@ void stage_timing() {
         }
     }
     const double total = t_from + t_bool + t_mesh;
+    std::printf("\n### 中核の段ごとの内訳（`SPEC-phase4.md` §9）\n\n");
+    std::printf("| 段 | 時間 (ms) | 中核内の割合 |\n|---|---:|---:|\n");
+    const double core[5] = {c_prepare, c_leaves, c_arrange, c_stitch, c_classify};
+    const char* cname[5] = {"平面表の統合・前処理", "葉の列挙（八分木）", "**セルの arrangement**",
+                            "縫合と重複の仕分け", "**分類（レイキャスト）**"};
+    double csum = 0;
+    for (double v : core) csum += v;
+    for (int i = 0; i < 5; ++i) {
+        std::printf("| %s | %.1f | %.1f%% |\n", cname[i], core[i], 100.0 * core[i] / csum);
+    }
+    std::printf("| 合計 | %.1f | 100.0%% |\n", csum);
     std::printf("| 区分 | 時間 (ms) | 割合 | 主な計数 |\n");
     std::printf("|---|---:|---:|---|\n");
     std::printf("| `from_mesh` | %.1f | %.1f%% | 多角形 %zu、平面 %zu |\n", t_from,

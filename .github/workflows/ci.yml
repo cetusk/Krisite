@@ -352,6 +352,78 @@ jobs:
       - name: ccache の効き
         run: ccache -s | head -12
 
+  # ---- ThreadSanitizer（SPEC-phase4 §7.2）------------------------------------
+  #
+  # **決定性の検査だけでは足りません。** コーパスが小さいので、競合があっても
+  # **たまたま顕在化しない**ことがあります。TSan は**実行された経路上の競合を、
+  # 顕在化していなくても検出**します。だから規模ではなく**経路の網羅**が効きます。
+  #
+  # **ASan と同時には有効にできない**ので別ジョブです（§7.2）。
+  #
+  # **並列モードで回します。** 逐次で回すと競合の経路を 1 本も踏みません。
+  tsan:
+    name: ThreadSanitizer (§7.2)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - uses: ./.github/actions/ccache
+        with:
+          key: tsan
+      - run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_CHECKED_ARITH=OFF \
+            -DKRISITE_DEFAULT_THREADS=8 \
+            -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer -g" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - run: cmake --build build
+      - env:
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        # **TSan は遅い**（5〜15 倍）ので、並列度を落として時間を稼ぎません。
+        # 重い幾何テストは除外ラベルで外しません — **経路の網羅がこのジョブの目的**です
+        run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 2
+      - name: 並列モードで走ったことを記録する
+        run: ctest --test-dir build --no-tests=error -R '^parallel$' -V | grep -F "決定性"
+      - name: ccache の効き
+        run: ccache -s | head -12
+
+  # ---- 並列モード（SPEC-phase4 §7.4）------------------------------------------
+  #
+  # **Phase 1〜3 の検査体系を、並列モードで全部通します。**
+  # `KRISITE_DEFAULT_THREADS` が `BoolOptions::threads` の既定を変えるので、
+  # **既存のテストがそのまま並列で走ります**（§9.4 の適応分割モードと同じ形）。
+  parallel-mode:
+    name: 並列モード (§7.4, b=${{ matrix.coord_bits }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        coord_bits: [21, 26]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - uses: ./.github/actions/ccache
+        with:
+          key: parallel-${{ matrix.coord_bits }}
+      - run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_COORD_BITS=${{ matrix.coord_bits }} \
+            -DKRISITE_CHECKED_ARITH=ON \
+            -DKRISITE_DEFAULT_THREADS=8 \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - run: cmake --build build
+      - run: ctest --test-dir build --no-tests=error --output-on-failure --parallel 4
+      - name: 並列モードで走ったことを記録する
+        run: |
+          # **既定が変わっていることを直接見ます。** 変わっていなければ、
+          # このジョブは逐次を 2 度回しているだけです（網が黙って縮む形）
+          grep -F "KRISITE_DEFAULT_THREADS=8" build/CMakeCache.txt \
+            || grep -rF "KRISITE_DEFAULT_THREADS" build/CMakeFiles | head -1
+
   # ---- 可搬フォールバック経路（__int128 / 32bit 筆算）------------------------
   #
   # SPEC §5.3 の 3 経路のうち、x86-64 組み込みを使わない 2 つを実際に走らせる。
@@ -475,7 +547,7 @@ jobs:
           # 時点で 71 → 3 に見えました（番人が黙って壊れる形です）。
           n=$(ctest --test-dir build -N -L '^mutation$' | sed -n 's/^Total Tests: *//p')
           echo "登録されている変異テスト: $n 件"
-          test "$n" -eq 89 || { echo "変異テストの件数が想定と違います（期待 89）"; exit 1; }
+          test "$n" -eq 92 || { echo "変異テストの件数が想定と違います（期待 92）"; exit 1; }
           ctest --test-dir build --no-tests=error -L '^mutation$' --output-on-failure --parallel 4
       - name: 変異 3 は検査ビルドでは表明が止めること
         # もう一方の検出経路。位相検査に届く前に fragment_sign の不変条件が落とす。
