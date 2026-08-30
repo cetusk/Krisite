@@ -17,10 +17,11 @@
 #include <vector>
 
 #include "krisite/csg/polysoup.hpp"
-#include "krisite/par/thread_pool.hpp"
 #include "krisite/csg/soup_boolean.hpp"
 #include "krisite/csg/to_mesh.hpp"
 #include "krisite/mesh/topology.hpp"
+#include "krisite/par/thread_pool.hpp"
+
 #include "thingi10k/loader.hpp"
 
 using namespace krisite;
@@ -30,21 +31,27 @@ namespace {
 /// 拒否の理由（§1 の分類表）。**性質の違うものを混ぜないこと。**
 enum class Reject {
     None,
-    BoundaryOriginal,   ///< 元から ∂S ≠ 0（開曲面を含む）
-    OpenSurface,        ///< 境界辺がある（∂S ≠ 0 の一種。理由を分ける）
-    BoundaryAfterQuant, ///< **量子化 + 面積 0 の除去のあとで** ∂S ≠ 0。b の設計に直結
-    OutOfRange,         ///< 座標範囲
-    Empty,              ///< 量子化で三角形が消えた
+    BoundaryOriginal,    ///< 元から ∂S ≠ 0（開曲面を含む）
+    OpenSurface,         ///< 境界辺がある（∂S ≠ 0 の一種。理由を分ける）
+    BoundaryAfterQuant,  ///< **量子化 + 面積 0 の除去のあとで** ∂S ≠ 0。b の設計に直結
+    OutOfRange,          ///< 座標範囲
+    Empty,               ///< 量子化で三角形が消えた
 };
 
 const char* reject_name(Reject r) {
     switch (r) {
-        case Reject::BoundaryOriginal: return "∂S≠0（元から）";
-        case Reject::OpenSurface: return "開曲面（境界辺あり）";
-        case Reject::BoundaryAfterQuant: return "∂S≠0（量子化+除去のあと）";
-        case Reject::OutOfRange: return "座標範囲";
-        case Reject::Empty: return "空（量子化で消えた）";
-        default: return "—";
+        case Reject::BoundaryOriginal:
+            return "∂S≠0（元から）";
+        case Reject::OpenSurface:
+            return "開曲面（境界辺あり）";
+        case Reject::BoundaryAfterQuant:
+            return "∂S≠0（量子化+除去のあと）";
+        case Reject::OutOfRange:
+            return "座標範囲";
+        case Reject::Empty:
+            return "空（量子化で消えた）";
+        default:
+            return "—";
     }
 }
 
@@ -52,9 +59,9 @@ const char* reject_name(Reject r) {
 struct Prepared {
     mesh::TriMesh mesh;
     Reject reject = Reject::None;
-    std::size_t dropped = 0;      ///< 面積 0 で落とした三角形
-    std::size_t merged = 0;       ///< 同じ格子点に落ちた頂点
-    bool boundary_before = false; ///< 除去の【前】に ∂S = 0 だったか
+    std::size_t dropped = 0;       ///< 面積 0 で落とした三角形
+    std::size_t merged = 0;        ///< 同じ格子点に落ちた頂点
+    bool boundary_before = false;  ///< 除去の【前】に ∂S = 0 だったか
 };
 
 Prepared prepare(const krithingi::RawMesh& raw, std::uint64_t seed) {
@@ -102,11 +109,26 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     for (const auto* pr : {&mu, &mi, &md}) {
         const mesh::TopologyReport t = mesh::check_topology(pr->triangles);
         if (t.empty) continue;
-        if (!t.edge_manifold) { *why = "辺多様体でない"; return false; }
-        if (!t.vertex_manifold) { *why = "頂点多様体でない"; return false; }
-        if (!t.oriented) { *why = "向きが整合しない"; return false; }
-        if (!t.no_degenerate) { *why = "退化三角形が残った"; return false; }
-        if ((t.chi % 2) != 0) { *why = "χ が奇数"; return false; }
+        if (!t.edge_manifold) {
+            *why = "辺多様体でない";
+            return false;
+        }
+        if (!t.vertex_manifold) {
+            *why = "頂点多様体でない";
+            return false;
+        }
+        if (!t.oriented) {
+            *why = "向きが整合しない";
+            return false;
+        }
+        if (!t.no_degenerate) {
+            *why = "退化三角形が残った";
+            return false;
+        }
+        if ((t.chi % 2) != 0) {
+            *why = "χ が奇数";
+            return false;
+        }
     }
     // **体積の恒等式**（§3.1）。|A∪B| + |A∩B| = |A| + |B| を出力側の 6 倍体積で見る
     return true;
@@ -207,8 +229,8 @@ int main(int argc, char** argv) {
         const auto tp = std::chrono::steady_clock::now();
         std::string why;
         const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why);
-        const double dt = std::chrono::duration<double>(
-                              std::chrono::steady_clock::now() - tp).count();
+        const double dt =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - tp).count();
         if (ok) {
             ++c.accepted;
         } else {
@@ -218,13 +240,12 @@ int main(int argc, char** argv) {
         out << key << ' ' << (ok ? "ok" : "FAIL") << ' ' << prep[i].mesh.triangles.size() << ' '
             << prep[j].mesh.triangles.size() << ' ' << dt << ' ' << why << '\n';
         out.flush();
-        const double s = std::chrono::duration<double>(
-                             std::chrono::steady_clock::now() - t0).count();
+        const double s =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         std::printf("  %zu 対目 %s（入力 %zu+%zu、%.1f s、累計 %.0f s）\n", c.pairs, key.c_str(),
                     prep[i].mesh.triangles.size(), prep[j].mesh.triangles.size(), dt, s);
     }
-    const double s =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     std::printf("\n対 %zu / 成功 %zu / **失敗 %zu** / %.1f s\n", c.pairs, c.accepted, c.failed, s);
     return c.failed == 0 ? 0 : 1;
 }

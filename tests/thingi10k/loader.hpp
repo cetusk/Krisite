@@ -19,10 +19,10 @@
 #ifndef KRISITE_TESTS_THINGI10K_LOADER_HPP
 #define KRISITE_TESTS_THINGI10K_LOADER_HPP
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <array>
 #include <map>
 #include <string>
 #include <vector>
@@ -34,8 +34,8 @@ namespace krithingi {
 
 /// float64 の生メッシュ（`fetch.py` が書く `.kmesh`）。
 struct RawMesh {
-    std::vector<double> v;                 ///< 3 * nv
-    std::vector<std::uint32_t> f;          ///< 3 * nf
+    std::vector<double> v;         ///< 3 * nv
+    std::vector<std::uint32_t> f;  ///< 3 * nf
     std::size_t nv = 0, nf = 0;
     bool ok = false;
 };
