@@ -222,6 +222,25 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         std::sort(v.begin(), v.end());
         v.erase(std::unique(v.begin(), v.end()), v.end());
     }
+    // **レイキャストが使う支持平面を、source ごとに一度だけ作ります**
+    // （`SPEC-phase5.md` の CP1.5）。
+    //
+    // **intern した平面は使えません。** `PlaneTable::intern` は
+    // `orientation_differs` を返すので、**表の平面は符号が逆のことがあります。**
+    // 生の `plane_from_triangle` の結果でなければ `side` の符号が変わります。
+    //
+    // 実測: 1 レイあたり source の全三角形を走査するので、作り直すと
+    // **$n$ = 7,620 で 14.7 億回**の平面構成になります（`IMPL-phase5.md` §9）。
+    std::vector<std::vector<geom::PlaneD>> ray_planes(n_src);
+    for (std::size_t i = 0; i < n_src; ++i) {
+        const mesh::TriMesh& m = out.sources[i];
+        ray_planes[i].reserve(m.triangles.size());
+        for (const mesh::Tri& t : m.triangles) {
+            ray_planes[i].push_back(
+                geom::plane_from_triangle(m.vertices[t[0]], m.vertices[t[1]], m.vertices[t[2]]));
+        }
+    }
+
     std::vector<PlaneId> all_split;
     for (const std::vector<PlaneId>& v : planes_of_src) {
         all_split.insert(all_split.end(), v.begin(), v.end());
@@ -421,7 +440,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 int wo = 0, cf = 0, cb = 0;
                 winding_split(out.sources[i], geom::to_homogeneous(corner),
                               out.table.at(all_split.empty() ? PlaneId{0} : all_split.front()), &wo,
-                              &cf, &cb);
+                              &cf, &cb, ray_planes[i].data());
                 KRISITE_CHECK(cf == 0 && cb == 0,
                               "early-out: セルの隅が source の曲面に載っている"
                               "（曲面が無いはずのセル）");
@@ -838,7 +857,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             //
             // **節約ゼロでシーン規模の費用を両方払う構造**でした。
             Wnd v{};
-            winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back);
+            winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
+                          ray_planes[i2].data());
             ++st.raycasts;
             ++st.regions;
             st.ray_tri_tests += out.sources[i2].triangles.size();
@@ -855,7 +875,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             auto it = wcache.find(key);
             if (it == wcache.end()) {
                 Wnd v{};
-                winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back);
+                winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
+                              ray_planes[i2].data());
                 ++st.raycasts;
                 ++st.regions;
                 st.ray_tri_tests += out.sources[i2].triangles.size();

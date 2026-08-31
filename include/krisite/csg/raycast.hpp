@@ -75,11 +75,14 @@ inline int proj_orient(const geom::IPoint& a, const geom::IPoint& b, const geom:
     return perturbed_orient(geom::orient2d_h(a, b, p, along), a, b, along);
 }
 
-/// レイ（`along` の正方向）が三角形を前方で横切るか。
+/// レイ（`along` の正方向）が三角形を前方で横切るか。**平面を渡す版。**
+///
+/// **支持平面は呼び出し側で一度だけ作ってください**（`SPEC-phase5.md` の CP1.5）。
+/// レイキャストは source の全三角形を走査するので、ここで作り直すと
+/// **1 レイあたり $O(n)$ 回の平面構成**になります（実測 14.7 億回）。
 template <class Point>
-bool crosses(const geom::IPoint& a, const geom::IPoint& b, const geom::IPoint& c, const Point& p,
-             geom::Axis along = geom::Axis::X) {
-    const geom::PlaneD pl = geom::plane_from_triangle(a, b, c);
+bool crosses_with(const geom::PlaneD& pl, const geom::IPoint& a, const geom::IPoint& b,
+                  const geom::IPoint& c, const Point& p, geom::Axis along = geom::Axis::X) {
     if (geom::is_degenerate(pl)) return false;
     // 法線の along 成分が 0 ⟺ 投影三角形が退化 ⟺ レイが平面に平行
     const int nx = normal_comp_sign(pl, along);
@@ -95,6 +98,13 @@ bool crosses(const geom::IPoint& a, const geom::IPoint& b, const geom::IPoint& c
     const int sp = geom::side(pl, p);
     KRISITE_CHECK(sp != 0, "crosses: 判定点が三角形の平面上にある（呼び出し側の契約違反）");
     return sp != nx;
+}
+
+/// 平面を渡さない版（互換）。**ホットパスでは `crosses_with` を使ってください。**
+template <class Point>
+bool crosses(const geom::IPoint& a, const geom::IPoint& b, const geom::IPoint& c, const Point& p,
+             geom::Axis along = geom::Axis::X) {
+    return crosses_with(geom::plane_from_triangle(a, b, c), a, b, c, p, along);
 }
 
 }  // namespace detail
@@ -146,9 +156,17 @@ inline bool point_on_boundary(const mesh::TriMesh& m, const Point& p) {
 ///
 /// 巻き数の寄与は `sign(N_t \cdot x)`（レイは +X 方向）。閉じた向き付き立体なら
 /// 内部で 1、外部で 0 になります。**自己交差や入れ子では 2 以上になります**（それが目的）。
+/// `planes` を渡すと、**支持平面の作り直しをやめます**（`SPEC-phase5.md` の CP1.5）。
+///
+/// `planes[j]` は `plane_from_triangle(m.triangles[j] の 3 頂点)` と**同一**でなければ
+/// なりません。**`PlaneTable` で intern した平面は使えません** —
+/// `intern` は `orientation_differs` を返すので、**表の平面は符号が逆のことがあります。**
+///
+/// 渡さなければ従来どおり毎回作ります（**出力は同じ**）。
 template <class Point>
 inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::PlaneD& ref,
-                          int* w_other, int* c_front, int* c_back) {
+                          int* w_other, int* c_front, int* c_back,
+                          const geom::PlaneD* planes = nullptr) {
     *w_other = 0;
     *c_front = 0;
     *c_back = 0;
@@ -162,11 +180,13 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
                                                          : geom::Axis::Z;
     KRISITE_CHECK(detail::normal_comp_sign(ref, along) != 0, "winding_split: 基準平面が退化");
 
-    for (const mesh::Tri& t : m.triangles) {
+    for (std::size_t j = 0; j < m.triangles.size(); ++j) {
+        const mesh::Tri& t = m.triangles[j];
         const geom::IPoint& a = m.vertices[t[0]];
         const geom::IPoint& b = m.vertices[t[1]];
         const geom::IPoint& c = m.vertices[t[2]];
-        const geom::PlaneD pl = geom::plane_from_triangle(a, b, c);
+        const geom::PlaneD pl =
+            (planes != nullptr) ? planes[j] : geom::plane_from_triangle(a, b, c);
         if (geom::is_degenerate(pl)) continue;
 
         bool on_face = false, strict = false;
@@ -183,7 +203,8 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
             strict = (o1 != 0) && (o2 != 0) && (o3 != 0);
         }
         if (!on_face) {
-            if (detail::crosses(a, b, c, p, along)) {
+            // **平面を使い回します。** ここで作り直すと 1 三角形あたり 2 回になります
+            if (detail::crosses_with(pl, a, b, c, p, along)) {
                 *w_other += detail::normal_comp_sign(pl, along);
             }
             continue;
