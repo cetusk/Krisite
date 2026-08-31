@@ -126,8 +126,11 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.cache_misses += b.cache_misses;
     a.cache_entries += b.cache_entries;
     a.cache_bytes += b.cache_bytes;
+    a.leaf_input_total += b.leaf_input_total;
+    a.leaf_nonempty += b.leaf_nonempty;
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
+    a.leaf_input_max = std::max(a.leaf_input_max, b.leaf_input_max);
 }
 
 }  // namespace detail
@@ -393,6 +396,19 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 }
             }
         }
+        // **葉に入った三角形の数を記録します**（`SPEC-phase5.md` の CP1.5）。
+        // **EMBER §4.5.3 が最適化しているのはこの量**（部分問題の多角形数）で、
+        // $P$ でも深度でもありません。ここで持たないと比較になりません。
+        {
+            std::size_t in_leaf = 0;
+            for (std::size_t i = 0; i < n_src; ++i) in_leaf += count[i];
+            if (in_leaf > 0) {
+                st.leaf_input_total += in_leaf;
+                ++st.leaf_nonempty;
+                st.leaf_input_max = std::max(st.leaf_input_max, in_leaf);
+            }
+        }
+
         std::vector<std::int8_t> forced(n_src, -1);
         if (opt.early_out) {
             const geom::IPoint corner{static_cast<std::int32_t>(cbox.lo[0]),
