@@ -79,13 +79,18 @@ Topo topo_of(const manifold::Manifold& m) {
     return r;
 }
 
-/// §9.3 の除外。**接触の分裂（SPEC-phase2 §5）を入れたので 0 件です。**
+/// §9.3 の除外。**識別子ではなく性質で判定します**（`corpus_expect.hpp`）。
 ///
-/// Phase 1 は孤立した頂点・辺接触の $\cup$ を除外していました。分裂後は全ケースで
-/// 多様体になるので、**Manifold と全構成で比較できます**（§5.6）。
-bool excluded(const std::string& id, BoolOp op) {
-    return kritest::exclusion_of(id, op, /*split_contacts=*/true) != kritest::Exclusion::None;
+/// 分裂を入れれば 0 件、というのが §5.3 の当初の想定でしたが、
+/// **Phase 5 の CP1 が実データで反例に到達しました**（`SPEC-phase2.md` §5.1.2.2）。
+/// 対応付けできなかった辺は次数 4 のまま残るので、$C$ と $g$ は比較できますが
+/// **多様体性は比較の前提になりません。**
+bool excluded(std::size_t unresolved, const TopologyReport& t) {
+    return kritest::exclusion_when_split(unresolved, t) != kritest::Exclusion::None;
 }
+
+/// 除外して比較しなかった組数（**空回り防止の式に要ります**）。
+std::size_t skipped = 0;
 
 /// 実際に比較した (ケース, 演算, 深度) の組数。
 ///
@@ -126,7 +131,8 @@ void check_case(const kritest::Case& c) {
             KRI_CHECK_MSG(t.empty || t.chi_even,
                           std::string("ケース ") + c.id + " " + op_name(op) +
                               ": 分裂後なのに χ が奇数（§5.4）。g で比較できません");
-            const bool skip = excluded(c.id, op);
+            const bool skip = excluded(st.split.unresolved, t);
+            if (skip) ++skipped;
             const bool agree =
                 (t.components == want.components) && (t.genus_total == want.genus_total);
             std::printf("    %-8s %s  Krisite C=%zu g=%-2lld / Manifold C=%zu g=%-2lld  %s\n",
@@ -156,18 +162,15 @@ int main() {
     KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
     for (const kritest::Case& c : kritest::corpus()) check_case(c);
 
-    // 全ケース × 3 演算 × 深度 4 段から §9.3 の除外（各 4 深度）を引いた数
-    std::size_t n_excluded = 0;
-    for (const kritest::Case& c : kritest::corpus()) {
-        for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
-            if (excluded(c.id, op)) ++n_excluded;
-        }
-    }
-    // 深度 0〜3 + 適応分割の 5 段。**除外は 0 件のはず**（§5.3）
-    const std::size_t expect = kritest::corpus().size() * 3 * 5 - n_excluded * 5;
-    std::printf("\n  比較した組数: %zu（期待 %zu）\n", compared, expect);
-    KRI_CHECK_MSG(compared == expect, "比較した組数が期待と違う（" + std::to_string(compared) +
-                                          " 対 " + std::to_string(expect) +
-                                          "）。テストが空回りしている疑い");
+    // 深度 0〜3 + 適応分割の 5 段。
+    //
+    // **除外は結果から決まるので、事前に数えられません**（識別子で判定しないため）。
+    // **比較した数 + 除外した数が全構成に一致すること**で空回りを防ぎます。
+    const std::size_t expect = kritest::corpus().size() * 3 * 5;
+    std::printf("\n  比較した組数: %zu / 除外 %zu（合計の期待 %zu）\n", compared, skipped, expect);
+    KRI_CHECK_MSG(compared + skipped == expect,
+                  "比較 + 除外が全構成と合わない（" + std::to_string(compared + skipped) + " 対 " +
+                      std::to_string(expect) + "）。テストが空回りしている疑い");
+    KRI_CHECK_MSG(compared > 0, "**1 件も比較していません。** Manifold との照合が空回りです");
     return kritest::finish("csg/manifold");
 }
