@@ -105,10 +105,26 @@ void run_case(const kritest::Case& c) {
             // **空メッシュは別扱いです。** `check_topology` は空を V=E=F=0 で見るので、
             // 多様体性や χ の偶奇の旗は立ちません（`ok()` はそれを織り込んでいます）。
             // **誤った組で「分裂が起きない」側の番人はここと ΔE です**（§5.5.1 の訂正）
-            KRI_CHECK_MSG(t_on.ok(), tag +
-                                         ": 分裂後も多様体になっていない（§5.3 の帰結が"
-                                         "成立していません）");
-            if (!t_on.ok()) ++g.excluded_after;
+            // **§5.1.2.2: 対応付けできなかった辺があるときは除外します**（案 A）。
+            //
+            // 分裂を有効にすれば除外は 0 件、というのが §5.3 の当初の想定でしたが、
+            // **Phase 5 の CP1 が実データで反例に到達しました**（306 対中 3 対）。
+            // **判定は識別子ではなく `unresolved > 0` という機械的な事実**で行い、
+            // 適用条件は `exclusion_conditions_ok` が実行時に検査します。
+            const kritest::Exclusion ex =
+                kritest::exclusion_when_split(s_on.split.unresolved, t_on);
+            if (ex != kritest::Exclusion::None) {
+                std::string why;
+                KRI_CHECK_MSG(kritest::exclusion_conditions_ok(ex, t_on, &why),
+                              tag + ": §9.3.1 の適用条件を満たさない（" + why +
+                                  "）。除外すべき接触ではなくバグです");
+                ++g.excluded_after;
+            } else {
+                KRI_CHECK_MSG(t_on.ok(), tag +
+                                             ": 分裂後も多様体になっていない（§5.3 の帰結が"
+                                             "成立していません）");
+                if (!t_on.ok()) ++g.excluded_after;
+            }
             if (!t_on.empty) {
                 // §5.4: **分裂後は χ が偶数**。奇数なら閉曲面ではありません
                 KRI_CHECK_MSG(t_on.chi_even, tag + ": 分裂後も χ が奇数（§5.4）");
@@ -127,10 +143,16 @@ void run_case(const kritest::Case& c) {
             KRI_CHECK_MSG(sp.predicted_delta_chi == t_on.chi - t_off.chi,
                           tag + ": Δχ が出力の χ の差と一致しない");
             // ---- §5.1.2.1: 分けられない配置に到達したか ----
-            KRI_CHECK_MSG(sp.unresolved == 0,
-                          tag +
-                              ": **分裂しても多様体にならない配置に到達しました**（§5.1.2.1）。"
-                              "radial sort が要る配置です。**記録して報告してください**");
+            // **§5.1.2.2: 到達すること自体は欠陥ではありません。**
+            // 分裂させずに次数 4 のまま残すので、閉じたまま非多様体になります。
+            // **記録して報告するのが要件**で、件数は下の集計に出ます。
+            //
+            // **ただし裂けていないことは確かめます**（欠損辺 = 次数 1 が無いこと）。
+            // 対応付けを諦めた辺を扱いから外すと裂けます（実測: 欠損辺 32 本）
+            KRI_CHECK_MSG(t_on.edges_deficient == 0,
+                          tag + ": **辺が裂けました**（次数 1 の辺が " +
+                              std::to_string(t_on.edges_deficient) +
+                              " 本）。§5.1.2.2 は次数 4 のまま残すことを求めています");
 
             g.split_vertices += sp.split_vertices;
             g.excess_edges += sp.excess_edges;
@@ -164,7 +186,8 @@ void check_not_vacuous() {
                 g.split_vertices, g.excess_edges, g.excess_endpoints, g.max_fans);
     std::printf("    分裂前に非多様体だった構成 %zu / χ が奇数だった構成 %zu\n",
                 g.nonmanifold_before, g.chi_odd_before);
-    std::printf("    **分裂後に除外が必要だった構成 %zu（0 のはず。§5.3）**\n", g.excluded_after);
+    std::printf("    **分裂後に除外が必要だった構成 %zu**（§5.1.2.2。由来は下の到達数）\n",
+                g.excluded_after);
     std::printf("    §5.1.2.1 の停止に到達した配置 %zu（radial sort の必要性の判断材料）\n",
                 g.unresolved);
 
@@ -176,7 +199,26 @@ void check_not_vacuous() {
     KRI_CHECK_MSG(g.excess_edges > 0, "次数 3 以上の辺が 1 本も無い。**辺の分裂を突けていません**");
     KRI_CHECK_MSG(g.max_fans >= 3,
                   "扇の最大が 3 未満。**k=3 の分裂（4T′ の A\\B）を突けていません**");
-    KRI_CHECK_MSG(g.excluded_after == 0, "§9.3 の除外が 0 件になっていない（§5.3 の帰結）");
+    // **§5.3 の「分裂すれば除外は 0 件」は反証されました**（`SPEC-phase2.md` §5.1.2.2）。
+    //
+    // Phase 5 の CP1 が実データで反例に到達し（306 対中 3 対）、
+    // 最小化してケース 24 / 24′ をコーパスに入れました。
+    //
+    // **したがって 0 件を要求しません。** 要求するのは
+    //
+    //   1. 除外は `unresolved > 0` の構成に限ること（下）
+    //   2. その出力が §9.3.1 の適用条件を満たすこと（上の `exclusion_conditions_ok`）
+    //   3. **辺が裂けていないこと**（上の `edges_deficient == 0`）
+    //
+    // **件数は記録です。判定材料は由来のほうです**（`CLAUDE.md`）。
+    KRI_CHECK_MSG(g.excluded_after <= g.unresolved,
+                  "除外した構成 " + std::to_string(g.excluded_after) +
+                      " が、対応付けに失敗した構成 " + std::to_string(g.unresolved) +
+                      " を超えています。**除外が unresolved 以外の理由で出ています**");
+    // **空回り防止。** 反例をコーパスに入れたので、到達が 0 なら検査が効いていません
+    KRI_CHECK_MSG(g.unresolved > 0,
+                  "**§5.1.2.1 の配置に一度も到達していません。** ケース 24 が"
+                  "コーパスから消えたか、対応付けの判定が変わっています");
 }
 
 }  // namespace

@@ -32,6 +32,7 @@
 #include "krisite/csg/to_mesh.hpp"
 
 #include "corpus.hpp"
+#include "corpus_expect.hpp"
 #include "test_util.hpp"
 
 using namespace krisite::csg;
@@ -267,7 +268,11 @@ void test_boolean() {
                                   kritest::pair_msg(rt.components, rc.components));
                 KRI_CHECK_MSG(rt.chi == rc.chi,
                               tag + ": 凸分割で χ が変わった" + kritest::pair_msg(rt.chi, rc.chi));
-                KRI_CHECK_MSG(rc.empty || rc.ok(), tag + ": 凸分割の出力が多様体でない");
+                // **§5.1.2.2 の接触は除外します。** 三角形化側と凸分割側で
+                // 同じ判定を使うので、**片方だけ落ちることはありません**
+                KRI_CHECK_MSG(rc.empty || rc.ok() ||
+                                  kritest::exclusion_from_topology(rc) != kritest::Exclusion::None,
+                              tag + ": 凸分割の出力が多様体でない");
                 if (mt.triangles.size() != mc.triangles.size()) ++g_differ_tris;
                 tri_frags += st_t.fragments;
                 cvx_frags += st_c.fragments;

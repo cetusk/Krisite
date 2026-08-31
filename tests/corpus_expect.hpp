@@ -37,16 +37,38 @@ enum class Exclusion {
 ///
 /// **接触の分裂（SPEC-phase2 §5）を有効にすると除外は 0 件になります**（§5.3）。
 /// この表は**分裂を無効にしたとき**の Phase 1 の姿です。
-inline Exclusion exclusion_of(const std::string& id, krisite::csg::BoolOp op,
-                              bool split_contacts = false) {
-    using krisite::csg::BoolOp;
-    if (split_contacts) return Exclusion::None;  // §5.3: 分裂すれば除外は要らない
-    if (id == "4T" && op == BoolOp::Union) return Exclusion::VertexContact;
-    if (id == "4T'" && op == BoolOp::Difference) return Exclusion::VertexContact;
-    if (id == "11b" && op == BoolOp::Union) return Exclusion::EdgeContact;
-    // ケース 16 の自己接触（§8.2）。**分裂を無効にすると次数 4 の辺が残ります**
-    if (id == "16" && op == BoolOp::Difference) return Exclusion::EdgeContact;
-    return Exclusion::None;
+/// §9.3 の除外。**識別子ではなく【性質】で判定します** ★（`CLAUDE.md`）。
+///
+/// > 「ケース 24 なら除外」はコーパスでしか通用せず、実データに拡張できません。
+/// > CP1 で 3 対、CP2 / CP3 ではもっと出ます。Thingi10K のモデル ID を
+/// > 書き並べることになります。
+///
+/// **判定は出力の位相だけを見ます。** 接触が残っているか、残っているなら
+/// 辺の接触か頂点の接触か。**コーパスと実データを区別しません。**
+///
+/// **適用条件（§9.3.1）は `exclusion_conditions_ok` が実行時に検査します。**
+/// 手で 1 回確認するのではなく、**除外が自分で自分を守る形**です。
+/// 条件を満たさない配置が来たら、そこで落ちます。
+///
+/// **除外が広がりすぎていないかは件数の番人が見ます**（`test_cp25.cpp`）。
+inline Exclusion exclusion_from_topology(const krisite::mesh::TopologyReport& t) {
+    if (t.empty) return Exclusion::None;
+    if (t.edge_manifold && t.vertex_manifold) return Exclusion::None;
+    // **次数 3 以上の辺があれば辺の接触。** 無ければ頂点まわりだけの接触
+    return (t.edges_excess > 0) ? Exclusion::EdgeContact : Exclusion::VertexContact;
+}
+
+/// **分裂が有効なときの除外**（`SPEC-phase2.md` §5.1.2.2）。
+///
+/// **分裂の機構自身が「この辺は対応付けできなかった」と報告した場合だけ**除外します。
+/// `unresolved > 0` は機械的な事実で、識別子を含みません。
+///
+/// 分裂を有効にすれば除外は 0 件、というのが §5.3 の当初の想定でしたが、
+/// **Phase 5 の CP1 が実データで反例に到達しました**（306 対中 3 対）。
+inline Exclusion exclusion_when_split(std::size_t unresolved,
+                                      const krisite::mesh::TopologyReport& t) {
+    if (unresolved == 0) return Exclusion::None;
+    return exclusion_from_topology(t);
 }
 
 /// §9.3.1 の適用条件を満たすか。**除外を広げすぎないための番人です。**

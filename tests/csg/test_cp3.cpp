@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -83,11 +84,10 @@ void run_case(const kritest::Case& c) {
 
     std::printf("\n  ケース %-4s %s\n", c.id, c.what);
     for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
-        const Exclusion ex = kritest::exclusion_of(c.id, op);
         const kritest::ExpectedTopo want = kritest::expected_topo(c.id, op);
-        if (ex != Exclusion::None) {
-            excluded_configs.emplace_back(std::string(c.id) + " " + op_name(op), ex);
-        }
+        // **除外は出力の性質から決めます**（識別子を使わない。`corpus_expect.hpp`）
+        Exclusion ex = Exclusion::None;
+        bool ex_recorded = false;
 
         TopologyReport ref;
         bool first = true;
@@ -100,6 +100,14 @@ void run_case(const kritest::Case& c) {
             const BoolOptions opt = kritest::corpus_options(d);
             const BoolMesh r = boolean_op(a, b, op, opt, &st);
             const TopologyReport t = check_topology(r.triangles);
+            const Exclusion ex_d = kritest::exclusion_from_topology(t);
+            if (ex_d != Exclusion::None) {
+                ex = ex_d;
+                if (!ex_recorded) {
+                    excluded_configs.emplace_back(std::string(c.id) + " " + op_name(op), ex);
+                    ex_recorded = true;
+                }
+            }
             const std::string tag = std::string("ケース ") + c.id + " " + op_name(op) + "（深度 " +
                                     std::to_string(d) + "）";
 
@@ -120,7 +128,7 @@ void run_case(const kritest::Case& c) {
                               std::to_string(duplicate_vertex_values(r)) +
                               " 組ある。§5.3 の第2段が効いていません");
 
-            if (ex != Exclusion::None) {
+            if (ex_d != Exclusion::None) {
                 std::string why;
                 KRI_CHECK_MSG(kritest::exclusion_conditions_ok(ex, t, &why),
                               tag + ": §9.3.1 の適用条件を満たさない（" + why +
@@ -208,11 +216,38 @@ int main() {
     }
     std::printf("  合否に使った組数: %zu\n", checked);
 
-    // **除外が多数に及ぶなら、ケースを除外するのではなく §2.1 の前提を見直します。**
-    KRI_CHECK_MSG(excluded_configs.size() <= 4,
-                  "§9.3 の除外が " + std::to_string(excluded_configs.size()) +
-                      " 構成に達しました。特殊ケースの域を超えています。"
-                      "§2.1「出力は多様体」という前提のほうを見直してください");
+    // ---- §9.3.1 の番人: **件数の上限ではなく、増分の説明を要求します** ★ ----
+    //
+    // **件数の閾値を番人にすると、上げ続けることになります**（`CLAUDE.md`）。
+    // コーパスは退化を狙って設計しているので、接触を持つケースを足せば除外は増えます。
+    // 「上限を超えたら落ちる」ではなく「**増えたら理由を書かせる**」形にします。
+    //
+    // **由来のケースが「接触を意図して作ったもの」なら正当です。**
+    // 意図していないケースから増えたなら、§2.1「出力は多様体」の前提を見直します。
+    //
+    // > **前提そのものの妥当性は、コーパスではなく実データで測ります。**
+    // > CP1 の実測: 336 対中 3 件が接触由来 = **0.9%**。1% 未満なら §2.1 は正しい既定です。
+    //
+    // **接触を意図して作ったケース**（`SPEC-phase1.md` §9.3.1 の由来表）。
+    // ここに無い ID から除外が出たら、それは説明の付かない増分です。
+    static const std::set<std::string> kContactByDesign = {
+        "4T",   // 頂点だけを共有（次元 0）
+        "4T'",  // 頂点共有 + 体積も重なる
+        "11b",  // 辺だけを共有（次元 1）
+        "16",   // 自己接触（平板 − 菱形プリズム）
+        "24",   // 連結成分で分けられない自己接触（Phase 5 の CP1 が実データで到達）
+        "24'",  // 24 の対照（橋なし）
+    };
+    for (const auto& kv : excluded_configs) {
+        const std::string id = kv.first.substr(0, kv.first.find(' '));
+        KRI_CHECK_MSG(kContactByDesign.count(id) != 0,
+                      "§9.3 の除外が **接触を意図していないケース** " + id + " から出ました（" +
+                          kv.first +
+                          "）。ケースを除外するのではなく、"
+                          "§2.1「出力は多様体」という前提のほうを見直してください");
+    }
+    // **件数は記録として残します。** 判定材料は由来のほうです
+    std::printf("  除外の由来: すべて接触を意図したケース（%zu 種）\n", kContactByDesign.size());
     // 空回り防止: 全ケース × 3 演算 × 深度 4 − 除外
     const std::size_t expect =
         kritest::corpus().size() * 3 * (kMaxDepth + 1) - excluded_configs.size() * (kMaxDepth + 1);

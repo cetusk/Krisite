@@ -50,6 +50,7 @@
 #include "krisite/csg/boolean.hpp"
 
 #include "corpus.hpp"
+#include "corpus_expect.hpp"
 #include "test_util.hpp"
 
 using namespace krisite::csg;
@@ -188,10 +189,23 @@ void run_case(const kritest::Case& c) {
                               kritest::pair_msg(t_base_on.chi, t_on.chi));
 
             // ---- (2) 分裂 ON の意味論（§5）----
-            KRI_CHECK_MSG(t_on.ok(), tag + ": 分裂後も多様体になっていない（§5.3）");
-            if (!t_on.empty) KRI_CHECK_MSG(t_on.chi_even, tag + ": 分裂後も χ が奇数（§5.4）");
+            //
+            // **§5.1.2.2: 対応付けできなかった辺があるときは除外します**（案 A）。
+            // 判定は識別子ではなく `unresolved > 0` という機械的な事実です。
             const auto& sp = s_on.split;
-            KRI_CHECK_MSG(sp.unresolved == 0, tag + ": §5.1.2.1 の停止に到達した");
+            const kritest::Exclusion ex_on = kritest::exclusion_when_split(sp.unresolved, t_on);
+            if (ex_on != kritest::Exclusion::None) {
+                std::string why;
+                KRI_CHECK_MSG(kritest::exclusion_conditions_ok(ex_on, t_on, &why),
+                              tag + ": §9.3.1 の適用条件を満たさない（" + why + "）");
+                // **裂けていないこと**（§5.1.2.2）
+                KRI_CHECK_MSG(t_on.edges_deficient == 0, tag + ": **辺が裂けました**（次数 1 が " +
+                                                             std::to_string(t_on.edges_deficient) +
+                                                             " 本）");
+            } else {
+                KRI_CHECK_MSG(t_on.ok(), tag + ": 分裂後も多様体になっていない（§5.3）");
+            }
+            if (!t_on.empty) KRI_CHECK_MSG(t_on.chi_even, tag + ": 分裂後も χ が奇数（§5.4）");
             KRI_CHECK_MSG(sp.predicted_delta_v == sp.actual_delta_v,
                           tag + ": ΔV の予測と実測が違う" +
                               kritest::pair_msg(sp.predicted_delta_v, sp.actual_delta_v));
@@ -265,12 +279,21 @@ void check_not_vacuous() {
     // 上側境界に乗ると「存在しない」と誤答していました（`IMPL-phase3.md` §7.1）。
     // 閉領域（`overlaps_cell`）で判定するのが正しく、直したら 19 → 0 になりました。
     //
-    // **したがって「0 でなければならない」に反転します。** 非零に戻ったら、
-    // 存在判定がまた割り当て用の述語に戻ったということなので、そこで落とします。
-    KRI_CHECK_MSG(g.early_out_x_split == 0,
-                  "**early-out × 分裂が発火した。** 早期脱出したセルの閉じた箱には相手の"
-                  "曲面が無いので、構造的に到達不能なはずです。存在判定が半開区間の述語に"
-                  "戻っていないか確認してください（SPEC-phase2 §13 / IMPL-phase3 §7.1）");
+    // ---- ★ 訂正（2026-08-31）: **retire の証明が反証されました** ----
+    //
+    // 「早期脱出したセルの閉じた箱には**相手の**曲面が無いので到達不能」という証明は、
+    // **接触が 2 つの入力の【間】に起きることを暗黙に仮定**していました。
+    //
+    // **1 つの入力の【中】で接触する場合**（ケース 24 / 24′ の A は、辺だけで接する
+    // 2 つの箱）、あるセルで相手が居なくても**自分自身の接触辺が居ます。**
+    // したがって early-out したセルの断片に接する頂点が分裂し得ます。**到達可能です。**
+    //
+    // **したがって「0 が正」には戻しません。記録に留めます**（`CLAUDE.md`
+    // 「番人を retire するときは証明とセットで」— 証明が誤りだったので retire を撤回）。
+    //
+    // **元のバグ（半開区間の述語）を捕まえる力は失われます。** 代わりの検出は
+    // `overlaps_cell` の単体テスト（`tests/octree/`）が受け持ちます。
+    std::printf("      ※ early-out × 分裂は **記録のみ**（retire の証明が反証。自己接触で到達）\n");
 }
 
 }  // namespace
