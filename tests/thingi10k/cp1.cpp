@@ -9,6 +9,7 @@
 // **選択はメタデータ、分類は量子化後**（§1.0）。集合は `fetch.py` が決めたものを
 // そのまま使い、ここでは選び直しません。
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -94,9 +95,36 @@ struct Counts {
     std::size_t models_with_dropped = 0;
 };
 
+/// 出力のバイト単位のハッシュ。**同一版の中の比較に使います**（`CLAUDE.md`）。
+///
+/// 索引（`ray_index`）は厳密な絞り込みなので、**有無で 1 ビットも変わってはいけません。**
+unsigned long long hash_mesh(const csg::SoupMesh& m) {
+    unsigned long long h = 1469598103934665603ull;
+    const auto mix = [&h](unsigned long long v) {
+        h ^= v;
+        h *= 1099511628211ull;
+    };
+    mix(m.vertices.size());
+    mix(m.triangles.size());
+    for (const geom::HPointD& v : m.vertices) {
+        for (std::size_t l = 0; l < geom::limbs::kHomoXyz; ++l) {
+            mix(v.x[l]);
+            mix(v.y[l]);
+            mix(v.z[l]);
+        }
+        for (std::size_t l = 0; l < geom::limbs::kHomoW; ++l) mix(v.w[l]);
+    }
+    for (const mesh::Tri& t : m.triangles) {
+        mix(t[0]);
+        mix(t[1]);
+        mix(t[2]);
+    }
+    return h;
+}
+
 /// §3.1 の検査。**解析的期待値は使えない**ので恒等式と位相で見ます。
 bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOptions& o,
-               par::ThreadPool* pool, std::string* why) {
+               par::ThreadPool* pool, std::string* why, unsigned long long* hash_out = nullptr) {
     const csg::PolySoup A = csg::from_mesh(a), B = csg::from_mesh(b);
     csg::ToMeshOptions tm;
     tm.split_contacts = true;
@@ -130,6 +158,9 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
             return false;
         }
     }
+    if (hash_out != nullptr) {
+        *hash_out = hash_mesh(mu) ^ (hash_mesh(mi) * 3) ^ (hash_mesh(md) * 7);
+    }
     // **体積の恒等式**（§3.1）。|A∪B| + |A∩B| = |A| + |B| を出力側の 6 倍体積で見る
     return true;
 }
@@ -142,6 +173,11 @@ int main(int argc, char** argv) {
     const std::size_t limit = (argc > 2) ? std::strtoul(argv[2], nullptr, 10) : 0;
     const unsigned depth = (argc > 3) ? static_cast<unsigned>(std::atoi(argv[3])) : 6;
     const unsigned nthreads = (argc > 4) ? static_cast<unsigned>(std::atoi(argv[4])) : 16;
+    // **索引の ON/OFF でハッシュが一致するかを対ごとに確かめるモード**（CP1.5D）。
+    const bool verify_index = (argc > 5) && (std::atoi(argv[5]) != 0);
+    // **済みの対をやり直すモード。** 既定は追記（再開）
+    const bool redo = (argc > 6) && (std::atoi(argv[6]) != 0);
+    std::size_t verified = 0;
 
     std::vector<std::string> ids;
     {
@@ -205,10 +241,12 @@ int main(int argc, char** argv) {
 
     // **結果は 1 対ごとに追記します。** 途中で止まっても、
     // どこまで通ったかが残り、再開できます（§3.3 の追跡に要る）
-    const std::string done_path = "data/thingi10k/cp1_results.txt";
+    // **やり直しモードは別のファイルに書きます。** 追記すると再開の記録が濁ります
+    const std::string done_path =
+        redo ? "data/thingi10k/cp1_verify.txt" : "data/thingi10k/cp1_results.txt";
     std::vector<std::string> already;
     {
-        std::ifstream f(done_path);
+        std::ifstream f("data/thingi10k/cp1_results.txt");
         std::string line;
         while (std::getline(f, line)) {
             if (!line.empty()) already.push_back(line.substr(0, line.find(' ')));
@@ -224,11 +262,32 @@ int main(int argc, char** argv) {
     for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
         const std::size_t i = order[k], j = order[k + 1];
         const std::string key = ids[i] + "x" + ids[j];
-        if (seen(key)) continue;
+        if (!redo && seen(key)) continue;
         ++c.pairs;
         const auto tp = std::chrono::steady_clock::now();
         std::string why;
-        const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why);
+        unsigned long long h = 0;
+        const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h);
+        // **索引の有無で出力が変わらないこと**（`SPEC-phase5.md` §6.3 の安全弁）。
+        // 索引は厳密な絞り込みなので、**バイトで一致しなければ欠陥**です。
+        if (ok && verify_index) {
+            csg::BoolOptions o2 = o;
+            o2.ray_index = !o.ray_index;
+            unsigned long long h2 = 0;
+            std::string why2;
+            const bool ok2 = check_one(prep[i].mesh, prep[j].mesh, o2, &pool, &why2, &h2);
+            if (!ok2 || h2 != h) {
+                ++c.failed;
+                why = "索引の有無で出力が変わった";
+                std::printf("**失敗** %s: %s（%016llx vs %016llx）\n", key.c_str(), why.c_str(), h,
+                            h2);
+                out << key << " FAIL " << prep[i].mesh.triangles.size() << ' '
+                    << prep[j].mesh.triangles.size() << " 0 " << why << '\n';
+                out.flush();
+                continue;
+            }
+            ++verified;
+        }
         const double dt =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - tp).count();
         if (ok) {
@@ -238,7 +297,10 @@ int main(int argc, char** argv) {
             std::printf("**失敗** %s: %s\n", key.c_str(), why.c_str());
         }
         out << key << ' ' << (ok ? "ok" : "FAIL") << ' ' << prep[i].mesh.triangles.size() << ' '
-            << prep[j].mesh.triangles.size() << ' ' << dt << ' ' << why << '\n';
+            << prep[j].mesh.triangles.size() << ' ' << dt << ' ';
+        std::array<char, 24> hb{};
+        std::snprintf(hb.data(), hb.size(), "%016llx", h);
+        out << hb.data() << ' ' << why << '\n';
         out.flush();
         const double s =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -247,5 +309,8 @@ int main(int argc, char** argv) {
     }
     const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     std::printf("\n対 %zu / 成功 %zu / **失敗 %zu** / %.1f s\n", c.pairs, c.accepted, c.failed, s);
+    if (verify_index) {
+        std::printf("**索引の有無でハッシュ一致: %zu 対**\n", verified);
+    }
     return c.failed == 0 ? 0 : 1;
 }
