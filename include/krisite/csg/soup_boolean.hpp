@@ -128,6 +128,7 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.cache_bytes += b.cache_bytes;
     a.leaf_input_total += b.leaf_input_total;
     a.leaf_nonempty += b.leaf_nonempty;
+    a.ray_tri_tests += b.ray_tri_tests;
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
     a.leaf_input_max = std::max(a.leaf_input_max, b.leaf_input_max);
@@ -426,6 +427,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                               "（曲面が無いはずのセル）");
                 forced[i] = static_cast<std::int8_t>(wo);
                 ++st.early_out_raycasts;
+                // **`winding_split` は source の全三角形を走査します**（枝刈りなし）
+                st.ray_tri_tests += out.sources[i].triangles.size();
                 any = true;
             }
             if (any) ++st.early_out_cells;
@@ -838,6 +841,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back);
             ++st.raycasts;
             ++st.regions;
+            st.ray_tri_tests += out.sources[i2].triangles.size();
             w_front[i2] = v.w_other + v.c_front;
             w_back[i2] = v.w_other + v.c_back;
             (void)wcache;
@@ -854,6 +858,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back);
                 ++st.raycasts;
                 ++st.regions;
+                st.ray_tri_tests += out.sources[i2].triangles.size();
                 it = wcache.emplace(key, v).first;
             }
             w_front[i2] = it->second.w_other + it->second.c_front;
