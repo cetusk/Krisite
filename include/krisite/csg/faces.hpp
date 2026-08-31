@@ -147,6 +147,31 @@ inline std::vector<Face> build_faces(const mesh::TriMesh& m, int owner, PlaneTab
         } while (cur != start && f.loop.size() <= next.size());
         KRISITE_CHECK(cur == start && f.loop.size() == next.size(),
                       "build_faces: 境界ループが閉じない");
+
+        // ---- 共線の頂点を落とす（CP1.6）----
+        {
+            const geom::PlaneD& sp = table.at(f.support);
+            const geom::Axis ax = (arith::sign(sp.a) != 0)   ? geom::Axis::X
+                                  : (arith::sign(sp.b) != 0) ? geom::Axis::Y
+                                                             : geom::Axis::Z;
+            bool changed = true;
+            while (changed && f.loop.size() > 3) {
+                changed = false;
+                const std::size_t n = f.loop.size();
+                for (std::size_t i = 0; i < n; ++i) {
+                    const std::size_t pv = (i + n - 1) % n, nx = (i + 1) % n;
+                    if (geom::orient2d(m.vertices[f.loop[pv]], m.vertices[f.loop[i]],
+                                       m.vertices[f.loop[nx]], ax) != 0) {
+                        continue;
+                    }
+                    f.edge[pv] = std::min(f.edge[pv], f.edge[i]);
+                    f.loop.erase(f.loop.begin() + static_cast<std::ptrdiff_t>(i));
+                    f.edge.erase(f.edge.begin() + static_cast<std::ptrdiff_t>(i));
+                    changed = true;
+                    break;
+                }
+            }
+        }
         faces.push_back(std::move(f));
     }
     return faces;

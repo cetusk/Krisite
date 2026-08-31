@@ -517,6 +517,72 @@ inline TriMesh disjoint_b() {
     return box(at(-5, 16), at(-5, 16), at(9, 16), at(15, 16), at(15, 16), at(15, 16));
 }
 
+/// **面が規則的に細分された立方体**（`SPEC-phase5.md` CP1.6）。
+///
+/// 1 面を $k \times k$ の格子に分けます。**併合すると 1 枚の正方形になりますが、
+/// 各辺に中点が残ります。** 中点は角ではないので、その両側の辺は同じ直線上にあり、
+/// **共線の頂点を落とさないと `support ∩ edge[i-1] ∩ edge[i]` が退化します。**
+///
+/// **CP1.6 で実際に落ちた形です**（48 三角形、深度 0）。`polysoup.hpp` には
+/// `drop_collinear` がありましたが、`faces.hpp` に無く、
+/// **二項メッシュ経路だけが落ちていました。**
+///
+/// **Thingi10K の 336 対では出ません。** あちらはスープ経路だからです。
+/// **CAD 由来のメッシュでは、平坦面の規則的な分割は常態です。**
+inline TriMesh tess_box(int lo_num, int hi_num, int den, int k) {
+    TriMesh m;
+    std::map<std::array<int, 3>, std::uint32_t> id;
+    const auto coord = [&](int i) { return at(lo_num + (hi_num - lo_num) * i / k, den); };
+    const auto vid = [&](int x, int y, int z) {
+        const std::array<int, 3> key{x, y, z};
+        const auto it = id.find(key);
+        if (it != id.end()) return it->second;
+        const std::uint32_t n = static_cast<std::uint32_t>(m.vertices.size());
+        m.vertices.push_back(IPoint{coord(x), coord(y), coord(z)});
+        id.emplace(key, n);
+        return n;
+    };
+    // 面ごとに (原点, u 方向, v 方向)。u × v が外向きになる順に並べてあります
+    const int F[6][9] = {
+        {0, 0, 1, 1, 0, 0, 0, 1, 0},  // z = k
+        {0, 0, 0, 0, 1, 0, 1, 0, 0},  // z = 0
+        {1, 0, 0, 0, 1, 0, 0, 0, 1},  // x = k
+        {0, 0, 0, 0, 0, 1, 0, 1, 0},  // x = 0
+        {0, 1, 0, 0, 0, 1, 1, 0, 0},  // y = k
+        {0, 0, 0, 1, 0, 0, 0, 0, 1},  // y = 0
+    };
+    for (const auto& f : F) {
+        for (int i = 0; i < k; ++i) {
+            for (int j = 0; j < k; ++j) {
+                const auto vat = [&](int a, int b) {
+                    return vid(f[0] * k + f[3] * a + f[6] * b, f[1] * k + f[4] * a + f[7] * b,
+                               f[2] * k + f[5] * a + f[8] * b);
+                };
+                const std::uint32_t p00 = vat(i, j), p10 = vat(i + 1, j), p11 = vat(i + 1, j + 1),
+                                    p01 = vat(i, j + 1);
+                m.triangles.push_back({p00, p10, p11});
+                m.triangles.push_back({p00, p11, p01});
+            }
+        }
+    }
+    return m;
+}
+
+/// ケース 25: 細分された立方体の対（$k=2$ で 48 三角形。**最小の再現**）。
+inline TriMesh case25_a() {
+    return tess_box(-12, 4, 16, 2);
+}
+inline TriMesh case25_b() {
+    return tess_box(-4, 12, 16, 2);
+}
+/// ケース 25': 細分の粗さを変えても同じ立体になること（$k=4$）。
+inline TriMesh case25p_a() {
+    return tess_box(-12, 4, 16, 4);
+}
+inline TriMesh case25p_b() {
+    return tess_box(-4, 12, 16, 4);
+}
+
 // ---- SPEC-phase2 §8 の追加ケース -------------------------------------------
 //
 // **座標の単位は $H/256$（$H = 2^{b-1}$）にそろえます。** 深度 0〜3 のセル境界は
@@ -766,6 +832,12 @@ inline const std::vector<Case>& corpus() {
         // 次数 4 の辺の 4 枚が同じ連結成分に入るので、成分では分けられません
         {"24", "連結成分で分けられない自己接触", cases::case24_a, cases::case24_b},
         {"24'", "24 の対照（橋なし。成分が分かれる）", cases::case24_a, cases::case24p_b},
+        // **Phase 5 の CP1.6 が踏んだ配置**（`SPEC-phase5.md` CP1.6）。
+        // 面が規則的に細分されており、併合すると辺の中点が共線頂点として残ります。
+        // **落とさないと `intersect3` が退化します**（深度 0 で落ちていました）
+        {"25", "面が 2x2 に細分された立方体（共線頂点）", cases::case25_a, cases::case25_b, true},
+        {"25'", "25 を 4x4 に細分（粗さを変えても同じ立体）", cases::case25p_a, cases::case25p_b,
+         true},
     };
     return k;
 }

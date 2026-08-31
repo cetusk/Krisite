@@ -56,9 +56,21 @@ BoolMesh retriangulate(const TriMesh& m) {
 using CanonTri = std::array<std::uint32_t, 3>;
 
 std::vector<CanonTri> canonical(const BoolMesh& m) {
-    // 値で頂点を同一視して番号を振り直す
-    std::vector<std::uint32_t> ord(m.vertices.size());
-    for (std::uint32_t i = 0; i < ord.size(); ++i) ord[i] = i;
+    // 値で頂点を同一視して番号を振り直す。
+    //
+    // **三角形から参照されている頂点だけを順位付けします。** 頂点表に使われない
+    // 項目が残ることがあり（`retriangulate` は入力の全頂点を持つが、面を併合すると
+    // 共線の中点は参照されなくなる）、**それを数えると順位がずれて、同じ三角形分割が
+    // 別物に見えます。** ケース 25 で実際に起きました。
+    std::vector<char> used(m.vertices.size(), 0);
+    for (const krisite::mesh::Tri& t : m.triangles) {
+        used[t[0]] = used[t[1]] = used[t[2]] = 1;
+    }
+    std::vector<std::uint32_t> ord;
+    ord.reserve(m.vertices.size());
+    for (std::uint32_t i = 0; i < m.vertices.size(); ++i) {
+        if (used[i]) ord.push_back(i);
+    }
     std::sort(ord.begin(), ord.end(), [&](std::uint32_t a, std::uint32_t b) {
         return krisite::geom::lex_less(m.vertices[a], m.vertices[b]);
     });

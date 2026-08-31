@@ -4,7 +4,11 @@
 //
 // **索引は厳密な絞り込みです**（`ray_index.hpp` 冒頭の単調性）。したがって
 // **出力は 1 ビットも変わってはいけません。** 幾何や位相ではなく、
-// **頂点と三角形のバイト**で比べます（同一版の中の比較なので、それが正しい水準）。
+// **多角形の平面 ID の列**で比べます（同一版の中の比較なので、それが正しい水準）。
+//
+// **スープ経路（`csg::boolean`）で見ます。** 二項メッシュ経路（`boolean_op`）は
+// **意図的に索引を使いません** — 正解器なので素朴に保ちます
+// （`IMPL-phase5.md` §12）。**配線漏れではありません。**
 //
 // **機構が空回りしていないことも確かめます。** 索引を入れて三角形検査が
 // 1 件も減らないなら、それは「通っている」だけで「効いている」ことにはなりません。
@@ -14,6 +18,8 @@
 #include <vector>
 
 #include "krisite/csg/boolean.hpp"
+#include "krisite/csg/polysoup.hpp"
+#include "krisite/csg/soup_boolean.hpp"
 
 #include "corpus.hpp"
 #include "test_util.hpp"
@@ -37,16 +43,14 @@ const char* op_name(BoolOp op) {
 }
 
 /// 出力の同一性。**幾何ではなくバイトで比べます。**
-bool same_output(const BoolMesh& x, const BoolMesh& y) {
-    if (x.vertices.size() != y.vertices.size()) return false;
-    if (x.triangles.size() != y.triangles.size()) return false;
-    for (std::size_t i = 0; i < x.vertices.size(); ++i) {
-        if (krisite::geom::cmp_h_lex(x.vertices[i], y.vertices[i]) != 0) return false;
-        // 同次座標は「等しい」だけでなく**同じ代表**であることを要求します（§4.4）。
-        if (krisite::arith::cmp(x.vertices[i].w, y.vertices[i].w) != 0) return false;
-    }
-    for (std::size_t i = 0; i < x.triangles.size(); ++i) {
-        if (x.triangles[i] != y.triangles[i]) return false;
+bool same_output(const PolySoup& x, const PolySoup& y) {
+    if (x.polys.size() != y.polys.size()) return false;
+    for (std::size_t i = 0; i < x.polys.size(); ++i) {
+        const Poly& a = x.polys[i];
+        const Poly& b = y.polys[i];
+        if (a.frag.support != b.frag.support || a.frag.flipped != b.frag.flipped) return false;
+        if (a.src != b.src || a.tag != b.tag) return false;
+        if (a.frag.edge != b.frag.edge) return false;
     }
     return true;
 }
@@ -57,7 +61,8 @@ std::size_t effective = 0;
 std::size_t compared = 0;
 
 void run_pair(const kritest::Case& c, const TriMesh& a, const TriMesh& b) {
-    std::size_t worst_ratio_num = 0, worst_ratio_den = 1;
+    std::size_t best_num = 0, best_den = 1;
+    const PolySoup sa = from_mesh(a), sb = from_mesh(b);
 
     for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
         for (unsigned d = 0; d <= kMaxDepth; ++d) {
@@ -67,30 +72,29 @@ void run_pair(const kritest::Case& c, const TriMesh& a, const TriMesh& b) {
             on.ray_index = true;
 
             BoolStats s_off, s_on;
-            const BoolMesh r_off = boolean_op(a, b, op, off, &s_off);
-            const BoolMesh r_on = boolean_op(a, b, op, on, &s_on);
+            const PolySoup r_off = boolean(sa, sb, op, off, &s_off);
+            const PolySoup r_on = boolean(sa, sb, op, on, &s_on);
             ++compared;
 
             KRI_CHECK_MSG(same_output(r_off, r_on), std::string("ケース ") + c.id + " " +
                                                         op_name(op) + " d" + std::to_string(d) +
                                                         ": 索引の有無で出力が変わった");
-            // 落とさないこと: 索引側が**多く**検査するのは設計違反です
             KRI_CHECK_MSG(s_on.ray_tri_tests <= s_off.ray_tri_tests,
                           std::string("ケース ") + c.id + ": 索引で検査数が増えた（" +
                               std::to_string(s_on.ray_tri_tests) + " > " +
                               std::to_string(s_off.ray_tri_tests) + "）");
             if (s_on.ray_tri_tests < s_off.ray_tri_tests) {
                 ++effective;
-                if (static_cast<std::uint64_t>(s_off.ray_tri_tests) * worst_ratio_den >
-                    static_cast<std::uint64_t>(worst_ratio_num) * s_on.ray_tri_tests) {
-                    worst_ratio_num = s_off.ray_tri_tests;
-                    worst_ratio_den = s_on.ray_tri_tests ? s_on.ray_tri_tests : 1;
+                if (static_cast<std::uint64_t>(s_off.ray_tri_tests) * best_den >
+                    static_cast<std::uint64_t>(best_num) * s_on.ray_tri_tests) {
+                    best_num = s_off.ray_tri_tests;
+                    best_den = s_on.ray_tri_tests ? s_on.ray_tri_tests : 1;
                 }
             }
         }
     }
     std::printf("  ケース %-3s 最良の削減 %.1f 倍  %s\n", c.id,
-                worst_ratio_num ? double(worst_ratio_num) / double(worst_ratio_den) : 1.0, c.what);
+                best_num ? double(best_num) / double(best_den) : 1.0, c.what);
 }
 
 void run_case(const kritest::Case& c) {

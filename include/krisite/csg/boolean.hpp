@@ -274,6 +274,10 @@ struct BoolOptions {
     ///
     /// **偽にすると完全に外れます。** 正しさの検査は真偽の両方で同じ出力を
     /// 要求します（`CLAUDE.md`「機構を追加したら、それを外す経路も用意してください」）。
+    ///
+    /// **効くのはスープ経路（`soup_boolean.hpp`）だけです。**
+    /// **二項メッシュ経路（`boolean_op`）は意図的に素朴なまま**で、この旗を見ません
+    /// （正解器は被検体と別経路で書く。`IMPL-phase5.md` §12）。
     bool ray_index = true;
     /// **適応分割**（§3.1）。偽なら常に最大深度まで分割する固定深度モード。
     /// **固定深度モードを消さないこと。** §9.1 の正解器です
@@ -379,40 +383,6 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     const std::size_t n_mesh_planes = table.size();
     std::vector<PlaneId> mesh_planes(n_mesh_planes);
     for (std::size_t i = 0; i < n_mesh_planes; ++i) mesh_planes[i] = static_cast<PlaneId>(i);
-
-    // **レイキャストの支持平面と 2 次元索引**（`SPEC-phase5.md` §6.3、CP1.5）。
-    //
-    // **二項メッシュ経路もここで同じ加速を受けます。** スープ経路だけに入れて
-    // いたときは、コーパスのテストが索引を一度も踏みませんでした
-    // （`test_ray_index.cpp` の空回りの検査がそれを捕まえました）。
-    //
-    // `point_inside` は +X 固定なので X 軸の索引だけ作ります。
-    // **intern した平面は使えません** — `PlaneTable::intern` は
-    // `orientation_differs` を返すので、表の平面は符号が逆のことがあります。
-    const auto raw_planes = [](const mesh::TriMesh& m) {
-        std::vector<geom::PlaneD> v;
-        v.reserve(m.triangles.size());
-        for (const mesh::Tri& t : m.triangles) {
-            v.push_back(
-                geom::plane_from_triangle(m.vertices[t[0]], m.vertices[t[1]], m.vertices[t[2]]));
-        }
-        return v;
-    };
-    const std::vector<geom::PlaneD> planes_a = raw_planes(A), planes_b = raw_planes(B);
-    RayIndex index_a, index_b;
-    if (opt.ray_index) {
-        index_a.build(A, geom::Axis::X);
-        index_b.build(B, geom::Axis::X);
-    }
-    const auto support = [&](int which, std::size_t* tested) {
-        RaySupport sup;
-        sup.planes = (which == 0) ? planes_a.data() : planes_b.data();
-        if (opt.ray_index) {
-            sup.index[static_cast<int>(geom::Axis::X)] = (which == 0) ? &index_a : &index_b;
-        }
-        sup.tested = tested;
-        return sup;
-    };
 
     // 各面の AABB（セル割り当て用）
     auto face_aabb = [&](const mesh::TriMesh& m, const Face& f) {
@@ -520,11 +490,11 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                                               static_cast<std::int32_t>(cbox.lo[1]),
                                               static_cast<std::int32_t>(cbox.lo[2])};
                     if (na > 0 && skip_a) {
-                        forced[0] = point_inside(B, corner, support(1, &st.ray_tri_tests)) ? 1 : 0;
+                        forced[0] = point_inside(B, corner) ? 1 : 0;
                         ++st.early_out_raycasts;
                     }
                     if (nb > 0 && skip_b) {
-                        forced[1] = point_inside(A, corner, support(0, &st.ray_tri_tests)) ? 1 : 0;
+                        forced[1] = point_inside(A, corner) ? 1 : 0;
                         ++st.early_out_raycasts;
                     }
                     if (forced[0] >= 0 || forced[1] >= 0) ++st.early_out_cells;
@@ -881,8 +851,9 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                 KRISITE_CHECK(!point_on_boundary(other, rep),
                               "boolean_op: 相対内部の代表点が相手の境界上にある"
                               "（SPEC-phase3 §2.1 の前提が破れている）");
-                const bool inside =
-                    point_inside(other, rep, support((f.owner == 0) ? 1 : 0, &st.ray_tri_tests));
+                // **二項経路は意図的に索引を使いません**（`IMPL-phase5.md` §12）。
+                // **正解器なので素朴に保ちます。** 配線漏れではありません。
+                const bool inside = point_inside(other, rep);
                 ++st.raycasts;
                 it = region_inside.emplace(key, inside).first;
                 ++st.regions;
