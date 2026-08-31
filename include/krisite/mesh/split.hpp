@@ -71,6 +71,13 @@ struct SplitStats {
     /// **分裂しても多様体にならなかった配置の数**（§5.1.2.1）。
     /// **radial sort を実装する必要性の判断材料です。** 0 でなければ報告すること。
     std::size_t unresolved = 0;
+    /// **対応付けができず、分裂させずに残した辺の数**（`SPEC-phase2.md` §5.1.2.2）。
+    ///
+    /// **拒否でも失敗でもなく、契約に適合した出力です。** 次数 4 のまま残すので
+    /// $\partial S = 0$ が保たれ、§9.3.1 の除外条件（次数が偶数、最大 4）を満たします。
+    ///
+    /// **実データで何割に出るかが radial sort の優先度を決めます。** 必ず記録すること。
+    std::size_t unsplit_edges = 0;
     /// **early-out で arrangement を省いたセル由来の三角形に接する頂点が分裂した回数**
     /// （SPEC-phase2 §13 の CP5）。
     ///
@@ -176,6 +183,8 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
     }
     // 過剰な辺 → 「同じ組に属する三角形の対」
     std::map<std::pair<VertexId, VertexId>, std::vector<std::vector<std::size_t>>> edge_groups;
+    /// **対応付けができなかった辺。** ここでは分裂させません（§5.1.2.2）
+    std::set<std::pair<VertexId, VertexId>> unsplit;
     for (const auto& kv : edge_tris) {
         if (kv.second.size() <= 2) continue;
         std::map<std::size_t, std::vector<std::size_t>> by_key;
@@ -189,10 +198,25 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
             if (gk.second.size() != 2) ok = false;
         }
         if (!ok) {
-            // **§5.1.2.1: 推測せず停止します。** 2 枚のシートが別の場所で繋がっていると
-            // 4 枚が同一成分に入り、連結成分では分けられません。黙って片方に寄せると
-            // §5.5.1 の C 不変性で検出はされますが、原因の特定に手間がかかります
+            // **§5.1.2.2: 分裂させずに次数 4 のまま残します**（案 A）。
+            //
+            // 2 枚のシートが別の場所で繋がっていると 4 枚が同一成分に入り、
+            // 連結成分では分けられません（§5.1.2.1）。
+            //
+            // **ここで辺を扱いから外してはいけません。** 外すと扇がまったく併合されず、
+            // **次数 4 の辺が次数 1 の辺 4 本に裂けます**（実測: 欠損辺 32 本、
+            // $\partial S \ne 0$）。**分裂を諦めたほうが、諦め方を誤るより良い。**
+            //
+            // 残せば非多様体ではありますが**閉じたまま**で、§9.3.1 の除外条件
+            // （次数が偶数、最大 4、向きの整合）を満たす契約適合の出力です。
+            //
+            // **適用はこの辺だけに限ります**（§9.3.1 の「広げすぎない」規律）。
             ++st.unresolved;
+            ++st.unsplit_edges;
+            unsplit.insert(kv.first);
+            // **予測から取り下げます。** この辺は分裂しないので $\Delta E$ に寄与しません。
+            // 取り下げないと §5.5 の検算が「予測と実測が違う」と言い続けます
+            st.predicted_delta_e -= kv.second.size() / 2 - 1;
             continue;
         }
         for (const auto& gk : by_key) edge_groups[kv.first].push_back(gk.second);
@@ -277,6 +301,17 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
                     // 多様体な辺は扇を繋ぐ
                     const std::size_t i0 = index_of(sh[0]), i1 = index_of(sh[1]);
                     if (i0 < n && i1 < n) unite(i0, i1);
+                } else if (unsplit.count(key) != 0) {
+                    // **対応付け不能な辺は分裂させない**（§5.1.2.2）。
+                    // 接する三角形を**全部つなぐ**ので、扇は分かれず次数 4 が残ります。
+                    // **何もしない（`continue`）と裂けます。**
+                    const std::size_t i0 = index_of(sh[0]);
+                    if (i0 < n) {
+                        for (std::size_t j = 1; j < sh.size(); ++j) {
+                            const std::size_t ij = index_of(sh[j]);
+                            if (ij < n) unite(i0, ij);
+                        }
+                    }
                 } else {
                     // **過剰な辺は「同じ組」の中だけ繋ぐ**（§5.1.2）
                     const auto it = edge_groups.find(key);

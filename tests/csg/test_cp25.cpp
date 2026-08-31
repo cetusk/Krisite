@@ -40,8 +40,8 @@ const char* op_name(BoolOp op) {
 
 /// §9.3 の扱いを受けるか。**定義は `corpus_expect.hpp` の 1 箇所だけです。**
 /// CP2.5 / CP3 / Manifold が別々に判断するとずれます。
-bool excluded_from_verdict(const char* id, BoolOp op) {
-    return kritest::exclusion_of(id, op) != kritest::Exclusion::None;
+bool excluded_from_verdict(const krisite::mesh::TopologyReport& t) {
+    return kritest::exclusion_from_topology(t) != kritest::Exclusion::None;
 }
 
 /// §9.3.1 の番人: 除外した (ケース, 演算, 深度) の件数。
@@ -70,7 +70,6 @@ void run_case(const kritest::Case& c, std::vector<Row>& rows) {
 
     std::printf("\n  ケース %-3s %s\n", c.id, c.what);
     for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
-        const bool excluded = excluded_from_verdict(c.id, op);
         TopologyReport ref;
         bool first = true;
         for (unsigned d = 0; d <= kMaxDepth; ++d) {
@@ -82,6 +81,8 @@ void run_case(const kritest::Case& c, std::vector<Row>& rows) {
             const BoolOptions opt = kritest::corpus_options(d);
             const BoolMesh r = boolean_op(a, b, op, opt, &st);
             const TopologyReport t = check_topology(r.triangles);
+            // **除外は出力の性質から決めます**（識別子を使わない）
+            const bool excluded = excluded_from_verdict(t);
             std::printf(
                 "    d%u %s C=%zu g=%-2lld F=%-5zu %s | 断片%-4zu 有効セル%zu/%-4zu "
                 "枚数%zu(mesh %zu) 値併合%zu/%zu 軸線%zu 角%zu 欠け辺%zu 余分辺%zu\n",
@@ -98,7 +99,7 @@ void run_case(const kritest::Case& c, std::vector<Row>& rows) {
                                         "（深度 " + std::to_string(d) + "）";
                 std::string why;
                 KRI_CHECK_MSG(
-                    kritest::exclusion_conditions_ok(kritest::exclusion_of(c.id, op), t, &why),
+                    kritest::exclusion_conditions_ok(kritest::exclusion_from_topology(t), t, &why),
                     tag + ": §9.3.1 の適用条件を満たさない（" + why +
                         "）。除外すべき退化ではなくバグです");
                 ++excluded_count;
@@ -157,16 +158,21 @@ void report_link_structure(const std::vector<Row>& rows) {
         worst_same_component = std::max(worst_same_component, r.t.vertices_fans_in_one_component);
     }
     std::printf("    → 除外した組数: %zu\n", excluded_count);
+    KRI_CHECK_MSG(excluded_count > 0,
+                  "**除外が 1 件も発生していません。** 接触を意図したケースが"
+                  "コーパスから消えたか、除外の判定が空回りしています");
     // **円環が出たら報告対象です**（§9.3.2）。分裂で多様体化できないので、
     // Phase 2 の選択肢が「分裂させるかどうか」ではなくなります。
     KRI_CHECK_MSG(worst_same_component == 0,
                   "扇が同一の連結成分に属する頂点が出ました（円環の疑い）。"
                   "分裂では多様体化できないので、SPEC §9.3.2 に従って報告してください");
-    // §9.3.1 の番人: 除外が多数に及ぶなら §2.1 の前提を疑う
-    KRI_CHECK_MSG(excluded_count <= 8,
-                  "§9.3 の除外が " + std::to_string(excluded_count) +
-                      " 件に達しました。特殊ケースの域を超えています。"
-                      "ケースを除外するのではなく §2.1 の前提を見直してください");
+    // §9.3.1 の番人: **件数の上限ではなく、増分の説明を要求します**（`test_cp3.cpp` と同じ形）。
+    //
+    // **由来は `test_cp3.cpp` が検査します**（そちらは (ケース, 演算) 単位で持つので
+    // 由来が分かります）。ここは深度ごとの件数なので、**記録に徹します。**
+    //
+    // **件数の閾値を番人にすると上げ続けることになる**ので、置きません。
+    std::printf("    → 除外の件数は記録のみ（由来の検査は csg/cp3 が受け持ちます）\n");
 }
 
 /// §13: 斜面ケースで 4 枚以上が検出されること。

@@ -46,6 +46,7 @@
 #include "krisite/csg/to_mesh.hpp"
 
 #include "corpus.hpp"
+#include "corpus_expect.hpp"
 #include "test_util.hpp"
 
 using namespace krisite::csg;
@@ -164,8 +165,21 @@ void run_config(const kritest::Case& c, const TriMesh& a, const TriMesh& b, Bool
     const TopologyReport r_off = check_topology(m_off.triangles);
     const TopologyReport r_on = check_topology(m_on.triangles);
 
-    // 分裂 ON は多様体でなければなりません（§5.1.2 / Phase 2 の判断 3）
-    KRI_CHECK_MSG(r_on.empty || r_on.ok(), tag + ": 分裂 ON で多様体になっていない");
+    // 分裂 ON は多様体でなければなりません（§5.1.2 / Phase 2 の判断 3）。
+    //
+    // **例外は §5.1.2.2 の「対応付けできなかった辺」だけです**（案 A）。
+    // 判定は識別子ではなく `unresolved > 0` という機械的な事実で行います。
+    const kritest::Exclusion ex_on = kritest::exclusion_when_split(t_on.split.unresolved, r_on);
+    if (ex_on != kritest::Exclusion::None) {
+        std::string why;
+        KRI_CHECK_MSG(kritest::exclusion_conditions_ok(ex_on, r_on, &why),
+                      tag + ": §9.3.1 の適用条件を満たさない（" + why + "）");
+        KRI_CHECK_MSG(r_on.edges_deficient == 0, tag + ": **辺が裂けました**（次数 1 が " +
+                                                     std::to_string(r_on.edges_deficient) +
+                                                     " 本）");
+    } else {
+        KRI_CHECK_MSG(r_on.empty || r_on.ok(), tag + ": 分裂 ON で多様体になっていない");
+    }
     // 分裂 OFF は接触辺が残るので `ok()` は使えません。向きは常に整合すべきです
     KRI_CHECK_MSG(r_off.empty || r_off.oriented, tag + ": 分裂 OFF で向きが整合していない");
 
@@ -313,8 +327,14 @@ void check_not_vacuous() {
     KRI_CHECK_MSG(g.wnv_x_split > 0, "WNV × 接触の分裂 を踏んだ構成が無い");
 
     // **0 でなければ報告すること**（§5.1.2.1。radial sort の必要性の判断材料）
-    KRI_CHECK_MSG(g.unresolved == 0,
-                  "分裂しても多様体にならなかった配置がある（radial sort の検討が要る）");
+    // **§5.1.2.2: 到達すること自体は欠陥ではありません。**
+    // 分裂させずに次数 4 のまま残すので、閉じたまま非多様体になります。
+    // **件数は記録**で、判定は上の `exclusion_when_split` + 適用条件が行います。
+    //
+    // **空回り防止**: ケース 24 を入れたので、到達 0 なら検査が効いていません
+    KRI_CHECK_MSG(g.unresolved > 0,
+                  "**§5.1.2.1 の配置に一度も到達していません。** ケース 24 が"
+                  "コーパスから消えたか、対応付けの判定が変わっています");
 
     std::printf("    構成 %zu（順序非依存 %zu / early-out 比較 %zu / n 項 %zu）\n", g.configs,
                 g.order_checks, g.early_out_checks, g.nary_configs);

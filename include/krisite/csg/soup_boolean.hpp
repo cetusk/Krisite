@@ -805,6 +805,27 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 w_back[i2] = frag_forced[pick][i2];
                 continue;
             }
+#if defined(KRISITE_EXPERIMENT_NO_WCACHE)
+            // **実験: 巻き数のメモ化をやめる**（`SPEC-phase5.md` の CP1.5）。
+            //
+            // **キーは「代表点が source の全平面のどちら側か」の符号ベクトル**でした。
+            // これは点をシーン全体で同定するのに等しいので、**異なる領域はほぼ必ず
+            // 異なるキーになります。** 実測で命中率 0%（エントリ 112,084 / 領域 112,084）。
+            //
+            // それでいて費用は領域あたり $O(\text{シーン})$ です。
+            //
+            //   空間  8,500 バイトのキー × 70 万件 = 6.1 GB
+            //   時間  領域ごとに全平面へ side() = 1.2 × 10^10 回
+            //
+            // **節約ゼロでシーン規模の費用を両方払う構造**でした。
+            Wnd v{};
+            winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back);
+            ++st.raycasts;
+            ++st.regions;
+            w_front[i2] = v.w_other + v.c_front;
+            w_back[i2] = v.w_other + v.c_back;
+            (void)wcache;
+#else
             std::vector<std::int8_t> sig(planes_of_src[i2].size());
             for (std::size_t k = 0; k < planes_of_src[i2].size(); ++k) {
                 sig[k] =
@@ -821,6 +842,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
             w_front[i2] = it->second.w_other + it->second.c_front;
             w_back[i2] = it->second.w_other + it->second.c_back;
+#endif
         }
 
         const bool in_front = out.indicator.eval(w_front);
