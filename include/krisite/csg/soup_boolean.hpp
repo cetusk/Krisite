@@ -241,6 +241,30 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
     }
 
+    // **レイキャストの 2 次元索引**（`SPEC-phase5.md` §6.3、CP1.5 の 2）。
+    //
+    // レイは軸平行なので、判定点の (u, v) セルにある三角形だけを見れば足ります。
+    // **どの軸を使うかは基準平面ごとに変わる**ので 3 軸ぶん作ります。
+    // 構築は $O(n)$ で、レイあたり $O(n)$ の走査に対して無視できます。
+    std::vector<std::array<RayIndex, 3>> ray_index(n_src);
+    if (opt.ray_index) {
+        for (std::size_t i = 0; i < n_src; ++i) {
+            for (int ax = 0; ax < 3; ++ax) {
+                ray_index[i][static_cast<std::size_t>(ax)].build(out.sources[i],
+                                                                 static_cast<geom::Axis>(ax));
+            }
+        }
+    }
+    auto ray_support = [&](std::size_t i, std::size_t* tested) {
+        RaySupport sup;
+        sup.planes = ray_planes[i].data();
+        sup.tested = tested;
+        if (opt.ray_index) {
+            for (std::size_t ax = 0; ax < 3; ++ax) sup.index[ax] = &ray_index[i][ax];
+        }
+        return sup;
+    };
+
     std::vector<PlaneId> all_split;
     for (const std::vector<PlaneId>& v : planes_of_src) {
         all_split.insert(all_split.end(), v.begin(), v.end());
@@ -440,14 +464,12 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 int wo = 0, cf = 0, cb = 0;
                 winding_split(out.sources[i], geom::to_homogeneous(corner),
                               out.table.at(all_split.empty() ? PlaneId{0} : all_split.front()), &wo,
-                              &cf, &cb, ray_planes[i].data());
+                              &cf, &cb, ray_support(i, &st.ray_tri_tests));
                 KRISITE_CHECK(cf == 0 && cb == 0,
                               "early-out: セルの隅が source の曲面に載っている"
                               "（曲面が無いはずのセル）");
                 forced[i] = static_cast<std::int8_t>(wo);
                 ++st.early_out_raycasts;
-                // **`winding_split` は source の全三角形を走査します**（枝刈りなし）
-                st.ray_tri_tests += out.sources[i].triangles.size();
                 any = true;
             }
             if (any) ++st.early_out_cells;
@@ -858,10 +880,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // **節約ゼロでシーン規模の費用を両方払う構造**でした。
             Wnd v{};
             winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
-                          ray_planes[i2].data());
+                          ray_support(i2, &st.ray_tri_tests));
             ++st.raycasts;
             ++st.regions;
-            st.ray_tri_tests += out.sources[i2].triangles.size();
             w_front[i2] = v.w_other + v.c_front;
             w_back[i2] = v.w_other + v.c_back;
             (void)wcache;
@@ -876,10 +897,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             if (it == wcache.end()) {
                 Wnd v{};
                 winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
-                              ray_planes[i2].data());
+                              ray_support(i2, &st.ray_tri_tests));
                 ++st.raycasts;
                 ++st.regions;
-                st.ray_tri_tests += out.sources[i2].triangles.size();
                 it = wcache.emplace(key, v).first;
             }
             w_front[i2] = it->second.w_other + it->second.c_front;

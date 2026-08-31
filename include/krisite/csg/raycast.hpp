@@ -14,6 +14,7 @@
 #ifndef KRISITE_CSG_RAYCAST_HPP
 #define KRISITE_CSG_RAYCAST_HPP
 
+#include "krisite/csg/ray_index.hpp"
 #include "krisite/geom/plane.hpp"
 #include "krisite/geom/predicates.hpp"
 #include "krisite/mesh/tri_mesh.hpp"
@@ -22,22 +23,7 @@ namespace krisite::csg {
 
 namespace detail {
 
-/// 軸の成分を取り出す。
-inline std::int32_t comp(const geom::IPoint& p, geom::Axis a) noexcept {
-    return (a == geom::Axis::X) ? p.x : (a == geom::Axis::Y) ? p.y : p.z;
-}
-
-/// 投影後の 2 軸（`orient2d_h` と同じ巡回順）。
-inline geom::Axis proj_u(geom::Axis along) noexcept {
-    return (along == geom::Axis::X)   ? geom::Axis::Y
-           : (along == geom::Axis::Y) ? geom::Axis::Z
-                                      : geom::Axis::X;
-}
-inline geom::Axis proj_v(geom::Axis along) noexcept {
-    return (along == geom::Axis::X)   ? geom::Axis::Z
-           : (along == geom::Axis::Y) ? geom::Axis::X
-                                      : geom::Axis::Y;
-}
+// `comp` / `proj_u` / `proj_v` は `ray_index.hpp` にあります（索引と共有）。
 
 /// 平面の法線の、軸 `along` 方向の成分。
 inline int normal_comp_sign(const geom::PlaneD& pl, geom::Axis along) noexcept {
@@ -141,6 +127,22 @@ inline bool point_on_boundary(const mesh::TriMesh& m, const Point& p) {
     return false;
 }
 
+/// `winding_split` の補助データ。**すべて任意**で、渡さなければ従来どおり動きます。
+///
+/// **位置引数を並べずに構造で区切ります**（`CLAUDE.md`「位置引数が多く型が同じ
+/// 小関数は、規律ではなく設計で守ってください」）。
+struct RaySupport {
+    /// 支持平面。`planes[j]` は `plane_from_triangle(m.triangles[j] の 3 頂点)` と
+    /// **同一**でなければなりません。**`PlaneTable` で intern した平面は使えません** —
+    /// `intern` は `orientation_differs` を返すので、**表の平面は符号が逆のことがあります。**
+    const geom::PlaneD* planes = nullptr;
+    /// 軸ごとの 2 次元索引（`Axis` の値で引きます）。**どの軸を使うかは
+    /// 基準平面から中で決まる**ので、3 軸ぶん渡します。
+    const RayIndex* index[3] = {nullptr, nullptr, nullptr};
+    /// 実際に走査した三角形の数を足し込みます（計測用。任意）。
+    std::size_t* tested = nullptr;
+};
+
 /// **巻き数**（`SPEC-phase3.md` §5.1）。判定点が `m` の表面に載っている場合も扱います。
 ///
 /// 表面に載っている点では巻き数が両側で違うので、**3 つに分けて返します。**
@@ -156,17 +158,12 @@ inline bool point_on_boundary(const mesh::TriMesh& m, const Point& p) {
 ///
 /// 巻き数の寄与は `sign(N_t \cdot x)`（レイは +X 方向）。閉じた向き付き立体なら
 /// 内部で 1、外部で 0 になります。**自己交差や入れ子では 2 以上になります**（それが目的）。
-/// `planes` を渡すと、**支持平面の作り直しをやめます**（`SPEC-phase5.md` の CP1.5）。
 ///
-/// `planes[j]` は `plane_from_triangle(m.triangles[j] の 3 頂点)` と**同一**でなければ
-/// なりません。**`PlaneTable` で intern した平面は使えません** —
-/// `intern` は `orientation_differs` を返すので、**表の平面は符号が逆のことがあります。**
-///
-/// 渡さなければ従来どおり毎回作ります（**出力は同じ**）。
+/// `sup`（`RaySupport`）で支持平面と 2 次元索引を渡せます（`SPEC-phase5.md` の CP1.5）。
+/// **渡さなくても答えは同じ**です。速さだけが変わります。
 template <class Point>
 inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::PlaneD& ref,
-                          int* w_other, int* c_front, int* c_back,
-                          const geom::PlaneD* planes = nullptr) {
+                          int* w_other, int* c_front, int* c_back, const RaySupport& sup = {}) {
     *w_other = 0;
     *c_front = 0;
     *c_back = 0;
@@ -180,14 +177,20 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
                                                          : geom::Axis::Z;
     KRISITE_CHECK(detail::normal_comp_sign(ref, along) != 0, "winding_split: 基準平面が退化");
 
-    for (std::size_t j = 0; j < m.triangles.size(); ++j) {
+    // **候補の絞り込み**（`SPEC-phase5.md` §6.3）。索引があれば、判定点の
+    // (u, v) セルにある三角形だけを見ます。**落とすものはありません** —
+    // 根拠は `ray_index.hpp` 冒頭の単調性の議論です。
+    const RayIndex* idx = sup.index[static_cast<int>(along)];
+    if (idx != nullptr && !idx->ready()) idx = nullptr;
+
+    auto visit = [&](std::size_t j) {
         const mesh::Tri& t = m.triangles[j];
         const geom::IPoint& a = m.vertices[t[0]];
         const geom::IPoint& b = m.vertices[t[1]];
         const geom::IPoint& c = m.vertices[t[2]];
         const geom::PlaneD pl =
-            (planes != nullptr) ? planes[j] : geom::plane_from_triangle(a, b, c);
-        if (geom::is_degenerate(pl)) continue;
+            (sup.planes != nullptr) ? sup.planes[j] : geom::plane_from_triangle(a, b, c);
+        if (geom::is_degenerate(pl)) return;
 
         bool on_face = false, strict = false;
         if (geom::side(pl, p) == 0) {
@@ -207,7 +210,7 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
             if (detail::crosses_with(pl, a, b, c, p, along)) {
                 *w_other += detail::normal_comp_sign(pl, along);
             }
-            continue;
+            return;
         }
         // **載っている面（シート）。** レイはここから出るので、跨ぐかどうかは
         // レイの向きと基準法線の関係で決まります（下の分岐）。
@@ -222,7 +225,39 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
             any_edge = true;
             sheet_edge = contrib;
         }
+    };
+
+    std::size_t visited = 0;
+    if (idx == nullptr) {
+        for (std::size_t j = 0; j < m.triangles.size(); ++j) visit(j);
+        visited = m.triangles.size();
+    } else {
+        // **昇順にマージします。** `sheet_edge` は「最後に見た 1 枚」で決まるので、
+        // **全走査と同じ順序でなければ出力が変わり得ます。**
+        //
+        // 段は互いに素なので、段ごとの区間を k 路マージすれば昇順になります
+        // （段は 11 以下。`uint32` の比較 11 回は、述語 1 回より十分安い）。
+        const std::uint32_t* cur[kRayIndexMaxLevels];
+        const std::uint32_t* end[kRayIndexMaxLevels];
+        const std::size_t nl = idx->candidates_levels();
+        idx->candidates(p, cur, end);
+        for (;;) {
+            std::size_t best = nl;
+            std::uint32_t bv = 0;
+            for (std::size_t l = 0; l < nl; ++l) {
+                if (cur[l] == end[l]) continue;
+                if (best == nl || *cur[l] < bv) {
+                    best = l;
+                    bv = *cur[l];
+                }
+            }
+            if (best == nl) break;
+            ++cur[best];
+            visit(bv);
+            ++visited;
+        }
     }
+    if (sup.tested != nullptr) *sup.tested += visited;
 
     const int sheet = sheet_strict + ((n_strict == 0 && any_edge) ? sheet_edge : 0);
 
@@ -246,11 +281,50 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
 ///
 /// **`p` が `m` の境界上に無いことを呼び出し側が保証すること**（`point_on_boundary`）。
 template <class Point>
-inline bool point_inside(const mesh::TriMesh& m, const Point& p) {
+inline bool point_inside(const mesh::TriMesh& m, const Point& p, const RaySupport& sup = {}) {
     int hits = 0;
-    for (const mesh::Tri& t : m.triangles) {
-        if (detail::crosses(m.vertices[t[0]], m.vertices[t[1]], m.vertices[t[2]], p)) ++hits;
+    std::size_t visited = 0;
+    // **レイは +X 固定です。** 索引も X 軸のものだけを使います。
+    //
+    // ここは偶奇しか見ないので**順序に依存しません**が、`winding_split` と
+    // 同じ道具を使うために昇順のマージをそのまま通します。
+    const RayIndex* idx = sup.index[static_cast<int>(geom::Axis::X)];
+    if (idx != nullptr && !idx->ready()) idx = nullptr;
+    const auto visit = [&](std::size_t j) {
+        const mesh::Tri& t = m.triangles[j];
+        const geom::PlaneD pl =
+            (sup.planes != nullptr)
+                ? sup.planes[j]
+                : geom::plane_from_triangle(m.vertices[t[0]], m.vertices[t[1]], m.vertices[t[2]]);
+        if (detail::crosses_with(pl, m.vertices[t[0]], m.vertices[t[1]], m.vertices[t[2]], p)) {
+            ++hits;
+        }
+    };
+    if (idx == nullptr) {
+        for (std::size_t j = 0; j < m.triangles.size(); ++j) visit(j);
+        visited = m.triangles.size();
+    } else {
+        const std::uint32_t* cur[kRayIndexMaxLevels];
+        const std::uint32_t* end[kRayIndexMaxLevels];
+        const std::size_t nl = idx->candidates_levels();
+        idx->candidates(p, cur, end);
+        for (;;) {
+            std::size_t best = nl;
+            std::uint32_t bv = 0;
+            for (std::size_t l = 0; l < nl; ++l) {
+                if (cur[l] == end[l]) continue;
+                if (best == nl || *cur[l] < bv) {
+                    best = l;
+                    bv = *cur[l];
+                }
+            }
+            if (best == nl) break;
+            ++cur[best];
+            visit(bv);
+            ++visited;
+        }
     }
+    if (sup.tested != nullptr) *sup.tested += visited;
     return (hits % 2) == 1;
 }
 

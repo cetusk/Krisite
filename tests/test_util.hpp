@@ -63,6 +63,9 @@ inline krisite::csg::BoolOptions phase1_options(unsigned depth) {
     o.cache_points = false;
     o.split_contacts = false;
     o.local_bsp = false;  // §5.4 の局所 BSP を切る = 過剰分割（CP3 までの挙動）
+    // **レイキャストの 2 次元索引も明示的に切ります**（`SPEC-phase5.md` §6.3）。
+    // 既定に任せると、基準側にも索引が入って**自分自身との比較**になります。
+    o.ray_index = false;
     return o;
 }
 
@@ -79,6 +82,9 @@ inline krisite::csg::BoolOptions corpus_options(unsigned depth) {
     // **局所 BSP は CI ジョブで切り替わる最適化ではなく、CP4 の置き換えです。**
     // 適応分割モードかどうかに関係なく主経路を回します（`SPEC-phase3.md` §5.4）。
     o.local_bsp = true;
+    // **索引は主経路です。** 基準側（`phase1_options`）が切ってあるので、
+    // 正解器と突き合わせるテストは、そのまま索引の ON/OFF 比較にもなります。
+    o.ray_index = true;
 #if defined(KRISITE_DEFAULT_ADAPTIVE)
     o.adaptive = true;
     o.early_out = true;
