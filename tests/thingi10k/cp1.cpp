@@ -89,7 +89,7 @@ Prepared prepare(const krithingi::RawMesh& raw, std::uint64_t seed) {
 }
 
 struct Counts {
-    std::size_t pairs = 0, accepted = 0, failed = 0;
+    std::size_t pairs = 0, accepted = 0, failed = 0, halted = 0;
     std::size_t reject[6] = {0, 0, 0, 0, 0, 0};
     std::size_t dropped_total = 0, merged_total = 0;
     std::size_t models_with_dropped = 0;
@@ -178,6 +178,15 @@ int main(int argc, char** argv) {
     // **済みの対をやり直すモード。** 既定は追記（再開）
     const bool redo = (argc > 6) && (std::atoi(argv[6]) != 0);
     std::size_t verified = 0;
+    // 資源上限で落ちた対（1 行 1 対）。**手で足すのではなく、監視スクリプトが足します**
+    std::vector<std::string> skip;
+    {
+        std::ifstream f("data/thingi10k/cp1_skip.txt");
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty()) skip.push_back(line.substr(0, line.find(' ')));
+        }
+    }
 
     std::vector<std::string> ids;
     {
@@ -263,7 +272,19 @@ int main(int argc, char** argv) {
         const std::size_t i = order[k], j = order[k + 1];
         const std::string key = ids[i] + "x" + ids[j];
         if (!redo && seen(key)) continue;
+        // **資源上限で落ちた対を飛ばします**（`SPEC-phase5.md` §1 の「停止」）。
+        // **落ちた対を記録しないと、再開のたびに同じ対で落ち続けます。**
+        if (std::find(skip.begin(), skip.end(), key) != skip.end()) {
+            ++c.halted;
+            std::printf("  停止済みとして飛ばす %s\n", key.c_str());
+            continue;
+        }
         ++c.pairs;
+        // **開始を先に出します。** OOM で殺されると完了行が出ないので、
+        // **どの対で落ちたかが分からなくなります**（実際に分からなくなりました）。
+        std::printf("  → 開始 %s（入力 %zu+%zu）\n", key.c_str(), prep[i].mesh.triangles.size(),
+                    prep[j].mesh.triangles.size());
+        std::fflush(stdout);
         const auto tp = std::chrono::steady_clock::now();
         std::string why;
         unsigned long long h = 0;
@@ -308,7 +329,8 @@ int main(int argc, char** argv) {
                     prep[i].mesh.triangles.size(), prep[j].mesh.triangles.size(), dt, s);
     }
     const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("\n対 %zu / 成功 %zu / **失敗 %zu** / %.1f s\n", c.pairs, c.accepted, c.failed, s);
+    std::printf("\n対 %zu / 成功 %zu / **失敗 %zu** / **停止 %zu** / %.1f s\n", c.pairs, c.accepted,
+                c.failed, c.halted, s);
     if (verify_index) {
         std::printf("**索引の有無でハッシュ一致: %zu 対**\n", verified);
     }
