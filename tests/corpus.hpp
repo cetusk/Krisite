@@ -649,6 +649,15 @@ inline TriMesh case26_b() {
     return bumpy_box(-3, 11, 16, 2);
 }
 
+/// ケース 26′: **26 の対照。** 規模も重なり方も変えます。
+/// **番人が 1 ケース依存だと、そのケースが消えた瞬間に強度が 0 になります。**
+inline TriMesh case26p_a() {
+    return bumpy_box(-11, 1, 16, 3);
+}
+inline TriMesh case26p_b() {
+    return bumpy_box(-1, 11, 16, 3);
+}
+
 /// ケース 25: 細分された立方体の対（$k=2$ で 48 三角形。**最小の再現**）。
 inline TriMesh case25_a() {
     return tess_box(-12, 4, 16, 2);
@@ -923,6 +932,9 @@ inline const std::vector<Case>& corpus() {
         // 唯一のケースで、NSI の最適化（`SPEC-phase3.md` §5.6）を CI で守れます。
         // **§9.0 (1) のサイズ規律の例外**（対の AABB は満たす）
         {"26", "離して置き一部だけ重ねる（単一 source のセル）", cases::case26_a, cases::case26_b},
+        // **26 の対照（規模と重なり方を変える）。** 番人が 1 ケース依存だと、
+        // そのケースが消えた瞬間に強度が 0 になります
+        {"26'", "26 の対照（細かく、重なりも違う）", cases::case26p_a, cases::case26p_b},
     };
     return k;
 }

@@ -25,6 +25,7 @@
 #include "krisite/par/thread_pool.hpp"
 
 #include "thingi10k/loader.hpp"
+#include "volume_fp.hpp"
 
 using namespace krisite;
 
@@ -137,6 +138,9 @@ struct PairStruct {
     std::size_t leaf_single_src = 0, leaf_single_max = 0, leaf_both_max = 0;
     std::size_t bsp_slots = 0, bsp_used = 0, bsp_slots_single = 0, bsp_used_single = 0;
     std::size_t bsp_cells_skipped = 0;
+    /// **浮動小数点の体積恒等式の相対誤差**（`SPEC-phase5.md` §3.0 の篩）。
+    /// **検査ではありません。** GMP に回すものを絞るために記録します。
+    double vol_err = 0, diff_err = 0;
     double ms_arrange = 0, ms_classify = 0, ms_stitch = 0;
     std::size_t unresolved = 0, edges_excess = 0, edges_deficient = 0;
     std::size_t max_edge_degree = 0;
@@ -175,7 +179,7 @@ struct PairStruct {
           << ' ' << (long long)ms_stitch << ' ' << unresolved << ' ' << edges_excess << ' '
           << edges_deficient << ' ' << max_edge_degree << ' ' << leaf_single_src << ' '
           << leaf_single_max << ' ' << leaf_both_max << ' ' << bsp_slots << ' ' << bsp_used << ' '
-          << bsp_slots_single << ' ' << bsp_used_single;
+          << bsp_slots_single << ' ' << bsp_used_single << ' ' << vol_err << ' ' << diff_err;
     }
 };
 
@@ -237,6 +241,19 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
             *why = "χ が奇数";
             return false;
         }
+    }
+    if (ps != nullptr) {
+        // **浮動小数点の体積恒等式**（`SPEC-phase5.md` §3.0）。**篩であって検査ではありません。**
+        // 入力側は `signed_volume6` が厳密なので、丸めは出力側だけに乗ります。
+        const double va = kritest::volume6_fp(a), vb = kritest::volume6_fp(b);
+        const double vu = kritest::volume6_fp(mu), vi = kritest::volume6_fp(mi);
+        const double vd = kritest::volume6_fp(md);
+        ps->vol_err = kritest::identity_error(vu, vi, va, vb);
+        ps->diff_err = kritest::difference_error(vd, va, vi);
+    }
+    if (ps != nullptr && ps->vol_err > kritest::kIdentityTol) {
+        // **篩に引っかかりました。** 失敗ではありません — **GMP に回す印**です（§3.0）。
+        *why = "体積の篩（GMP へ）";
     }
     if (hash_out != nullptr) {
         *hash_out = hash_mesh(mu) ^ (hash_mesh(mi) * 3) ^ (hash_mesh(md) * 7);
@@ -403,15 +420,19 @@ int main(int argc, char** argv) {
             const double dt0 =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0n).count();
             std::printf(
-                "  NSI %s | ハッシュ %s | P %zu -> %zu (%.2f 倍) | 秒 %.1f -> %.1f (%.2f 倍) "
+                "  NSI %s | バイト %s | P %zu -> %zu (%.2f 倍) | 秒 %.1f -> %.1f (%.2f 倍) "
                 "| 省いたセル %zu | 判定 %s -> %s\n",
                 key.c_str(), (h0 == h) ? "**一致**" : "**不一致**", ps0.polys, ps.polys,
                 ps.polys ? double(ps0.polys) / double(ps.polys) : 0.0, dt0, dt_first,
                 dt_first > 0 ? dt0 / dt_first : 0.0, ps.bsp_cells_skipped,
                 ok0 ? "ok" : why0.c_str(), ok ? "ok" : why.c_str());
             std::fflush(stdout);
-            if (h0 != h) {
-                std::printf("**不一致で停止** %s: %016llx vs %016llx\n", key.c_str(), h0, h);
+            // **ハッシュ不一致で止めません**（`IMPL-phase5.md` §20.2）。
+            // NSI は切断を減らすので**三角形分割が変わります。**
+            // **バイトでは守れない種類の変更**なので、判定（位相）で見ます。
+            if (ok0 != ok) {
+                std::printf("**判定が変わった** %s: %s -> %s\n", key.c_str(),
+                            ok0 ? "ok" : why0.c_str(), ok ? "ok" : why.c_str());
                 return 2;
             }
             continue;

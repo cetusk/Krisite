@@ -23,6 +23,7 @@
 #include "krisite/mesh/topology.hpp"
 
 #include "corpus.hpp"
+#include "corpus_expect.hpp"
 #include "test_util.hpp"
 
 using namespace krisite::csg;
@@ -74,6 +75,7 @@ Run run_one(const TriMesh& a, const TriMesh& b, BoolOp op, bool nsi) {
 
 std::size_t total_skipped = 0;
 std::size_t cases_where_nsi_changed = 0;
+std::size_t cases_with_self_cut = 0;
 
 }  // namespace
 
@@ -103,6 +105,21 @@ int main() {
             if (off.polys != on.polys) changed = true;
         }
         total_skipped += skipped;
+        // **2 つの条件は同じ性質から来ています**（`IMPL-phase5.md` §21.5）。
+        //
+        //   局所 BSP が過剰分割する ⟸ 自分の平面が自分の三角形を切る
+        //   NSI が節約できる         ⟸ 同上
+        //
+        // **NSI が何かを変えたなら、その性質が必ず成り立っていなければなりません**
+        // （逆は成り立ちません。単一 source のセルが生じない配置があるため）。
+        // **乖離したら、どちらかの理解が誤っています。**
+        const bool self_cut =
+            kritest::planes_cut_own_triangles(a) || kritest::planes_cut_own_triangles(b);
+        if (self_cut) ++cases_with_self_cut;
+        KRI_CHECK_MSG(!changed || self_cut, std::string("ケース ") + c.id +
+                                                ": NSI で多角形数が変わったのに、"
+                                                "自分の平面が自分の三角形を切っていない"
+                                                "（切ってはいけないものを省いた可能性）");
         if (changed) ++cases_where_nsi_changed;
         std::printf("  ケース %-4s 省いたセル %-6zu %s %s\n", c.id, skipped,
                     changed ? "（多角形数が変わった）" : "", c.what);
@@ -114,7 +131,12 @@ int main() {
                   "NSI が 1 セルも省いていない（機構が空回り。ケース 26 が消えた？）");
     KRI_CHECK_MSG(cases_where_nsi_changed > 0,
                   "NSI で多角形数が変わったケースが 1 つも無い（検査が空回り）");
-    std::printf("\n  省いたセル 合計 %zu / 多角形数が変わったケース %zu\n", total_skipped,
-                cases_where_nsi_changed);
+    // **番人の強度を明示します**（`CLAUDE.md`「番人が何ケースに依存しているか」）。
+    KRI_CHECK_MSG(cases_where_nsi_changed >= 2,
+                  "NSI で多角形数が変わるケースが 2 件未満（番人が 1 ケース依存）");
+    std::printf(
+        "\n  省いたセル 合計 %zu / **多角形数が変わったケース %zu** / "
+        "自分の平面が自分を切るケース %zu\n",
+        total_skipped, cases_where_nsi_changed, cases_with_self_cut);
     return kritest::finish("csg/nsi");
 }
