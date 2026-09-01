@@ -125,6 +125,17 @@ struct BoolStats {
     std::size_t leaf_input_max = 0;
     /// 空でない葉の数（平均を出すための分母）
     std::size_t leaf_nonempty = 0;
+    /// **単一 source の葉**（`SPEC-phase5.md` の (c)）。
+    ///
+    /// 分割の判定は `(na > 0 && nb > 0)` なので、**片方しか居ない領域は
+    /// どれだけ三角形が入っていても割られません。** そこで局所 BSP が全走行すると
+    /// $O(P_\text{葉}^2)$ を払います。**NSI フラグ（`SPEC-phase3.md` §5.6）が
+    /// あれば省ける費用**なので、いくら払っているかを数えます。
+    std::size_t leaf_single_src = 0;
+    std::size_t leaf_single_src_input_max = 0;
+    std::size_t leaf_both_input_max = 0;
+    std::size_t bsp_cut_slots_single = 0;  ///< 単一 source の葉での切断候補
+    std::size_t bsp_cuts_used_single = 0;  ///< 同上、実際に切った枚数
 
     /// **レイキャストが検査した三角形の総数**（`SPEC-phase5.md` の CP1.5）。
     ///

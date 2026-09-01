@@ -134,6 +134,8 @@ struct PairStruct {
     std::size_t raycasts = 0, ray_tri_tests = 0;
     std::size_t leaf_nonempty = 0, leaf_input_total = 0, leaf_input_max = 0;
     std::size_t max_planes_per_cell = 0;
+    std::size_t leaf_single_src = 0, leaf_single_max = 0, leaf_both_max = 0;
+    std::size_t bsp_slots = 0, bsp_used = 0, bsp_slots_single = 0, bsp_used_single = 0;
     double ms_arrange = 0, ms_classify = 0, ms_stitch = 0;
     std::size_t unresolved = 0, edges_excess = 0, edges_deficient = 0;
     std::size_t max_edge_degree = 0;
@@ -149,6 +151,13 @@ struct PairStruct {
         leaf_input_total += b.leaf_input_total;
         leaf_input_max = std::max(leaf_input_max, b.leaf_input_max);
         max_planes_per_cell = std::max(max_planes_per_cell, b.max_planes_per_cell);
+        leaf_single_src += b.leaf_single_src;
+        leaf_single_max = std::max(leaf_single_max, b.leaf_single_src_input_max);
+        leaf_both_max = std::max(leaf_both_max, b.leaf_both_input_max);
+        bsp_slots += b.bsp_cut_slots;
+        bsp_used += b.bsp_cuts_used;
+        bsp_slots_single += b.bsp_cut_slots_single;
+        bsp_used_single += b.bsp_cuts_used_single;
         ms_arrange += b.ms_arrange;
         ms_classify += b.ms_classify;
         ms_stitch += b.ms_stitch;
@@ -162,7 +171,9 @@ struct PairStruct {
           << ' ' << leaf_nonempty << ' ' << leaf_input_total << ' ' << leaf_input_max << ' '
           << max_planes_per_cell << ' ' << (long long)ms_arrange << ' ' << (long long)ms_classify
           << ' ' << (long long)ms_stitch << ' ' << unresolved << ' ' << edges_excess << ' '
-          << edges_deficient << ' ' << max_edge_degree;
+          << edges_deficient << ' ' << max_edge_degree << ' ' << leaf_single_src << ' '
+          << leaf_single_max << ' ' << leaf_both_max << ' ' << bsp_slots << ' ' << bsp_used << ' '
+          << bsp_slots_single << ' ' << bsp_used_single;
     }
 };
 

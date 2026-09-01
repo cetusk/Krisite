@@ -128,10 +128,16 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.cache_bytes += b.cache_bytes;
     a.leaf_input_total += b.leaf_input_total;
     a.leaf_nonempty += b.leaf_nonempty;
+    a.leaf_single_src += b.leaf_single_src;
+    a.bsp_cut_slots_single += b.bsp_cut_slots_single;
+    a.bsp_cuts_used_single += b.bsp_cuts_used_single;
     a.ray_tri_tests += b.ray_tri_tests;
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
     a.leaf_input_max = std::max(a.leaf_input_max, b.leaf_input_max);
+    a.leaf_single_src_input_max =
+        std::max(a.leaf_single_src_input_max, b.leaf_single_src_input_max);
+    a.leaf_both_input_max = std::max(a.leaf_both_input_max, b.leaf_both_input_max);
 }
 
 }  // namespace detail
@@ -422,6 +428,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // 「存在しない」と答えてしまい、early-out が**面の上の点を「曲面なし」として
         // 分類します**（`IMPL-phase3.md` §7.1。実際に踏みました）。
         std::vector<std::size_t> count(n_src, 0);
+        bool single_src_cell = false;
         std::map<PlaneId, std::vector<std::pair<std::uint32_t, std::uint32_t>>> cell_tri_by_plane;
         for (std::size_t i = 0; i < n_src; ++i) {
             for (std::size_t j = 0; j < src_aabb[i].size(); ++j) {
@@ -444,12 +451,22 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // **EMBER §4.5.3 が最適化しているのはこの量**（部分問題の多角形数）で、
         // $P$ でも深度でもありません。ここで持たないと比較になりません。
         {
-            std::size_t in_leaf = 0;
-            for (std::size_t i = 0; i < n_src; ++i) in_leaf += count[i];
+            std::size_t in_leaf = 0, n_present = 0;
+            for (std::size_t i = 0; i < n_src; ++i) {
+                in_leaf += count[i];
+                if (count[i] > 0) ++n_present;
+            }
+            single_src_cell = (n_present == 1);
             if (in_leaf > 0) {
                 st.leaf_input_total += in_leaf;
                 ++st.leaf_nonempty;
                 st.leaf_input_max = std::max(st.leaf_input_max, in_leaf);
+                if (single_src_cell) {
+                    ++st.leaf_single_src;
+                    st.leaf_single_src_input_max = std::max(st.leaf_single_src_input_max, in_leaf);
+                } else {
+                    st.leaf_both_input_max = std::max(st.leaf_both_input_max, in_leaf);
+                }
             }
         }
 
@@ -518,6 +535,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             for (const auto& kv : cell_tri_by_plane) {
                 if (kv.first == sup) continue;  // 共平面は §5.4.1（全順序）の担当
                 ++st.bsp_cut_slots;
+                if (single_src_cell) ++st.bsp_cut_slots_single;
                 bool touch = false;
 #if defined(KRISITE_MUTATION_BSP_NEVER_CUT)
                 // 変異 16: **局所 BSP の切断条件を常に偽にする**（1 枚も切らない）。
@@ -534,6 +552,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 if (touch) {
                     cs.push_back(kv.first);
                     ++st.bsp_cuts_used;
+                    if (single_src_cell) ++st.bsp_cuts_used_single;
                 } else {
                     ++st.bsp_cuts_skipped;
                 }
