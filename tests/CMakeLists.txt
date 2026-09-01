@@ -75,6 +75,10 @@ krisite_add_test(cp3           csg/test_cp3.cpp)
 # 索引は厳密な絞り込みなので、出力はバイトで一致しなければならない。
 # **索引が実際に検査数を減らした回数も数え、0 なら落とす**（空回りの検査）
 krisite_add_test(ray_index     csg/test_ray_index.cpp)
+# **NSI の宣言が意味論を変えないこと**（SPEC-phase3 §5.6、SPEC-phase5 (c)）。
+# 三角形分割は変わるのでバイトでは守れない。位相で見る（体積は volume_gmp）。
+# **ケース 26 が唯一 NSI を発火させる**ので、空回りの番人を置いてある
+krisite_add_test(nsi           csg/test_nsi.cpp)
 # SPEC-phase2 §13 の CP5。**機構どうしの相互作用**（適応分割 × 分裂 /
 # 構成点の保持 × T 解決 / early-out × 分裂）。3 経路を踏んだ回数を数え、
 # 0 なら落とす。§9.4.2 の「分裂の有無で幾何が一致する」もここが常時見る

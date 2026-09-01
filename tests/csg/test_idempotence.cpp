@@ -21,6 +21,7 @@
 #include "krisite/csg/boolean.hpp"
 
 #include "corpus.hpp"
+#include "corpus_expect.hpp"
 #include "test_util.hpp"
 
 using namespace krisite::csg;
@@ -120,6 +121,9 @@ bool planes_belong_to_input(const BoolMesh& out, const TriMesh& src) {
     return true;
 }
 
+/// 過剰分割の性質で深度 0 の厳密一致を外したケースの数。**0 なら性質が空回りです。**
+std::size_t g_overcut_excluded = 0;
+
 void run(const kritest::Case& c) {
     const TriMesh a = c.make_a();
     const BoolMesh re = retriangulate(a);
@@ -144,11 +148,18 @@ void run(const kritest::Case& c) {
 
         // §10.2.2 冪等性
         bool ok_i = false, ok_u = false;
-        if (d == 0) {
+        // **保守的な全平面切りが正当に過剰分割する入力では、厳密一致を要求できません。**
+        // **識別子ではなく性質で判定します**（`corpus_expect.hpp`）。
+        // コーパスで真になるのはケース 26 だけで、**NSI が効く配置と同じ性質**です。
+        if (d == 0 && !kritest::planes_cut_own_triangles(a)) {
             ok_i = same_triangles(inter, re);
             ok_u = same_triangles(uni, re);
             KRI_CHECK_MSG(ok_i, tag + ": A∩A が retriangulate(A) と一致しない");
             KRI_CHECK_MSG(ok_u, tag + ": A∪A が retriangulate(A) と一致しない");
+        } else if (d == 0) {
+            ++g_overcut_excluded;
+            ok_i = ok_u = same_triangles(inter, uni);
+            KRI_CHECK_MSG(ok_i, tag + ": A∩A と A∪A が一致しない（過剰分割の入力）");
         } else {
             ok_i = ok_u = same_triangles(inter, uni);
             KRI_CHECK_MSG(ok_i, tag +
@@ -169,5 +180,10 @@ int main() {
     KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
     for (const kritest::Case& c : kritest::corpus()) run(c);
     std::printf("\n");
+    // **性質が空回りしていないこと。** 過剰分割の入力が 1 つも無ければ、
+    // この除外は「書いてあるだけ」になります（`CLAUDE.md`）。
+    KRI_CHECK_MSG(g_overcut_excluded > 0,
+                  "過剰分割の性質で外したケースが 0（ケース 26 が消えた？）");
+    std::printf("\n  深度 0 の厳密一致を性質で外したケース: %zu\n", g_overcut_excluded);
     return kritest::finish("csg/idempotence");
 }

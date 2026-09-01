@@ -266,22 +266,32 @@ void check_case(const kritest::Case& c) {
         // **両側を明示的に指定します。** 既定に依存させると、既定が変わったときに
         // 自分自身との比較になります（`CLAUDE.md`）。
         {
-            mpq_t sv[2][3];
+            mpq_t sv[3][3];
             for (auto& row : sv) {
                 for (auto& q : row) mpq_init(q);
             }
-            for (int bsp = 0; bsp < 2; ++bsp) {
+            // **3 通り**: 0 = 過剰分割 / 1 = 局所 BSP / 2 = 局所 BSP + NSI。
+            //
+            // **NSI は三角形分割を変えるので、バイトでは守れません**
+            // （`IMPL-phase5.md` §20）。**体積が残る唯一の不変量**です。
+            // 過剰分割は NSI をまったく使わないので、**最も独立な対照**になります。
+            for (int bsp = 0; bsp < 3; ++bsp) {
                 BoolOptions so = opt;
-                so.local_bsp = (bsp == 1);
+                so.local_bsp = (bsp >= 1);
                 so.split_contacts = true;
                 krisite::csg::ToMeshOptions tmo;
                 tmo.split_contacts = true;
                 int k = 0;
                 for (BoolOp bop : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
-                    const krisite::csg::SoupMesh sm = krisite::csg::to_mesh(
-                        krisite::csg::boolean(krisite::csg::from_mesh(A),
-                                              krisite::csg::from_mesh(B), bop, so),
-                        tmo);
+                    krisite::csg::PolySoup sa = krisite::csg::from_mesh(A);
+                    krisite::csg::PolySoup sb = krisite::csg::from_mesh(B);
+                    if (bsp == 2) {
+                        // **コーパスの入力は自己交差しません**（§9.0 の前提）。
+                        sa.nsi.assign(sa.sources.size(), 1);
+                        sb.nsi.assign(sb.sources.size(), 1);
+                    }
+                    const krisite::csg::SoupMesh sm =
+                        krisite::csg::to_mesh(krisite::csg::boolean(sa, sb, bop, so), tmo);
                     mesh_volume6(sv[bsp][k++], sm);
                 }
             }
@@ -290,6 +300,10 @@ void check_case(const kritest::Case& c) {
                 KRI_CHECK_MSG(mpq_equal(sv[0][k], sv[1][k]) != 0,
                               std::string("ケース ") + c.id + "（深度 " + std::to_string(d) +
                                   "）: **局所 BSP と過剰分割で体積が違う**（§5.4 / §10.1）");
+                KRI_CHECK_MSG(mpq_equal(sv[1][k], sv[2][k]) != 0,
+                              std::string("ケース ") + c.id + "（深度 " + std::to_string(d) +
+                                  "）: **NSI の宣言で体積が変わった**"
+                                  "（`SPEC-phase3.md` §5.6。切ってよい前提が破れている）");
             }
             // (b) 二項正解器と同じ体積か
             {

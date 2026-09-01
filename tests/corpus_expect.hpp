@@ -10,6 +10,7 @@
 #include <string>
 
 #include "krisite/csg/boolean.hpp"
+#include "krisite/csg/faces.hpp"
 
 #include "corpus.hpp"
 
@@ -51,6 +52,47 @@ enum class Exclusion {
 /// 条件を満たさない配置が来たら、そこで落ちます。
 ///
 /// **除外が広がりすぎていないかは件数の番人が見ます**（`test_cp25.cpp`）。
+/// **自分の三角形の平面が、自分の別の三角形を切るか**（`SPEC-phase5.md` (c)）。
+///
+/// 真なら**局所 BSP は保守的な全平面切りで正当に過剰分割します**
+/// （`SPEC-phase3.md` §5.4、EMBER Fig. 7 — 交差線分だけで切ると断片が凸でなくなる）。
+///
+/// したがって `SPEC-phase1.md` §10.2.2 の「深度 0 で `retriangulate(A)` と**厳密一致**」は
+/// **成り立ちません。欠陥ではなく、切り方の前提です。**
+///
+/// **凸な立体では偽になります**（支持平面は立体を横切らない）。
+/// コーパスで真になるのは**ケース 26 だけ**で、それは
+/// **NSI が節約できる配置そのもの**です（`IMPL-phase5.md` §20）。
+/// **同じ性質が「過剰分割が起きる」と「NSI が効く」の両方を説明します。**
+inline bool planes_cut_own_triangles(const krisite::mesh::TriMesh& m) {
+    krisite::csg::PlaneTable tb;
+    std::vector<krisite::csg::PlaneId> pid(m.triangles.size());
+    for (std::size_t i = 0; i < m.triangles.size(); ++i) {
+        const auto& t = m.triangles[i];
+        pid[i] = tb.intern(krisite::geom::plane_from_triangle(m.vertices[t[0]], m.vertices[t[1]],
+                                                              m.vertices[t[2]]))
+                     .id;
+    }
+    for (std::size_t i = 0; i < m.triangles.size(); ++i) {
+        const krisite::geom::PlaneD& p = tb.at(pid[i]);
+        for (std::size_t j = 0; j < m.triangles.size(); ++j) {
+            if (pid[j] == pid[i]) continue;
+            const auto& t = m.triangles[j];
+            int neg = 0, pos = 0;
+            for (int k = 0; k < 3; ++k) {
+                const int sd = krisite::geom::side(p, m.vertices[t[static_cast<std::size_t>(k)]]);
+                if (sd < 0) {
+                    ++neg;
+                } else if (sd > 0) {
+                    ++pos;
+                }
+            }
+            if (neg != 0 && pos != 0) return true;
+        }
+    }
+    return false;
+}
+
 inline Exclusion exclusion_from_topology(const krisite::mesh::TopologyReport& t) {
     if (t.empty) return Exclusion::None;
     if (t.edge_manifold && t.vertex_manifold) return Exclusion::None;

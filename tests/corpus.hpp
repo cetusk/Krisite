@@ -568,6 +568,87 @@ inline TriMesh tess_box(int lo_num, int hi_num, int den, int k) {
     return m;
 }
 
+/// **面をでこぼこにした立方体**（`SPEC-phase5.md` (c)）。
+///
+/// **細分しただけでは平面が 6 枚のままです。** 局所 BSP の切断は平面ごとなので、
+/// **三角形を増やしても切断は増えません。** 面の内部の格子点をその面の法線方向に
+/// ずらすと、**三角形ごとに別の平面**になり、切断が意味を持ちます。
+///
+/// ずらす量は箱の 1.4% 以下（$7/512$ 対 $14/16$）なので、自己交差しません。
+/// **比で書くので $b$ が変わっても格子点のまま**です。
+inline TriMesh bumpy_box(int lo_num, int hi_num, int den, int k) {
+    TriMesh m;
+    std::map<std::array<int, 3>, std::uint32_t> id;
+    const auto coord = [&](int i) { return lo_num + (hi_num - lo_num) * i / k; };
+    const auto vid = [&](int x, int y, int z) {
+        const std::array<int, 3> key{x, y, z};
+        const auto it = id.find(key);
+        if (it != id.end()) return it->second;
+        // **面の内部の格子点だけ**、その面の外向き法線方向にずらす
+        const int nb = (x == 0) + (x == k) + (y == 0) + (y == k) + (z == 0) + (z == k);
+        std::int32_t d[3] = {0, 0, 0};
+        if (nb == 1) {
+            const unsigned h =
+                static_cast<unsigned>(x * 73856093 ^ y * 19349663 ^ z * 83492791) % 7u + 1u;
+            const std::int32_t off = at(static_cast<int>(h), den * 32);
+            if (x == 0) {
+                d[0] = -off;
+            } else if (x == k) {
+                d[0] = off;
+            } else if (y == 0) {
+                d[1] = -off;
+            } else if (y == k) {
+                d[1] = off;
+            } else if (z == 0) {
+                d[2] = -off;
+            } else {
+                d[2] = off;
+            }
+        }
+        const std::uint32_t n = static_cast<std::uint32_t>(m.vertices.size());
+        m.vertices.push_back(IPoint{static_cast<std::int32_t>(at(coord(x), den) + d[0]),
+                                    static_cast<std::int32_t>(at(coord(y), den) + d[1]),
+                                    static_cast<std::int32_t>(at(coord(z), den) + d[2])});
+        id.emplace(key, n);
+        return n;
+    };
+    const int F[6][9] = {
+        {0, 0, 1, 1, 0, 0, 0, 1, 0}, {0, 0, 0, 0, 1, 0, 1, 0, 0}, {1, 0, 0, 0, 1, 0, 0, 0, 1},
+        {0, 0, 0, 0, 0, 1, 0, 1, 0}, {0, 1, 0, 0, 0, 1, 1, 0, 0}, {0, 0, 0, 1, 0, 0, 0, 0, 1},
+    };
+    for (const auto& f : F) {
+        for (int i = 0; i < k; ++i) {
+            for (int j = 0; j < k; ++j) {
+                const auto vat = [&](int a, int b) {
+                    return vid(f[0] * k + f[3] * a + f[6] * b, f[1] * k + f[4] * a + f[7] * b,
+                               f[2] * k + f[5] * a + f[8] * b);
+                };
+                const std::uint32_t p00 = vat(i, j), p10 = vat(i + 1, j), p11 = vat(i + 1, j + 1),
+                                    p01 = vat(i, j + 1);
+                m.triangles.push_back({p00, p10, p11});
+                m.triangles.push_back({p00, p11, p01});
+            }
+        }
+    }
+    return m;
+}
+
+/// ケース 26: **2 つの立体を離して置き、一部だけを重ねる**（`SPEC-phase5.md` (c)）。
+///
+/// **§9.0 (1) のサイズ規律の例外**（対の AABB は規律を満たしますが、
+/// **個々の立体は座標範囲の一部しか占めません**）。規律の目的は
+/// 「退化を偶然にしない」ことで、**配置の多様性を狭めることではありません。**
+///
+/// **狙いは単一 source のセルを作ること。** 実データでは 61% のセルがそうでしたが、
+/// **コーパスは 1 つも作れていませんでした**（`IMPL-phase5.md` §20.4）。
+/// NSI の最適化を CI で守るには、この配置が要ります。
+inline TriMesh case26_a() {
+    return bumpy_box(-15, -1, 16, 2);
+}
+inline TriMesh case26_b() {
+    return bumpy_box(-3, 11, 16, 2);
+}
+
 /// ケース 25: 細分された立方体の対（$k=2$ で 48 三角形。**最小の再現**）。
 inline TriMesh case25_a() {
     return tess_box(-12, 4, 16, 2);
@@ -838,6 +919,10 @@ inline const std::vector<Case>& corpus() {
         {"25", "面が 2x2 に細分された立方体（共線頂点）", cases::case25_a, cases::case25_b, true},
         {"25'", "25 を 4x4 に細分（粗さを変えても同じ立体）", cases::case25p_a, cases::case25p_b,
          true},
+        // **Phase 5 の (c)**。離して置き、一部だけ重ねる。**単一 source のセルを作る**
+        // 唯一のケースで、NSI の最適化（`SPEC-phase3.md` §5.6）を CI で守れます。
+        // **§9.0 (1) のサイズ規律の例外**（対の AABB は満たす）
+        {"26", "離して置き一部だけ重ねる（単一 source のセル）", cases::case26_a, cases::case26_b},
     };
     return k;
 }
