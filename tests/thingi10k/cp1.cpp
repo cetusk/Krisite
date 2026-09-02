@@ -25,6 +25,7 @@
 #include "krisite/par/thread_pool.hpp"
 
 #include "thingi10k/loader.hpp"
+#include "volume_fp.hpp"
 
 using namespace krisite;
 
@@ -136,6 +137,10 @@ struct PairStruct {
     std::size_t max_planes_per_cell = 0;
     std::size_t leaf_single_src = 0, leaf_single_max = 0, leaf_both_max = 0;
     std::size_t bsp_slots = 0, bsp_used = 0, bsp_slots_single = 0, bsp_used_single = 0;
+    std::size_t bsp_cells_skipped = 0;
+    /// **浮動小数点の体積恒等式の相対誤差**（`SPEC-phase5.md` §3.0 の篩）。
+    /// **検査ではありません。** GMP に回すものを絞るために記録します。
+    double vol_err = 0, diff_err = 0;
     double ms_arrange = 0, ms_classify = 0, ms_stitch = 0;
     std::size_t unresolved = 0, edges_excess = 0, edges_deficient = 0;
     std::size_t max_edge_degree = 0;
@@ -158,6 +163,7 @@ struct PairStruct {
         bsp_used += b.bsp_cuts_used;
         bsp_slots_single += b.bsp_cut_slots_single;
         bsp_used_single += b.bsp_cuts_used_single;
+        bsp_cells_skipped += b.bsp_cells_skipped_nsi;
         ms_arrange += b.ms_arrange;
         ms_classify += b.ms_classify;
         ms_stitch += b.ms_stitch;
@@ -173,15 +179,23 @@ struct PairStruct {
           << ' ' << (long long)ms_stitch << ' ' << unresolved << ' ' << edges_excess << ' '
           << edges_deficient << ' ' << max_edge_degree << ' ' << leaf_single_src << ' '
           << leaf_single_max << ' ' << leaf_both_max << ' ' << bsp_slots << ' ' << bsp_used << ' '
-          << bsp_slots_single << ' ' << bsp_used_single;
+          << bsp_slots_single << ' ' << bsp_used_single << ' ' << vol_err << ' ' << diff_err;
     }
 };
 
 /// §3.1 の検査。**解析的期待値は使えない**ので恒等式と位相で見ます。
 bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOptions& o,
                par::ThreadPool* pool, std::string* why, unsigned long long* hash_out = nullptr,
-               PairStruct* ps = nullptr) {
-    const csg::PolySoup A = csg::from_mesh(a), B = csg::from_mesh(b);
+               PairStruct* ps = nullptr, bool declare_nsi = false) {
+    csg::PolySoup A = csg::from_mesh(a), B = csg::from_mesh(b);
+    // **NSI は呼び出し側が宣言します**（`SPEC-phase3.md` §5.6、EMBER §4.5.1）。
+    // **検証しません。** CP1 の母集団はメタデータで「自己交差なし」と分類された
+    // モデルですが、**量子化後の性質は保証されません**（§1.0）。
+    // だからこそ**既定は偽**で、宣言があるときだけ省きます。
+    if (declare_nsi) {
+        A.nsi.assign(A.sources.size(), 1);
+        B.nsi.assign(B.sources.size(), 1);
+    }
     csg::ToMeshOptions tm;
     tm.split_contacts = true;
     tm.threads = pool->size();
@@ -203,6 +217,16 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     const csg::SoupMesh& mu = out3[0];
     const csg::SoupMesh& mi = out3[1];
     const csg::SoupMesh& md = out3[2];
+
+    if (ps != nullptr) {
+        // **浮動小数点の体積恒等式**（`SPEC-phase5.md` §3.0）。**篩であって検査ではありません。**
+        // 入力側は `signed_volume6` が厳密なので、丸めは出力側だけに乗ります。
+        const double va = kritest::volume6_fp(a), vb = kritest::volume6_fp(b);
+        const double vu = kritest::volume6_fp(mu), vi = kritest::volume6_fp(mi);
+        const double vd = kritest::volume6_fp(md);
+        ps->vol_err = kritest::identity_error(vu, vi, va, vb);
+        ps->diff_err = kritest::difference_error(vd, va, vi);
+    }
 
     for (const auto* pr : {&mu, &mi, &md}) {
         const mesh::TopologyReport t = mesh::check_topology(pr->triangles);
@@ -228,6 +252,10 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
             return false;
         }
     }
+    if (ps != nullptr && ps->vol_err > kritest::kIdentityTol) {
+        // **篩に引っかかりました。** 失敗ではありません — **GMP に回す印**です（§3.0）。
+        *why = "体積の篩（GMP へ）";
+    }
     if (hash_out != nullptr) {
         *hash_out = hash_mesh(mu) ^ (hash_mesh(mi) * 3) ^ (hash_mesh(md) * 7);
     }
@@ -247,6 +275,8 @@ int main(int argc, char** argv) {
     const bool verify_index = (argc > 5) && (std::atoi(argv[5]) != 0);
     // **済みの対をやり直すモード。** 既定は追記（再開）
     const bool redo = (argc > 6) && (std::atoi(argv[6]) != 0);
+    // **NSI の扱い**: 0 = 宣言しない（従来）/ 1 = 宣言する / 2 = 両方回してハッシュを比べる
+    const int nsi_mode = (argc > 7) ? std::atoi(argv[7]) : 0;
     std::size_t verified = 0;
     // **この対だけを回す**（空なら全件）。失敗の分類のように、
     // **少数の対だけ構造を採りたい**場面のためです（`SPEC-phase5.md` §1.5.4）。
@@ -372,7 +402,42 @@ int main(int argc, char** argv) {
         std::string why;
         unsigned long long h = 0;
         PairStruct ps;
-        const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps);
+        const bool ok =
+            check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps, nsi_mode != 0);
+        const double dt_first =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - tp).count();
+        // **NSI の宣言で出力が変わらないこと**（`SPEC-phase5.md` (c) の検証）。
+        //
+        // **新しい正解器は要りません。** 宣言しない側が従来の答えで、
+        // **一致すればその入力で NSI が成り立っていた証拠**、
+        // **不一致なら量子化がその模型の自己交差を作った**ことになります。
+        if (nsi_mode == 2) {
+            PairStruct ps0;
+            unsigned long long h0 = 0;
+            std::string why0;
+            const auto t0n = std::chrono::steady_clock::now();
+            const bool ok0 =
+                check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why0, &h0, &ps0, false);
+            const double dt0 =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0n).count();
+            std::printf(
+                "  NSI %s | バイト %s | P %zu -> %zu (%.2f 倍) | 秒 %.1f -> %.1f (%.2f 倍) "
+                "| 省いたセル %zu | 判定 %s -> %s\n",
+                key.c_str(), (h0 == h) ? "**一致**" : "**不一致**", ps0.polys, ps.polys,
+                ps.polys ? double(ps0.polys) / double(ps.polys) : 0.0, dt0, dt_first,
+                dt_first > 0 ? dt0 / dt_first : 0.0, ps.bsp_cells_skipped,
+                ok0 ? "ok" : why0.c_str(), ok ? "ok" : why.c_str());
+            std::fflush(stdout);
+            // **ハッシュ不一致で止めません**（`IMPL-phase5.md` §20.2）。
+            // NSI は切断を減らすので**三角形分割が変わります。**
+            // **バイトでは守れない種類の変更**なので、判定（位相）で見ます。
+            if (ok0 != ok) {
+                std::printf("**判定が変わった** %s: %s -> %s\n", key.c_str(),
+                            ok0 ? "ok" : why0.c_str(), ok ? "ok" : why.c_str());
+                return 2;
+            }
+            continue;
+        }
         // **索引の有無で出力が変わらないこと**（`SPEC-phase5.md` §6.3 の安全弁）。
         // 索引は厳密な絞り込みなので、**バイトで一致しなければ欠陥**です。
         if (ok && verify_index) {

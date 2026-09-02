@@ -75,6 +75,13 @@ krisite_add_test(cp3           csg/test_cp3.cpp)
 # 索引は厳密な絞り込みなので、出力はバイトで一致しなければならない。
 # **索引が実際に検査数を減らした回数も数え、0 なら落とす**（空回りの検査）
 krisite_add_test(ray_index     csg/test_ray_index.cpp)
+# **NSI の宣言が意味論を変えないこと**（SPEC-phase3 §5.6、SPEC-phase5 (c)）。
+# 三角形分割は変わるのでバイトでは守れない。位相で見る（体積は volume_gmp）。
+# **ケース 26 が唯一 NSI を発火させる**ので、空回りの番人を置いてある
+krisite_add_test(nsi           csg/test_nsi.cpp)
+# **浮動小数点の体積恒等式の校正**（SPEC-phase5 §3.0）。閾値を実測から決めるための
+# 分布を出し、丸めの床が上がっていないことを見る回帰の番人でもある
+krisite_add_test(fp_volume_calib csg/fp_volume_calib.cpp)
 # SPEC-phase2 §13 の CP5。**機構どうしの相互作用**（適応分割 × 分裂 /
 # 構成点の保持 × T 解決 / early-out × 分裂）。3 経路を踏んだ回数を数え、
 # 0 なら落とす。§9.4.2 の「分裂の有無で幾何が一致する」もここが常時見る
@@ -87,6 +94,19 @@ krisite_add_test(nary          csg/test_nary.cpp)
 krisite_add_test(convex        csg/test_convex.cpp)
 # **並列化**（SPEC-phase4 §7）。決定性が主検出器。
 krisite_add_test(parallel      csg/test_parallel.cpp)
+# **この検査は CPU を要求します**（`SPEC-phase4.md` §7.3）。
+#
+# 8 スレッドのプールが**実際に並列に走ったか**を統計で確かめる検査があり、
+# 走らなければ「共有の有無を見ていない」ので落とします。**空回りを許さない設計**です。
+#
+# **`ctest --parallel 4` で他のテストと同時に走ると、4 コアのランナーでは
+# プールのワーカーが起動する前に呼び出し元がキューをさらいます。**
+# 実際に Windows の CI で落ちました（`IMPL-phase5.md` §24）。
+#
+# **検査を緩めるのは誤りです** — 「並列に走らなかった」という報告自体は正しい。
+# **必要な CPU を予約するのが正しい対処**です。ctest はこの値を見て、
+# 他のテストと同時に走らせません。
+set_tests_properties(parallel PROPERTIES PROCESSORS 4)
 # SPEC-phase3 §3.1 / §2.1 の CP1。辺平面の構成（軸方向との外積）と、
 # 断片の相対内部の点。**両方の経路が使われることを固定する**（空回りの番人）
 krisite_add_test(interior      csg/test_interior.cpp)
@@ -191,6 +211,17 @@ if(KRISITE_BUILD_MUTANTS)
         target_compile_definitions(${name} PRIVATE ${define})
         add_test(NAME ${name} COMMAND ${name})
         set_tests_properties(${name} PROPERTIES TIMEOUT 3600 LABELS "${label}")
+        # **本体と同じ資源を予約します。**
+        #
+        # `parallel` の §7.3 / §7.1 は「8 スレッドで実際に並列に走ったか」に依存します。
+        # 本体にだけ付けて変異側に付け忘れると、**実行条件が揃いません。**
+        #
+        # **ただし、これは変異 23 の不安定さの対策ではありません。**
+        # 変異 23 の検出率は**実測で 55〜60%** で、`92a477a`（CI 緑）でも同じでした
+        # （`IMPL-phase5.md` §24.5）。**資源を与えても解決しません。**
+        if(test STREQUAL "parallel")
+            set_tests_properties(${name} PROPERTIES PROCESSORS 4)
+        endif()
         if(expect STREQUAL "FAIL")
             set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
         endif()

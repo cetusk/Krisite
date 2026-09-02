@@ -131,6 +131,7 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.leaf_single_src += b.leaf_single_src;
     a.bsp_cut_slots_single += b.bsp_cut_slots_single;
     a.bsp_cuts_used_single += b.bsp_cuts_used_single;
+    a.bsp_cells_skipped_nsi += b.bsp_cells_skipped_nsi;
     a.ray_tri_tests += b.ray_tri_tests;
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
@@ -162,6 +163,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // ---- 1. sources と指示関数の合成（§5.2）----------------------------------
     out.sources = X.sources;
     out.sources.insert(out.sources.end(), Y.sources.begin(), Y.sources.end());
+    // **NSI / NNC の宣言も連結します**（`SPEC-phase3.md` §5.6）。
+    // **長さが足りなければ偽で埋めます**（宣言が無い = 従来どおり）。
+    out.nsi = X.nsi;
+    out.nsi.insert(out.nsi.end(), Y.nsi.begin(), Y.nsi.end());
+    out.nnc = X.nnc;
+    out.nnc.insert(out.nnc.end(), Y.nnc.begin(), Y.nnc.end());
+    out.nsi.resize(out.sources.size(), 0);
+    out.nnc.resize(out.sources.size(), 0);
     const auto off = static_cast<std::uint32_t>(X.sources.size());
     const Compose how = (op == BoolOp::Union)          ? Compose::Union
                         : (op == BoolOp::Intersection) ? Compose::Intersection
@@ -342,6 +351,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **決定性のために、各葉は自分のスロットにだけ書きます**（§4.2）。
     // 結合は葉の順（`build_leaves` が返す正準な順序）で行うので、
     // **スレッド数に依らず出力はビット単位で同一**です。
+    // NSI で切断を省くときの空の切断集合（`SPEC-phase3.md` §5.6）
+    const std::vector<PlaneId> kNoCuts;
+
     std::vector<Fragment> frags;
     std::vector<octree::Cell> frag_cell;
     std::vector<std::uint32_t> frag_src, frag_tag;
@@ -429,6 +441,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // 分類します**（`IMPL-phase3.md` §7.1。実際に踏みました）。
         std::vector<std::size_t> count(n_src, 0);
         bool single_src_cell = false;
+        std::size_t single_src_index = 0;
         std::map<PlaneId, std::vector<std::pair<std::uint32_t, std::uint32_t>>> cell_tri_by_plane;
         for (std::size_t i = 0; i < n_src; ++i) {
             for (std::size_t j = 0; j < src_aabb[i].size(); ++j) {
@@ -454,7 +467,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             std::size_t in_leaf = 0, n_present = 0;
             for (std::size_t i = 0; i < n_src; ++i) {
                 in_leaf += count[i];
-                if (count[i] > 0) ++n_present;
+                if (count[i] > 0) {
+                    ++n_present;
+                    single_src_index = i;
+                }
             }
             single_src_cell = (n_present == 1);
             if (in_leaf > 0) {
@@ -574,8 +590,21 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
             // **局所 BSP**（§5.4）。`local_bsp` を切ると過剰分割に戻ります
             // （CP3 までの挙動 = §10.1 の正解器）。
+            //
+            // **NSI が宣言されていれば、単一 source のセルでは切りません**
+            // （`SPEC-phase3.md` §5.4.1、EMBER §4.5.1）。
+            //
+            // **根拠**: 定理 7.2 が要求するのは「断片の相対内部を曲面が横切らない」こと。
+            // このセルに居る曲面はその source のものだけで、**自己交差が無いなら
+            // 三角形どうしは交わりません。** 平面まるごとで切っているのは保守的な
+            // 近似（EMBER Fig. 7）なので、**交わらないと分かっていれば省けます。**
+            //
+            // **宣言が無ければ従来どおり切ります**（既定は偽。安全側）。
+            const bool skip_bsp =
+                single_src_cell && single_src_index < out.nsi.size() && out.nsi[single_src_index];
+            if (skip_bsp) ++st.bsp_cells_skipped_nsi;
             const std::vector<PlaneId>& cut_planes =
-                opt.local_bsp ? cuts_for(frag.support) : split_planes;
+                !opt.local_bsp ? split_planes : (skip_bsp ? kNoCuts : cuts_for(frag.support));
             // 変異「局所 BSP の交差線分を 1 本落とす」（`SPEC-phase3.md` §10.5）。
             //
             // **落とすと断片が相手の曲面をまたいだまま残ります。** 代表点 1 点で

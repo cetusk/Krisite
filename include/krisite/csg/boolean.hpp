@@ -136,6 +136,9 @@ struct BoolStats {
     std::size_t leaf_both_input_max = 0;
     std::size_t bsp_cut_slots_single = 0;  ///< 単一 source の葉での切断候補
     std::size_t bsp_cuts_used_single = 0;  ///< 同上、実際に切った枚数
+    /// **NSI の宣言で局所 BSP を省いたセル**（`SPEC-phase3.md` §5.6）。
+    /// **0 なら機構が空回りしています**（`CLAUDE.md`）。
+    std::size_t bsp_cells_skipped_nsi = 0;
 
     /// **レイキャストが検査した三角形の総数**（`SPEC-phase5.md` の CP1.5）。
     ///

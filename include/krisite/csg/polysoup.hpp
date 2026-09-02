@@ -141,6 +141,21 @@ struct PolySoup {
     std::vector<Poly> polys;
     /// **生成 0 の整数メッシュ。** 分類の台であり、連鎖しても増えるだけで丸められない
     std::vector<mesh::TriMesh> sources;
+    /// **NSI（自己交差なし）/ NNC（入れ子成分なし）**（`SPEC-phase3.md` §5.6、EMBER §4.5.1）。
+    ///
+    /// **`sources` と同じ長さ。呼び出し側が宣言します。既定は偽（従来どおり）。**
+    ///
+    /// **検証しません。** EMBER も検証していません — 「我々の手法の結果として得られる
+    /// メッシュは、これらの前提を満たす」。**検証は任意の別機能**にして、
+    /// 「検証費用が未知だから実装できない」という依存を切ってあります。
+    ///
+    /// **真のとき何が省けるか**: その source の三角形どうしは交わらないので、
+    /// **同じ source しか居ないセルでは局所 BSP の切断が不要**です
+    /// （実測: 局所 BSP の仕事の 81〜91% がそこにありました。`IMPL-phase5.md` §19）。
+    ///
+    /// **偽なら従来どおり切ります。** 安全側に倒れます。
+    std::vector<std::uint8_t> nsi;
+    std::vector<std::uint8_t> nnc;
     /// 指示関数（§5.2）。**表ではなく関数**
     Indicator indicator;
 
@@ -419,6 +434,8 @@ inline PolySoup from_mesh(const mesh::TriMesh& m, const FromMeshOptions& opt = {
         }
         s.polys.push_back(std::move(q));
     }
+    s.nsi.assign(s.sources.size(), 0);
+    s.nnc.assign(s.sources.size(), 0);
     return s;
 }
 
