@@ -343,6 +343,92 @@ void test_canonical_representative() {
 
 }  // namespace
 
+/// §7.5 の変異 23（出口の段のバリア）を**確定的に**検出させるための入力。
+///
+/// **変異 23 は「ID が完了順に配られる」ので、分裂頂点が 2 個以上あって、
+/// かつ扇が複数スレッドで動いたときにしか現れません。**
+///
+/// **コーパスではその機会が 1,008 実行中 72 件（7.1%）しかありませんでした。**
+/// そのため検出が確率的になり、**実測で 55〜60%** でした
+/// （`IMPL-phase5.md` §24.5 / §27）。CI では実質コイン投げです。
+///
+/// ここでは**辺で接する 2 箱の組を 16 個並べ**、分裂頂点を **62〜124 個**作ります。
+/// 機会が十分にあれば、完了順がスロット順と一致する確率は無視できます。
+///
+/// **コーパスには入れません。** コーパスに足すと全テストの費用が上がり、
+/// **無関係な検査が負荷で落ちます**（`IMPL-phase5.md` §24）。
+krisite::mesh::TriMesh contact_chain(int k) {
+    krisite::mesh::TriMesh m;
+    const int w = 32 / k;
+    for (int i = 0; i < k; ++i) {
+        const int x0 = -32 + i * w, xm = x0 + w / 2, x1 = x0 + w;
+        m = kritest::concat(
+            m, kritest::box(kritest::at(x0, 32), kritest::at(-1, 2), kritest::at(-1, 2),
+                            kritest::at(xm, 32), 0, kritest::at(1, 2)));
+        m = kritest::concat(
+            m, kritest::box(kritest::at(xm, 32), 0, kritest::at(-1, 2), kritest::at(x1, 32),
+                            kritest::at(1, 2), kritest::at(1, 2)));
+    }
+    return m;
+}
+
+/// §7.1 を、**出口の順序が実際に効く入力**で見ます。
+void test_exit_ordering() {
+    std::printf("  §7.5: 出口の段の順序（変異 23 の検出器）\n");
+    constexpr unsigned kThreads[] = {1, 2, 4, 8};
+    std::vector<std::unique_ptr<krisite::par::ThreadPool>> pools;
+    for (unsigned t : kThreads) {
+        pools.push_back(std::make_unique<krisite::par::ThreadPool>(t));
+        pools.back()->set_min_items(0);
+    }
+    const TriMesh a = contact_chain(16);
+    const TriMesh b = kritest::box(kritest::at(-1, 2), kritest::at(-1, 2), kritest::at(1, 4),
+                                   kritest::at(1, 2), kritest::at(1, 2), kritest::at(1, 2));
+
+    // **機会を数えます**（`CLAUDE.md`「発火した」と「効いた」を分ける）。
+    std::size_t chances = 0, max_split = 0, cmp = 0;
+    // **∩ と ＼ が分裂頂点を作ります**（∪ は 0）。実測で選びました
+    for (BoolOp op : {BoolOp::Intersection, BoolOp::Difference}) {
+        for (unsigned d = 0; d <= 3; ++d) {
+            std::string base;
+            for (std::size_t ti = 0; ti < std::size(kThreads); ++ti) {
+                ToMeshOptions tm;
+                tm.split_contacts = true;
+                tm.threads = kThreads[ti];
+                tm.pool = pools[ti].get();
+                ToMeshStats ts;
+                const BoolOptions o = all_on(d, d == 3, kThreads[ti], pools[ti].get());
+                const std::string sbytes =
+                    bytes(to_mesh(boolean(from_mesh(a), from_mesh(b), op, o), tm, &ts));
+                max_split = std::max(max_split, ts.split.split_vertices);
+                if (kThreads[ti] > 1 && ts.split.split_vertices >= 2 &&
+                    ts.split.fan_threads_used > 1) {
+                    ++chances;
+                }
+                const std::string tag = std::string("接触鎖 ") + op_name(op) + "（深度 " +
+                                        std::to_string(d) + "、スレッド " +
+                                        std::to_string(kThreads[ti]) + "）";
+                if (ti == 0) {
+                    base = sbytes;
+                } else {
+                    KRI_CHECK_MSG(sbytes == base, tag + ": **スレッド数で出力が変わった**（§7.1）");
+                    ++cmp;
+                }
+            }
+        }
+    }
+    // **式で持ちます**（実測で書くと、比較が減っても PASS になります）
+    KRI_CHECK_MSG(cmp == 2 * 4 * 3, "比較数が式と合わない" + kritest::pair_msg(2 * 4 * 3, cmp));
+    // ★ **機構が動いたことを数えます**（案 A）。
+    // **0 なら、この検査は変異 23 について何も言っていません。**
+    KRI_CHECK_MSG(chances >= 12,
+                  "**出口の順序が効く機会が足りない**（分裂頂点 2 以上 かつ 扇が複数スレッド）"
+                  "。変異 23 の検出が確率的に戻ります" +
+                      kritest::pair_msg(12, chances));
+    std::printf("    分裂頂点 最大 %zu / 順序が効く機会 %zu 件 / 比較 %zu 件\n", max_split, chances,
+                cmp);
+}
+
 int main() {
     std::printf("\n  並列化（SPEC-phase4 §7）\n");
     KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
@@ -350,6 +436,7 @@ int main() {
     test_determinism_all_corpora();
     test_canonical_representative();
     test_thread_local_cache();
+    test_exit_ordering();
     std::printf("\n");
     return kritest::finish("csg/parallel");
 }

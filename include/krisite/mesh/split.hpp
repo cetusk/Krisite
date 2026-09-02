@@ -64,6 +64,14 @@ struct SplitStats {
     std::size_t actual_delta_e = 0;
     long long actual_delta_chi = 0;
 
+    /// **扇の計算に実際に使われたスレッドの数**（`SPEC-phase4.md` §7.3 と同じ形）。
+    ///
+    /// **1 なら、並列の経路が踏まれていません。** ディスパッチの下限を外しても
+    /// 「他のスレッドが実際に取る」ことは保証されないので、**数えるしかありません。**
+    ///
+    /// **変異 23（出口のバリアを外す）は、ここが 2 以上でなければ検出されません。**
+    /// 検出が確率的だったのはこれが原因です（`IMPL-phase5.md` §24.5 / §27）。
+    std::size_t fan_threads_used = 0;
     std::size_t split_vertices = 0;    ///< 分裂した頂点の数
     std::size_t max_fans = 0;          ///< 扇の個数 k の最大
     std::size_t excess_edges = 0;      ///< 次数 3 以上の辺の本数
@@ -253,8 +261,11 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
     };
     const unsigned nthreads = (pool != nullptr) ? pool->size() : 1u;
     std::vector<Scratch> tl(nthreads);
+    // **どのスレッドが扇の計算を担ったか。** 競合を避けるためスロットに書きます
+    std::vector<char> fan_tid_seen(nthreads, 0);
 
     const auto compute = [&](std::size_t v, unsigned tid) {
+        fan_tid_seen[tid] = 1;
         const std::vector<std::size_t>& inc = at[v];
         if (inc.size() < 2) return;
 #if defined(KRISITE_MUTATION_NO_EDGE_SPLIT)
@@ -412,6 +423,7 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
         for (std::size_t v = 0; v < vertex_count; ++v) compute_fused(v, 0u);
     }
     st.ms_fan = ms_since(t_fan);
+    for (char c : fan_tid_seen) st.fan_threads_used += (c != 0) ? 1u : 0u;
     auto t_apply = clk::now();
 #else
     if (pool != nullptr) {
@@ -422,6 +434,7 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
         for (std::size_t v = 0; v < vertex_count; ++v) compute(v, 0u);
     }
     st.ms_fan = ms_since(t_fan);
+    for (char c : fan_tid_seen) st.fan_threads_used += (c != 0) ? 1u : 0u;
     auto t_apply = clk::now();
 
     // ---- ID の割り当て（**逐次**。頂点の順に配るので決定的）----
