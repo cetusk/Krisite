@@ -123,6 +123,13 @@ struct BoolStats {
     std::size_t leaf_input_total = 0;
     /// 同上の最大
     std::size_t leaf_input_max = 0;
+    /// **$\sum_\ell P_\ell^2$**（`PERF.md` #1′）。局所 BSP の費用が $O(P_\ell^2)$ なら、
+    /// **これが arrange の説明変数**になります。**最大や平均では代用できません。**
+    ///
+    /// 2 通り持ちます — **入力三角形**（葉に届いた source の三角形）と
+    /// **多角形**（葉に割り当てられた `polys`）。**どちらが効くかは測って決めます。**
+    std::size_t leaf_input_sq = 0;
+    std::size_t leaf_poly_sq = 0;
     /// 空でない葉の数（平均を出すための分母）
     std::size_t leaf_nonempty = 0;
     /// **単一 source の葉**（`SPEC-phase5.md` の (c)）。

@@ -54,9 +54,11 @@ int main(int argc, char** argv) {
 
     std::printf(
         "| 対 | 入力 n | 秒（最小） | 秒（中央） | 秒（最大） | P | 領域 | レイ |"
-        " 三角形検査 | ΣP_葉 | 葉あたり最大 | arrange | classify | stitch | 判定 | 最大/最小 |\n");
+        " 三角形検査 | ΣP_葉 | 葉あたり最大 | **Σ入力²** | **Σ多角形²** | arrange | classify | "
+        "stitch | 判定 | 最大/最小 |\n");
     std::printf(
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|\n");
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|"
+        "\n");
 
     for (int a = 2; a + 1 < argc; a += 2) {
         const auto qa =
@@ -104,6 +106,8 @@ int main(int argc, char** argv) {
                 acc.raycasts += bs.raycasts;
                 acc.ray_tri_tests += bs.ray_tri_tests;
                 acc.leaf_input_total += bs.leaf_input_total;
+                acc.leaf_input_sq += bs.leaf_input_sq;
+                acc.leaf_poly_sq += bs.leaf_poly_sq;
                 acc.leaf_input_max = std::max(acc.leaf_input_max, bs.leaf_input_max);
                 acc.ms_arrange += bs.ms_arrange;
                 acc.ms_classify += bs.ms_classify;
@@ -123,10 +127,10 @@ int main(int argc, char** argv) {
         std::sort(ts.begin(), ts.end());
         std::printf(
             "| `%s` | %zu | **%.3f** | %.3f | %.3f | %zu | %zu | %zu | %zu | %zu | %zu |"
-            " %.0f | %.0f | %.0f | %s | %.3f |\n",
+            " %zu | %zu | %.0f | %.0f | %.0f | %s | %.3f |\n",
             argv[a] + 22, n, ts.front(), ts[ts.size() / 2], ts.back(), P, best.regions,
             best.raycasts, best.ray_tri_tests, best.leaf_input_total, best.leaf_input_max,
-            best_ms_arr, best_ms_cls, best_ms_sti,
+            best.leaf_input_sq, best.leaf_poly_sq, best_ms_arr, best_ms_cls, best_ms_sti,
             (ts.back() / ts.front() <= 1.10) ? "**清浄**" : "**棄却（汚染）**",
             ts.back() / ts.front());
     }

@@ -127,6 +127,8 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.cache_entries += b.cache_entries;
     a.cache_bytes += b.cache_bytes;
     a.leaf_input_total += b.leaf_input_total;
+    a.leaf_input_sq += b.leaf_input_sq;
+    a.leaf_poly_sq += b.leaf_poly_sq;
     a.leaf_nonempty += b.leaf_nonempty;
     a.leaf_single_src += b.leaf_single_src;
     a.bsp_cut_slots_single += b.bsp_cut_slots_single;
@@ -421,6 +423,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         for (std::size_t i = 0; i < polys.size(); ++i) {
             if (octree::assign_to_cell(polys[i].aabb, cbox)) here.push_back(i);
         }
+        st.leaf_poly_sq += here.size() * here.size();
         if (here.empty()) {
             ++st.empty_cells;
             outl.empty_cell = true;
@@ -475,6 +478,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             single_src_cell = (n_present == 1);
             if (in_leaf > 0) {
                 st.leaf_input_total += in_leaf;
+                st.leaf_input_sq += in_leaf * in_leaf;
                 ++st.leaf_nonempty;
                 st.leaf_input_max = std::max(st.leaf_input_max, in_leaf);
                 if (single_src_cell) {
