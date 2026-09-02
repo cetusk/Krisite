@@ -218,6 +218,16 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     const csg::SoupMesh& mi = out3[1];
     const csg::SoupMesh& md = out3[2];
 
+    if (ps != nullptr) {
+        // **浮動小数点の体積恒等式**（`SPEC-phase5.md` §3.0）。**篩であって検査ではありません。**
+        // 入力側は `signed_volume6` が厳密なので、丸めは出力側だけに乗ります。
+        const double va = kritest::volume6_fp(a), vb = kritest::volume6_fp(b);
+        const double vu = kritest::volume6_fp(mu), vi = kritest::volume6_fp(mi);
+        const double vd = kritest::volume6_fp(md);
+        ps->vol_err = kritest::identity_error(vu, vi, va, vb);
+        ps->diff_err = kritest::difference_error(vd, va, vi);
+    }
+
     for (const auto* pr : {&mu, &mi, &md}) {
         const mesh::TopologyReport t = mesh::check_topology(pr->triangles);
         if (t.empty) continue;
@@ -241,15 +251,6 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
             *why = "χ が奇数";
             return false;
         }
-    }
-    if (ps != nullptr) {
-        // **浮動小数点の体積恒等式**（`SPEC-phase5.md` §3.0）。**篩であって検査ではありません。**
-        // 入力側は `signed_volume6` が厳密なので、丸めは出力側だけに乗ります。
-        const double va = kritest::volume6_fp(a), vb = kritest::volume6_fp(b);
-        const double vu = kritest::volume6_fp(mu), vi = kritest::volume6_fp(mi);
-        const double vd = kritest::volume6_fp(md);
-        ps->vol_err = kritest::identity_error(vu, vi, va, vb);
-        ps->diff_err = kritest::difference_error(vd, va, vi);
     }
     if (ps != nullptr && ps->vol_err > kritest::kIdentityTol) {
         // **篩に引っかかりました。** 失敗ではありません — **GMP に回す印**です（§3.0）。
