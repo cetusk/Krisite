@@ -649,13 +649,19 @@ inline TriMesh case26_b() {
     return bumpy_box(-3, 11, 16, 2);
 }
 
-/// ケース 26′: **26 の対照。** 規模も重なり方も変えます。
+/// ケース 26′: **26 の対照。** 立体の大きさと重なりの量を変えます。
 /// **番人が 1 ケース依存だと、そのケースが消えた瞬間に強度が 0 になります。**
+///
+/// **細分は $k=2$ に留めること。** でこぼこの箱は三角形ごとに別の平面を持つので、
+/// **NSI を切ったときの局所 BSP が $O(n_\text{葉}^2)$ で効きます。**
+/// $k=3$（108 三角形）にしたら `interior` が 3.6 → 33.8 秒、`soup` が 17 → 78 秒に
+/// なり、**Windows の CI で `parallel` の並列判定が負荷に負けました**
+/// （`IMPL-phase5.md` §24）。**コーパスの費用は CI の予算です。**
 inline TriMesh case26p_a() {
-    return bumpy_box(-11, 1, 16, 3);
+    return bumpy_box(-13, -1, 16, 2);
 }
 inline TriMesh case26p_b() {
-    return bumpy_box(-1, 11, 16, 3);
+    return bumpy_box(-5, 7, 16, 2);
 }
 
 /// ケース 25: 細分された立方体の対（$k=2$ で 48 三角形。**最小の再現**）。
@@ -934,7 +940,7 @@ inline const std::vector<Case>& corpus() {
         {"26", "離して置き一部だけ重ねる（単一 source のセル）", cases::case26_a, cases::case26_b},
         // **26 の対照（規模と重なり方を変える）。** 番人が 1 ケース依存だと、
         // そのケースが消えた瞬間に強度が 0 になります
-        {"26'", "26 の対照（細かく、重なりも違う）", cases::case26p_a, cases::case26p_b},
+        {"26'", "26 の対照（大きさと重なりが違う）", cases::case26p_a, cases::case26p_b},
     };
     return k;
 }
