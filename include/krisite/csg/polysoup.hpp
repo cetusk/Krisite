@@ -32,6 +32,7 @@
 #include "krisite/csg/fragment.hpp"
 #include "krisite/csg/plane_table.hpp"
 #include "krisite/geom/plane.hpp"
+#include "krisite/mesh/self_intersect.hpp"
 #include "krisite/mesh/topology.hpp"
 #include "krisite/mesh/tri_mesh.hpp"
 #include "krisite/octree/uniform_grid.hpp"
@@ -187,6 +188,18 @@ struct FromMeshOptions {
     /// **切り替えは実行時です**（§4.1.2）。コンパイル時定数だと同一プロセスで
     /// 比較できません。
     std::size_t max_merges = 0;
+
+    /// **自己交差を検査し、通ったときだけ NSI を宣言する**（`SPEC-phase3.md` §5.6）。
+    ///
+    /// **既定は偽 = 検査しない = 宣言しない。** 安全側です。`nsi` は
+    /// 「呼び出し側が宣言する印」のままで（EMBER と同じ）、これは
+    /// **宣言してよいかを機械的に確かめる補助**です。
+    ///
+    /// **検査は量子化されたメッシュに対して行われます。** 自己交差は
+    /// **変換に依存する**ので（同じ 1,000 模型で変換を変えると 59 件 → 70 件）、
+    /// **模型ごとにキャッシュできません。対ごとに走ります**（`IMPL-phase5.md` §33）。
+    /// 費用は実測 0.09 秒/模型。
+    bool verify_nsi = false;
 };
 
 /// 上限なし（凸分割を最後まで行う）。
@@ -436,6 +449,9 @@ inline PolySoup from_mesh(const mesh::TriMesh& m, const FromMeshOptions& opt = {
     }
     s.nsi.assign(s.sources.size(), 0);
     s.nnc.assign(s.sources.size(), 0);
+    // **検査が通ったときだけ宣言します。** 検査は健全側に倒れる（自己交差の疑いが
+    // あれば真を返す）ので、**通ったものは確実に非自己交差**です。
+    if (opt.verify_nsi) s.nsi[0] = mesh::is_self_intersecting(m) ? 0u : 1u;
     return s;
 }
 
