@@ -211,6 +211,17 @@ if(KRISITE_BUILD_MUTANTS)
         target_compile_definitions(${name} PRIVATE ${define})
         add_test(NAME ${name} COMMAND ${name})
         set_tests_properties(${name} PROPERTIES TIMEOUT 3600 LABELS "${label}")
+        # **本体と同じ資源を予約します。**
+        #
+        # `parallel` の §7.3 / §7.1 は「8 スレッドで実際に並列に走ったか」に依存します。
+        # 本体にだけ付けて変異側に付け忘れると、**実行条件が揃いません。**
+        #
+        # **ただし、これは変異 23 の不安定さの対策ではありません。**
+        # 変異 23 の検出率は**実測で 55〜60%** で、`92a477a`（CI 緑）でも同じでした
+        # （`IMPL-phase5.md` §24.5）。**資源を与えても解決しません。**
+        if(test STREQUAL "parallel")
+            set_tests_properties(${name} PROPERTIES PROCESSORS 4)
+        endif()
         if(expect STREQUAL "FAIL")
             set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
         endif()
