@@ -71,6 +71,10 @@ krisite_add_test(split_semantics csg/test_split_semantics.cpp)
 krisite_add_test(cp2           csg/test_cp2.cpp)
 krisite_add_test(cp25          csg/test_cp25.cpp)
 krisite_add_test(cp3           csg/test_cp3.cpp)
+# **レイキャストの 2 次元索引が出力を変えないこと**（SPEC-phase5 §6.3、CP1.5-2）。
+# 索引は厳密な絞り込みなので、出力はバイトで一致しなければならない。
+# **索引が実際に検査数を減らした回数も数え、0 なら落とす**（空回りの検査）
+krisite_add_test(ray_index     csg/test_ray_index.cpp)
 # SPEC-phase2 §13 の CP5。**機構どうしの相互作用**（適応分割 × 分裂 /
 # 構成点の保持 × T 解決 / early-out × 分裂）。3 経路を踏んだ回数を数え、
 # 0 なら落とす。§9.4.2 の「分裂の有無で幾何が一致する」もここが常時見る

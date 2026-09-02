@@ -125,6 +125,26 @@ struct BoolStats {
     std::size_t leaf_input_max = 0;
     /// 空でない葉の数（平均を出すための分母）
     std::size_t leaf_nonempty = 0;
+    /// **単一 source の葉**（`SPEC-phase5.md` の (c)）。
+    ///
+    /// 分割の判定は `(na > 0 && nb > 0)` なので、**片方しか居ない領域は
+    /// どれだけ三角形が入っていても割られません。** そこで局所 BSP が全走行すると
+    /// $O(P_\text{葉}^2)$ を払います。**NSI フラグ（`SPEC-phase3.md` §5.6）が
+    /// あれば省ける費用**なので、いくら払っているかを数えます。
+    std::size_t leaf_single_src = 0;
+    std::size_t leaf_single_src_input_max = 0;
+    std::size_t leaf_both_input_max = 0;
+    std::size_t bsp_cut_slots_single = 0;  ///< 単一 source の葉での切断候補
+    std::size_t bsp_cuts_used_single = 0;  ///< 同上、実際に切った枚数
+
+    /// **レイキャストが検査した三角形の総数**（`SPEC-phase5.md` の CP1.5）。
+    ///
+    /// `winding_split` は **source の全三角形を走査します**（枝刈りなし）。
+    /// したがって 1 レイあたりの検査数は source の三角形数そのものです。
+    ///
+    /// **これが $O(\text{シーン})$ の実体で、$P^{1.31}$ の出どころです。**
+    /// 加速構造を入れれば指数が下がるかどうかの判断材料になります。
+    std::size_t ray_tri_tests = 0;
 
     /// §5.4 の局所 BSP（CP4）。**切断候補のうち何枚を実際に切ったか。**
     ///
@@ -258,6 +278,18 @@ struct BoolOptions {
     unsigned depth = 0;  ///< 最大深度
     /// §2.3 の分割平面の絞り込み。**無効側が Phase 1 の挙動**（§0.1 の正解器）
     bool cull_planes = true;
+    /// **レイキャストの 2 次元索引**（`SPEC-phase5.md` §6.3、CP1.5 の 2）。
+    ///
+    /// レイは軸平行なので、投影面のセルで候補を絞れます。**厳密な絞り込み**で、
+    /// 落ちる三角形はありません（根拠は `ray_index.hpp` 冒頭の単調性）。
+    ///
+    /// **偽にすると完全に外れます。** 正しさの検査は真偽の両方で同じ出力を
+    /// 要求します（`CLAUDE.md`「機構を追加したら、それを外す経路も用意してください」）。
+    ///
+    /// **効くのはスープ経路（`soup_boolean.hpp`）だけです。**
+    /// **二項メッシュ経路（`boolean_op`）は意図的に素朴なまま**で、この旗を見ません
+    /// （正解器は被検体と別経路で書く。`IMPL-phase5.md` §12）。
+    bool ray_index = true;
     /// **適応分割**（§3.1）。偽なら常に最大深度まで分割する固定深度モード。
     /// **固定深度モードを消さないこと。** §9.1 の正解器です
     ///
@@ -830,6 +862,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                 KRISITE_CHECK(!point_on_boundary(other, rep),
                               "boolean_op: 相対内部の代表点が相手の境界上にある"
                               "（SPEC-phase3 §2.1 の前提が破れている）");
+                // **二項経路は意図的に索引を使いません**（`IMPL-phase5.md` §12）。
+                // **正解器なので素朴に保ちます。** 配線漏れではありません。
                 const bool inside = point_inside(other, rep);
                 ++st.raycasts;
                 it = region_inside.emplace(key, inside).first;

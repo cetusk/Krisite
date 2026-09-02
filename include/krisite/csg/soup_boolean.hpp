@@ -128,9 +128,16 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.cache_bytes += b.cache_bytes;
     a.leaf_input_total += b.leaf_input_total;
     a.leaf_nonempty += b.leaf_nonempty;
+    a.leaf_single_src += b.leaf_single_src;
+    a.bsp_cut_slots_single += b.bsp_cut_slots_single;
+    a.bsp_cuts_used_single += b.bsp_cuts_used_single;
+    a.ray_tri_tests += b.ray_tri_tests;
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
     a.leaf_input_max = std::max(a.leaf_input_max, b.leaf_input_max);
+    a.leaf_single_src_input_max =
+        std::max(a.leaf_single_src_input_max, b.leaf_single_src_input_max);
+    a.leaf_both_input_max = std::max(a.leaf_both_input_max, b.leaf_both_input_max);
 }
 
 }  // namespace detail
@@ -221,6 +228,49 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         std::sort(v.begin(), v.end());
         v.erase(std::unique(v.begin(), v.end()), v.end());
     }
+    // **レイキャストが使う支持平面を、source ごとに一度だけ作ります**
+    // （`SPEC-phase5.md` の CP1.5）。
+    //
+    // **intern した平面は使えません。** `PlaneTable::intern` は
+    // `orientation_differs` を返すので、**表の平面は符号が逆のことがあります。**
+    // 生の `plane_from_triangle` の結果でなければ `side` の符号が変わります。
+    //
+    // 実測: 1 レイあたり source の全三角形を走査するので、作り直すと
+    // **$n$ = 7,620 で 14.7 億回**の平面構成になります（`IMPL-phase5.md` §9）。
+    std::vector<std::vector<geom::PlaneD>> ray_planes(n_src);
+    for (std::size_t i = 0; i < n_src; ++i) {
+        const mesh::TriMesh& m = out.sources[i];
+        ray_planes[i].reserve(m.triangles.size());
+        for (const mesh::Tri& t : m.triangles) {
+            ray_planes[i].push_back(
+                geom::plane_from_triangle(m.vertices[t[0]], m.vertices[t[1]], m.vertices[t[2]]));
+        }
+    }
+
+    // **レイキャストの 2 次元索引**（`SPEC-phase5.md` §6.3、CP1.5 の 2）。
+    //
+    // レイは軸平行なので、判定点の (u, v) セルにある三角形だけを見れば足ります。
+    // **どの軸を使うかは基準平面ごとに変わる**ので 3 軸ぶん作ります。
+    // 構築は $O(n)$ で、レイあたり $O(n)$ の走査に対して無視できます。
+    std::vector<std::array<RayIndex, 3>> ray_index(n_src);
+    if (opt.ray_index) {
+        for (std::size_t i = 0; i < n_src; ++i) {
+            for (int ax = 0; ax < 3; ++ax) {
+                ray_index[i][static_cast<std::size_t>(ax)].build(out.sources[i],
+                                                                 static_cast<geom::Axis>(ax));
+            }
+        }
+    }
+    auto ray_support = [&](std::size_t i, std::size_t* tested) {
+        RaySupport sup;
+        sup.planes = ray_planes[i].data();
+        sup.tested = tested;
+        if (opt.ray_index) {
+            for (std::size_t ax = 0; ax < 3; ++ax) sup.index[ax] = &ray_index[i][ax];
+        }
+        return sup;
+    };
+
     std::vector<PlaneId> all_split;
     for (const std::vector<PlaneId>& v : planes_of_src) {
         all_split.insert(all_split.end(), v.begin(), v.end());
@@ -378,6 +428,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // 「存在しない」と答えてしまい、early-out が**面の上の点を「曲面なし」として
         // 分類します**（`IMPL-phase3.md` §7.1。実際に踏みました）。
         std::vector<std::size_t> count(n_src, 0);
+        bool single_src_cell = false;
         std::map<PlaneId, std::vector<std::pair<std::uint32_t, std::uint32_t>>> cell_tri_by_plane;
         for (std::size_t i = 0; i < n_src; ++i) {
             for (std::size_t j = 0; j < src_aabb[i].size(); ++j) {
@@ -400,12 +451,22 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // **EMBER §4.5.3 が最適化しているのはこの量**（部分問題の多角形数）で、
         // $P$ でも深度でもありません。ここで持たないと比較になりません。
         {
-            std::size_t in_leaf = 0;
-            for (std::size_t i = 0; i < n_src; ++i) in_leaf += count[i];
+            std::size_t in_leaf = 0, n_present = 0;
+            for (std::size_t i = 0; i < n_src; ++i) {
+                in_leaf += count[i];
+                if (count[i] > 0) ++n_present;
+            }
+            single_src_cell = (n_present == 1);
             if (in_leaf > 0) {
                 st.leaf_input_total += in_leaf;
                 ++st.leaf_nonempty;
                 st.leaf_input_max = std::max(st.leaf_input_max, in_leaf);
+                if (single_src_cell) {
+                    ++st.leaf_single_src;
+                    st.leaf_single_src_input_max = std::max(st.leaf_single_src_input_max, in_leaf);
+                } else {
+                    st.leaf_both_input_max = std::max(st.leaf_both_input_max, in_leaf);
+                }
             }
         }
 
@@ -420,7 +481,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 int wo = 0, cf = 0, cb = 0;
                 winding_split(out.sources[i], geom::to_homogeneous(corner),
                               out.table.at(all_split.empty() ? PlaneId{0} : all_split.front()), &wo,
-                              &cf, &cb);
+                              &cf, &cb, ray_support(i, &st.ray_tri_tests));
                 KRISITE_CHECK(cf == 0 && cb == 0,
                               "early-out: セルの隅が source の曲面に載っている"
                               "（曲面が無いはずのセル）");
@@ -474,6 +535,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             for (const auto& kv : cell_tri_by_plane) {
                 if (kv.first == sup) continue;  // 共平面は §5.4.1（全順序）の担当
                 ++st.bsp_cut_slots;
+                if (single_src_cell) ++st.bsp_cut_slots_single;
                 bool touch = false;
 #if defined(KRISITE_MUTATION_BSP_NEVER_CUT)
                 // 変異 16: **局所 BSP の切断条件を常に偽にする**（1 枚も切らない）。
@@ -490,6 +552,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 if (touch) {
                     cs.push_back(kv.first);
                     ++st.bsp_cuts_used;
+                    if (single_src_cell) ++st.bsp_cuts_used_single;
                 } else {
                     ++st.bsp_cuts_skipped;
                 }
@@ -750,7 +813,6 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     struct Wnd {
         int w_other, c_front, c_back;
     };
-    using WCache = std::map<std::pair<std::uint32_t, std::vector<std::int8_t>>, Wnd>;
 
     // **順序非依存の検査**（§14 の CP3 の判定）。分類が可変な共有状態に依存していれば、
     // 逆順にすると結果が変わります。依存していなければ幾何の多重集合は同じです。
@@ -762,10 +824,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **分類も並列です**（`SPEC-phase4.md` §2）。領域は互いに独立で、
     // source メッシュへの読み取り専用アクセスしかありません。
     //
-    // **メモ化（`wcache` / `PointCache`）はスレッド局所に持ちます**（§1.1）。
+    // **メモ化（`PointCache`）はスレッド局所に持ちます**（§1.1）。
     // 命中率のために共有した瞬間に競合が入ります。**出力は 1 ビットも変わりません**
     // （キャッシュの有無で結果が変わらないことは Phase 2 で確かめてあります）。
-    std::vector<WCache> tl_wcache(nthreads);
     std::vector<PointCache> tl_cache2(nthreads);
     std::vector<BoolStats> tl_stats2(nthreads);
     // **領域ごとのスロット。** 結合は `region_order` の順で行うので、
@@ -789,10 +850,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         BoolStats& st = tl_stats2[tid];
 #endif
 #if defined(KRISITE_MUTATION_SHARE_CACHE)
-        WCache& wcache = tl_wcache[0];
         PointCache* const cache = opt.cache_points ? &tl_cache2[0] : nullptr;
 #else
-        WCache& wcache = tl_wcache[tid];
         PointCache* const cache = opt.cache_points ? &tl_cache2[tid] : nullptr;
 #endif
         const auto& kv = *kvp;
@@ -821,8 +880,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 w_back[i2] = frag_forced[pick][i2];
                 continue;
             }
-#if defined(KRISITE_EXPERIMENT_NO_WCACHE)
-            // **実験: 巻き数のメモ化をやめる**（`SPEC-phase5.md` の CP1.5）。
+            // **巻き数のメモ化は撤去しました**（`SPEC-phase5.md` の CP1.5）。
             //
             // **キーは「代表点が source の全平面のどちら側か」の符号ベクトル**でした。
             // これは点をシーン全体で同定するのに等しいので、**異なる領域はほぼ必ず
@@ -834,31 +892,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             //   時間  領域ごとに全平面へ side() = 1.2 × 10^10 回
             //
             // **節約ゼロでシーン規模の費用を両方払う構造**でした。
+            // 撤去でピークが 8,242 → 1,438 MB。**出力はバイト一致、時間は不変。**
             Wnd v{};
-            winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back);
+            winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
+                          ray_support(i2, &st.ray_tri_tests));
             ++st.raycasts;
             ++st.regions;
             w_front[i2] = v.w_other + v.c_front;
             w_back[i2] = v.w_other + v.c_back;
-            (void)wcache;
-#else
-            std::vector<std::int8_t> sig(planes_of_src[i2].size());
-            for (std::size_t k = 0; k < planes_of_src[i2].size(); ++k) {
-                sig[k] =
-                    static_cast<std::int8_t>(geom::side(out.table.at(planes_of_src[i2][k]), rep));
-            }
-            const auto key = std::make_pair(static_cast<std::uint32_t>(i2), std::move(sig));
-            auto it = wcache.find(key);
-            if (it == wcache.end()) {
-                Wnd v{};
-                winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back);
-                ++st.raycasts;
-                ++st.regions;
-                it = wcache.emplace(key, v).first;
-            }
-            w_front[i2] = it->second.w_other + it->second.c_front;
-            w_back[i2] = it->second.w_other + it->second.c_back;
-#endif
         }
 
         const bool in_front = out.indicator.eval(w_front);

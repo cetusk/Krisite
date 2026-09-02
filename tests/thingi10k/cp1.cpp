@@ -9,10 +9,12 @@
 // **選択はメタデータ、分類は量子化後**（§1.0）。集合は `fetch.py` が決めたものを
 // そのまま使い、ここでは選び直しません。
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -88,23 +90,119 @@ Prepared prepare(const krithingi::RawMesh& raw, std::uint64_t seed) {
 }
 
 struct Counts {
-    std::size_t pairs = 0, accepted = 0, failed = 0;
+    std::size_t pairs = 0, accepted = 0, failed = 0, halted = 0;
     std::size_t reject[6] = {0, 0, 0, 0, 0, 0};
     std::size_t dropped_total = 0, merged_total = 0;
     std::size_t models_with_dropped = 0;
 };
 
+/// 出力のバイト単位のハッシュ。**同一版の中の比較に使います**（`CLAUDE.md`）。
+///
+/// 索引（`ray_index`）は厳密な絞り込みなので、**有無で 1 ビットも変わってはいけません。**
+unsigned long long hash_mesh(const csg::SoupMesh& m) {
+    unsigned long long h = 1469598103934665603ull;
+    const auto mix = [&h](unsigned long long v) {
+        h ^= v;
+        h *= 1099511628211ull;
+    };
+    mix(m.vertices.size());
+    mix(m.triangles.size());
+    for (const geom::HPointD& v : m.vertices) {
+        for (std::size_t l = 0; l < geom::limbs::kHomoXyz; ++l) {
+            mix(v.x[l]);
+            mix(v.y[l]);
+            mix(v.z[l]);
+        }
+        for (std::size_t l = 0; l < geom::limbs::kHomoW; ++l) mix(v.w[l]);
+    }
+    for (const mesh::Tri& t : m.triangles) {
+        mix(t[0]);
+        mix(t[1]);
+        mix(t[2]);
+    }
+    return h;
+}
+
+/// **対ごとの構造**（`SPEC-phase5.md` §1.5.0）。
+///
+/// **測定は、要求されなければ実装されません。** CP1 は対ごとの構造を 1 つも
+/// 記録しておらず、**失敗と時間の切り分けが事後にできませんでした。**
+///
+/// **3 演算ぶんを合算します**（最大の項目は最大を取る）。1 対で 1 行にするためです。
+struct PairStruct {
+    std::size_t polys = 0, fragments = 0, regions = 0;
+    std::size_t raycasts = 0, ray_tri_tests = 0;
+    std::size_t leaf_nonempty = 0, leaf_input_total = 0, leaf_input_max = 0;
+    std::size_t max_planes_per_cell = 0;
+    std::size_t leaf_single_src = 0, leaf_single_max = 0, leaf_both_max = 0;
+    std::size_t bsp_slots = 0, bsp_used = 0, bsp_slots_single = 0, bsp_used_single = 0;
+    double ms_arrange = 0, ms_classify = 0, ms_stitch = 0;
+    std::size_t unresolved = 0, edges_excess = 0, edges_deficient = 0;
+    std::size_t max_edge_degree = 0;
+
+    void add(const csg::BoolStats& b, const csg::ToMeshStats& t, const mesh::TopologyReport& r,
+             std::size_t np) {
+        polys += np;
+        fragments += b.fragments;
+        regions += b.regions;
+        raycasts += b.raycasts;
+        ray_tri_tests += b.ray_tri_tests;
+        leaf_nonempty += b.leaf_nonempty;
+        leaf_input_total += b.leaf_input_total;
+        leaf_input_max = std::max(leaf_input_max, b.leaf_input_max);
+        max_planes_per_cell = std::max(max_planes_per_cell, b.max_planes_per_cell);
+        leaf_single_src += b.leaf_single_src;
+        leaf_single_max = std::max(leaf_single_max, b.leaf_single_src_input_max);
+        leaf_both_max = std::max(leaf_both_max, b.leaf_both_input_max);
+        bsp_slots += b.bsp_cut_slots;
+        bsp_used += b.bsp_cuts_used;
+        bsp_slots_single += b.bsp_cut_slots_single;
+        bsp_used_single += b.bsp_cuts_used_single;
+        ms_arrange += b.ms_arrange;
+        ms_classify += b.ms_classify;
+        ms_stitch += b.ms_stitch;
+        unresolved += t.split.unresolved;
+        edges_excess += r.edges_excess;
+        edges_deficient += r.edges_deficient;
+        max_edge_degree = std::max(max_edge_degree, r.max_edge_degree);
+    }
+    void print(std::ostream& o) const {
+        o << polys << ' ' << fragments << ' ' << regions << ' ' << raycasts << ' ' << ray_tri_tests
+          << ' ' << leaf_nonempty << ' ' << leaf_input_total << ' ' << leaf_input_max << ' '
+          << max_planes_per_cell << ' ' << (long long)ms_arrange << ' ' << (long long)ms_classify
+          << ' ' << (long long)ms_stitch << ' ' << unresolved << ' ' << edges_excess << ' '
+          << edges_deficient << ' ' << max_edge_degree << ' ' << leaf_single_src << ' '
+          << leaf_single_max << ' ' << leaf_both_max << ' ' << bsp_slots << ' ' << bsp_used << ' '
+          << bsp_slots_single << ' ' << bsp_used_single;
+    }
+};
+
 /// §3.1 の検査。**解析的期待値は使えない**ので恒等式と位相で見ます。
 bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOptions& o,
-               par::ThreadPool* pool, std::string* why) {
+               par::ThreadPool* pool, std::string* why, unsigned long long* hash_out = nullptr,
+               PairStruct* ps = nullptr) {
     const csg::PolySoup A = csg::from_mesh(a), B = csg::from_mesh(b);
     csg::ToMeshOptions tm;
     tm.split_contacts = true;
     tm.threads = pool->size();
     tm.pool = pool;
-    const csg::SoupMesh mu = csg::to_mesh(csg::boolean(A, B, csg::BoolOp::Union, o), tm);
-    const csg::SoupMesh mi = csg::to_mesh(csg::boolean(A, B, csg::BoolOp::Intersection, o), tm);
-    const csg::SoupMesh md = csg::to_mesh(csg::boolean(A, B, csg::BoolOp::Difference, o), tm);
+    // **対ごとの構造を採ります**（`SPEC-phase5.md` §1.5.0）。3 演算ぶんを合算。
+    csg::SoupMesh out3[3];
+    int k3 = 0;
+    for (csg::BoolOp op :
+         {csg::BoolOp::Union, csg::BoolOp::Intersection, csg::BoolOp::Difference}) {
+        csg::BoolStats bs;
+        csg::ToMeshStats ts;
+        const csg::PolySoup soup = csg::boolean(A, B, op, o, &bs);
+        out3[k3] = csg::to_mesh(soup, tm, &ts);
+        if (ps != nullptr) {
+            ps->add(bs, ts, mesh::check_topology(out3[k3].triangles), soup.polys.size());
+        }
+        ++k3;
+    }
+    const csg::SoupMesh& mu = out3[0];
+    const csg::SoupMesh& mi = out3[1];
+    const csg::SoupMesh& md = out3[2];
 
     for (const auto* pr : {&mu, &mi, &md}) {
         const mesh::TopologyReport t = mesh::check_topology(pr->triangles);
@@ -130,6 +228,9 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
             return false;
         }
     }
+    if (hash_out != nullptr) {
+        *hash_out = hash_mesh(mu) ^ (hash_mesh(mi) * 3) ^ (hash_mesh(md) * 7);
+    }
     // **体積の恒等式**（§3.1）。|A∪B| + |A∩B| = |A| + |B| を出力側の 6 倍体積で見る
     return true;
 }
@@ -142,6 +243,30 @@ int main(int argc, char** argv) {
     const std::size_t limit = (argc > 2) ? std::strtoul(argv[2], nullptr, 10) : 0;
     const unsigned depth = (argc > 3) ? static_cast<unsigned>(std::atoi(argv[3])) : 6;
     const unsigned nthreads = (argc > 4) ? static_cast<unsigned>(std::atoi(argv[4])) : 16;
+    // **索引の ON/OFF でハッシュが一致するかを対ごとに確かめるモード**（CP1.5D）。
+    const bool verify_index = (argc > 5) && (std::atoi(argv[5]) != 0);
+    // **済みの対をやり直すモード。** 既定は追記（再開）
+    const bool redo = (argc > 6) && (std::atoi(argv[6]) != 0);
+    std::size_t verified = 0;
+    // **この対だけを回す**（空なら全件）。失敗の分類のように、
+    // **少数の対だけ構造を採りたい**場面のためです（`SPEC-phase5.md` §1.5.4）。
+    std::vector<std::string> only;
+    {
+        std::ifstream f("data/thingi10k/cp1_only.txt");
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty()) only.push_back(line.substr(0, line.find(' ')));
+        }
+    }
+    // 資源上限で落ちた対（1 行 1 対）。**手で足すのではなく、監視スクリプトが足します**
+    std::vector<std::string> skip;
+    {
+        std::ifstream f("data/thingi10k/cp1_skip.txt");
+        std::string line;
+        while (std::getline(f, line)) {
+            if (!line.empty()) skip.push_back(line.substr(0, line.find(' ')));
+        }
+    }
 
     std::vector<std::string> ids;
     {
@@ -205,10 +330,14 @@ int main(int argc, char** argv) {
 
     // **結果は 1 対ごとに追記します。** 途中で止まっても、
     // どこまで通ったかが残り、再開できます（§3.3 の追跡に要る）
-    const std::string done_path = "data/thingi10k/cp1_results.txt";
+    // **やり直しモードは別のファイルに書きます。** 追記すると再開の記録が濁ります
+    // **やり直しは b ごとに別ファイル**。混ぜると意味が変わります
+    const std::string done_path =
+        redo ? ("data/thingi10k/cp1_struct_b" + std::to_string(KRISITE_COORD_BITS) + ".txt")
+             : "data/thingi10k/cp1_results.txt";
     std::vector<std::string> already;
     {
-        std::ifstream f(done_path);
+        std::ifstream f("data/thingi10k/cp1_results.txt");
         std::string line;
         while (std::getline(f, line)) {
             if (!line.empty()) already.push_back(line.substr(0, line.find(' ')));
@@ -224,11 +353,46 @@ int main(int argc, char** argv) {
     for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
         const std::size_t i = order[k], j = order[k + 1];
         const std::string key = ids[i] + "x" + ids[j];
-        if (seen(key)) continue;
+        if (!only.empty() && std::find(only.begin(), only.end(), key) == only.end()) continue;
+        if (!redo && seen(key)) continue;
+        // **資源上限で落ちた対を飛ばします**（`SPEC-phase5.md` §1 の「停止」）。
+        // **落ちた対を記録しないと、再開のたびに同じ対で落ち続けます。**
+        if (std::find(skip.begin(), skip.end(), key) != skip.end()) {
+            ++c.halted;
+            std::printf("  停止済みとして飛ばす %s\n", key.c_str());
+            continue;
+        }
         ++c.pairs;
+        // **開始を先に出します。** OOM で殺されると完了行が出ないので、
+        // **どの対で落ちたかが分からなくなります**（実際に分からなくなりました）。
+        std::printf("  → 開始 %s（入力 %zu+%zu）\n", key.c_str(), prep[i].mesh.triangles.size(),
+                    prep[j].mesh.triangles.size());
+        std::fflush(stdout);
         const auto tp = std::chrono::steady_clock::now();
         std::string why;
-        const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why);
+        unsigned long long h = 0;
+        PairStruct ps;
+        const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps);
+        // **索引の有無で出力が変わらないこと**（`SPEC-phase5.md` §6.3 の安全弁）。
+        // 索引は厳密な絞り込みなので、**バイトで一致しなければ欠陥**です。
+        if (ok && verify_index) {
+            csg::BoolOptions o2 = o;
+            o2.ray_index = !o.ray_index;
+            unsigned long long h2 = 0;
+            std::string why2;
+            const bool ok2 = check_one(prep[i].mesh, prep[j].mesh, o2, &pool, &why2, &h2);
+            if (!ok2 || h2 != h) {
+                ++c.failed;
+                why = "索引の有無で出力が変わった";
+                std::printf("**失敗** %s: %s（%016llx vs %016llx）\n", key.c_str(), why.c_str(), h,
+                            h2);
+                out << key << " FAIL " << prep[i].mesh.triangles.size() << ' '
+                    << prep[j].mesh.triangles.size() << " 0 " << why << '\n';
+                out.flush();
+                continue;
+            }
+            ++verified;
+        }
         const double dt =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - tp).count();
         if (ok) {
@@ -238,7 +402,12 @@ int main(int argc, char** argv) {
             std::printf("**失敗** %s: %s\n", key.c_str(), why.c_str());
         }
         out << key << ' ' << (ok ? "ok" : "FAIL") << ' ' << prep[i].mesh.triangles.size() << ' '
-            << prep[j].mesh.triangles.size() << ' ' << dt << ' ' << why << '\n';
+            << prep[j].mesh.triangles.size() << ' ' << dt << ' ';
+        std::array<char, 24> hb{};
+        std::snprintf(hb.data(), hb.size(), "%016llx", h);
+        out << hb.data() << ' ';
+        ps.print(out);
+        out << ' ' << why << '\n';
         out.flush();
         const double s =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -246,6 +415,10 @@ int main(int argc, char** argv) {
                     prep[i].mesh.triangles.size(), prep[j].mesh.triangles.size(), dt, s);
     }
     const double s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    std::printf("\n対 %zu / 成功 %zu / **失敗 %zu** / %.1f s\n", c.pairs, c.accepted, c.failed, s);
+    std::printf("\n対 %zu / 成功 %zu / **失敗 %zu** / **停止 %zu** / %.1f s\n", c.pairs, c.accepted,
+                c.failed, c.halted, s);
+    if (verify_index) {
+        std::printf("**索引の有無でハッシュ一致: %zu 対**\n", verified);
+    }
     return c.failed == 0 ? 0 : 1;
 }
