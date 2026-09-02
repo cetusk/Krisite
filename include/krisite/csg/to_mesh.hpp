@@ -37,6 +37,15 @@ namespace krisite::csg {
 struct SoupMesh {
     std::vector<geom::HPointD> vertices;
     std::vector<mesh::Tri> triangles;
+    /// **三角形ごとの由来 source**（`SPEC-phase3.md` §4.3 の由来タグ）。
+    ///
+    /// `triangles` と同じ長さ。**接触の分裂は三角形の順序と個数を変えない**ので
+    /// （`split_contacts` は `out = tris` から始めて置き換えるだけ）、
+    /// 分裂の後もそのまま対応します。
+    ///
+    /// **次数 4 の辺で「4 枚がどの source から来たか」を数えるのに要ります** —
+    /// 自己接触（A/A・B/B）か 2 立体の接触（A–B）かは、これでしか分かりません。
+    std::vector<int> tri_src;
     bool empty() const noexcept { return triangles.empty(); }
 };
 
@@ -201,10 +210,10 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
             fan_triangulate(tp, poly_tris[pi], &t);
         }
     });
-    std::vector<int> tri_src;
     for (std::size_t pi = 0; pi < s.polys.size(); ++pi) {
         for (const mesh::Tri& t : poly_tris[pi]) out.triangles.push_back(t);
-        tri_src.insert(tri_src.end(), poly_tris[pi].size(), static_cast<int>(s.polys[pi].src));
+        out.tri_src.insert(out.tri_src.end(), poly_tris[pi].size(),
+                           static_cast<int>(s.polys[pi].src));
     }
     for (const TJunctionStats& t : tl_t) detail::merge_tjunction_stats(st.t, t);
 
