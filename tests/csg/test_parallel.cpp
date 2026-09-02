@@ -387,6 +387,17 @@ void test_exit_ordering() {
 
     // **機会を数えます**（`CLAUDE.md`「発火した」と「効いた」を分ける）。
     std::size_t chances = 0, max_split = 0, cmp = 0;
+    // **番人自身がスケジューラに依存します。**
+    //
+    // > `fan_threads_used > 1` は「**複数のワーカーが実際に扇の仕事を取った**」ことで、
+    // > **取るかどうかは走行時の競合次第**です。機械が空いていれば 1 本が全部さらい、
+    // > 混んでいれば散ります。**単独実行で 23〜24、`ctest -j4` の競合下で 1** まで振れました。
+    //
+    // **回数を増やして解きます。** 足りなければもう一巡します。
+    // **「一度も散らない」なら本物の後退**（機構が壊れている）なので、そこでは落ちます。
+    // **通常は 1 巡で足ります**（24 ≫ 12）ので、実行時間はほぼ変わりません。
+    int rounds = 0;
+    for (; rounds < 3 && chances < 12; ++rounds)
     // **∩ と ＼ が分裂頂点を作ります**（∪ は 0）。実測で選びました
     for (BoolOp op : {BoolOp::Intersection, BoolOp::Difference}) {
         for (unsigned d = 0; d <= 3; ++d) {
@@ -417,16 +428,19 @@ void test_exit_ordering() {
             }
         }
     }
-    // **式で持ちます**（実測で書くと、比較が減っても PASS になります）
-    KRI_CHECK_MSG(cmp == 2 * 4 * 3, "比較数が式と合わない" + kritest::pair_msg(2 * 4 * 3, cmp));
+    // **式で持ちます**（実測で書くと、比較が減っても PASS になります）。
+    // **巡回数も式に入れます** — 入れないと、もう一巡した瞬間に空回りします
+    KRI_CHECK_MSG(cmp == static_cast<std::size_t>(rounds) * 2 * 4 * 3,
+                  "比較数が式と合わない" +
+                      kritest::pair_msg(static_cast<std::size_t>(rounds) * 2 * 4 * 3, cmp));
     // ★ **機構が動いたことを数えます**（案 A）。
     // **0 なら、この検査は変異 23 について何も言っていません。**
     KRI_CHECK_MSG(chances >= 12,
                   "**出口の順序が効く機会が足りない**（分裂頂点 2 以上 かつ 扇が複数スレッド）"
                   "。変異 23 の検出が確率的に戻ります" +
                       kritest::pair_msg(12, chances));
-    std::printf("    分裂頂点 最大 %zu / 順序が効く機会 %zu 件 / 比較 %zu 件\n", max_split, chances,
-                cmp);
+    std::printf("    分裂頂点 最大 %zu / 順序が効く機会 %zu 件 / 比較 %zu 件 / **%d 巡**\n",
+                max_split, chances, cmp, rounds);
 }
 
 int main() {
