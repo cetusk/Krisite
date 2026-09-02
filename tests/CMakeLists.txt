@@ -94,6 +94,19 @@ krisite_add_test(nary          csg/test_nary.cpp)
 krisite_add_test(convex        csg/test_convex.cpp)
 # **並列化**（SPEC-phase4 §7）。決定性が主検出器。
 krisite_add_test(parallel      csg/test_parallel.cpp)
+# **この検査は CPU を要求します**（`SPEC-phase4.md` §7.3）。
+#
+# 8 スレッドのプールが**実際に並列に走ったか**を統計で確かめる検査があり、
+# 走らなければ「共有の有無を見ていない」ので落とします。**空回りを許さない設計**です。
+#
+# **`ctest --parallel 4` で他のテストと同時に走ると、4 コアのランナーでは
+# プールのワーカーが起動する前に呼び出し元がキューをさらいます。**
+# 実際に Windows の CI で落ちました（`IMPL-phase5.md` §24）。
+#
+# **検査を緩めるのは誤りです** — 「並列に走らなかった」という報告自体は正しい。
+# **必要な CPU を予約するのが正しい対処**です。ctest はこの値を見て、
+# 他のテストと同時に走らせません。
+set_tests_properties(parallel PROPERTIES PROCESSORS 4)
 # SPEC-phase3 §3.1 / §2.1 の CP1。辺平面の構成（軸方向との外積）と、
 # 断片の相対内部の点。**両方の経路が使われることを固定する**（空回りの番人）
 krisite_add_test(interior      csg/test_interior.cpp)
