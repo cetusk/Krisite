@@ -138,6 +138,8 @@ std::vector<std::array<int, 3>> pick_cells(unsigned d, int L) {
 struct Run {
     double ms_arrange = 0, ms_classify = 0, ms_stitch = 0;
     std::size_t poly_sq = 0, input_sq = 0, leaves = 0, polys = 0;
+    /// **局所 BSP の切断数。** 時間ではなく**仕事の量**で実データと比べるため
+    std::size_t bsp_slots = 0, bsp_used = 0, single = 0;
 };
 
 Run measure(const Config& c, unsigned threads, par::ThreadPool* pool, int reps) {
@@ -169,6 +171,9 @@ Run measure(const Config& c, unsigned threads, par::ThreadPool* pool, int reps) 
         best.poly_sq = bs.leaf_poly_sq;
         best.input_sq = bs.leaf_input_sq;
         best.leaves = bs.leaf_nonempty;
+        best.bsp_slots = bs.bsp_cut_slots;
+        best.bsp_used = bs.bsp_cuts_used;
+        best.single = bs.leaf_single_src;
         best.polys = out.polys.size();
     }
     return best;
@@ -179,6 +184,7 @@ Run measure(const Config& c, unsigned threads, par::ThreadPool* pool, int reps) 
 int main(int argc, char** argv) {
     const int reps = (argc > 1) ? std::atoi(argv[1]) : 3;
     const unsigned threads = (argc > 2) ? static_cast<unsigned>(std::atoi(argv[2])) : 1;
+    const char* only = (argc > 3) ? argv[3] : nullptr;  // つまみの絞り込み（"深" など）
     // **設定を出力に書きます**（`IMPL-phase5.md` §29 の再発防止）。
     // 書かないと、あとで「どの構成で測ったか」が分かりません
     std::printf("=== 段別費用係数の合成ベンチ（PERF.md §1.1）===\n");
@@ -210,13 +216,25 @@ int main(int argc, char** argv) {
         {"偏", 2, 16, 24, 88, 1},    // 最大/平均 = 3.14
         {"偏", 2, 16, 16, 112, 1},   // 最大/平均 = 5.09
         {"偏", 2, 16, 8, 88, 2},     // 2 つ大きい（最大/平均 = 4.89）
+        // つまみ 2 の続き: **実データの葉数まで上げる**（Σ は同じ 9,437,184）。
+        //
+        // > **`ThreadPool::kDefaultMinItems = 64`。** 葉が 64 未満だと arrange は
+        // > **逐次に落ちます。** 深度 2 では葉が足りず、16 スレッドでも
+        // > **並列経路を一度も踏みませんでした。** 錨は葉が数千あります。
+        //
+        // **完了条件（錨の再現）はこの段で判定します。**
+        {"深", 3, 256, 8, 0, 0},
+        {"深", 4, 1024, 4, 0, 0},
+        {"深", 4, 4096, 2, 0, 0},
     };
 
     std::printf("| つまみ | 葉 L | t | 大 t₂×n | 空でない葉 | **最大/平均** | 多角形 |"
-                " **Σ P_ℓ²** | arrange ms | classify ms | stitch ms |"
+                " **Σ P_ℓ²** | **BSP 枠** | **BSP 使用** | arrange ms | classify ms | stitch ms |"
                 " **c_arrange (ns/単位)** | c_classify | c_stitch |\n");
     std::printf("|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     for (const Config& c : cfgs) {
+        // **つまみを絞れるようにします。** 足した段だけを回すため
+        if (only != nullptr && std::string(c.knob) != only) continue;
         const Run r = measure(c, threads, &pool, reps);
         // **偏りを数字で出します。** 「偏らせた」と言うだけでは列が独立か分かりません
         const double mean = (c.t2 > 0)
@@ -226,11 +244,11 @@ int main(int argc, char** argv) {
         char big[32] = "-";
         if (c.t2 > 0) std::snprintf(big, sizeof(big), "%d×%d", c.t2, c.n_big);
         const double u = r.poly_sq ? 1e6 / double(r.poly_sq) : 0.0;  // ms → ns/単位
-        std::printf("| %s | %d | %d | %s | %zu | %.2f | %zu | **%zu** | %.2f | %.2f | %.2f |"
-                    " **%.3f** | %.4f | %.4f |\n",
-                    c.knob, c.L, c.t, big, r.leaves, skew, r.polys, r.poly_sq, r.ms_arrange,
-                    r.ms_classify, r.ms_stitch, r.ms_arrange * u, r.ms_classify * u,
-                    r.ms_stitch * u);
+        std::printf("| %s | %d | %d | %s | %zu | %.2f | %zu | **%zu** | %zu | %zu |"
+                    " %.2f | %.2f | %.2f | **%.3f** | %.4f | %.4f |\n",
+                    c.knob, c.L, c.t, big, r.leaves, skew, r.polys, r.poly_sq, r.bsp_slots,
+                    r.bsp_used, r.ms_arrange, r.ms_classify, r.ms_stitch, r.ms_arrange * u,
+                    r.ms_classify * u, r.ms_stitch * u);
         std::fflush(stdout);
     }
     return 0;
