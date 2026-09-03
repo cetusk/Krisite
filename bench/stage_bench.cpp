@@ -140,6 +140,9 @@ struct Run {
     std::size_t poly_sq = 0, input_sq = 0, leaves = 0, polys = 0;
     /// **局所 BSP の切断数。** 時間ではなく**仕事の量**で実データと比べるため
     std::size_t bsp_slots = 0, bsp_used = 0, single = 0;
+    /// **無次元群**（`PERF.md` §1.8）。実データと揃っているかを見ます
+    std::size_t frag_edges = 0, frag_edges_max = 0, leaf_planes = 0, leaf_in = 0, frags = 0;
+    std::size_t frag_n = 0;
 };
 
 Run measure(const Config& c, unsigned threads, par::ThreadPool* pool, int reps) {
@@ -174,6 +177,12 @@ Run measure(const Config& c, unsigned threads, par::ThreadPool* pool, int reps) 
         best.bsp_slots = bs.bsp_cut_slots;
         best.bsp_used = bs.bsp_cuts_used;
         best.single = bs.leaf_single_src;
+        best.frag_edges = bs.frag_edges_total;
+        best.frag_edges_max = bs.frag_edges_max;
+        best.leaf_planes = bs.leaf_planes_total;
+        best.leaf_in = bs.leaf_input_total;
+        best.frags = bs.fragments;
+        best.frag_n = bs.frag_edges_count;
         best.polys = out.polys.size();
     }
     return best;
@@ -229,9 +238,10 @@ int main(int argc, char** argv) {
     };
 
     std::printf("| つまみ | 葉 L | t | 大 t₂×n | 空でない葉 | **最大/平均** | 多角形 |"
-                " **Σ P_ℓ²** | **BSP 枠** | **BSP 使用** | arrange ms | classify ms | stitch ms |"
-                " **c_arrange (ns/単位)** | c_classify | c_stitch |\n");
-    std::printf("|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+                " **Σ P_ℓ²** | **BSP 枠** | **BSP 使用** | arrange ms |"
+                " **辺/多角形** | **最大辺** | **平面/多角形** | **枠/ΣP²** |"
+                " **c_arrange (ns/単位)** |\n");
+    std::printf("|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     for (const Config& c : cfgs) {
         // **つまみを絞れるようにします。** 足した段だけを回すため
         if (only != nullptr && std::string(c.knob) != only) continue;
@@ -244,11 +254,13 @@ int main(int argc, char** argv) {
         char big[32] = "-";
         if (c.t2 > 0) std::snprintf(big, sizeof(big), "%d×%d", c.t2, c.n_big);
         const double u = r.poly_sq ? 1e6 / double(r.poly_sq) : 0.0;  // ms → ns/単位
-        std::printf("| %s | %d | %d | %s | %zu | %.2f | %zu | **%zu** | %zu | %zu |"
-                    " %.2f | %.2f | %.2f | **%.3f** | %.4f | %.4f |\n",
+        std::printf("| %s | %d | %d | %s | %zu | %.2f | %zu | **%zu** | %zu | %zu | %.2f |"
+                    " **%.2f** | **%zu** | **%.2f** | **%.4f** | **%.3f** |\n",
                     c.knob, c.L, c.t, big, r.leaves, skew, r.polys, r.poly_sq, r.bsp_slots,
-                    r.bsp_used, r.ms_arrange, r.ms_classify, r.ms_stitch, r.ms_arrange * u,
-                    r.ms_classify * u, r.ms_stitch * u);
+                    r.bsp_used, r.ms_arrange,
+                    r.frag_n ? double(r.frag_edges) / double(r.frag_n) : 0.0, r.frag_edges_max,
+                    r.leaf_in ? double(r.leaf_planes) / double(r.leaf_in) : 0.0,
+                    r.poly_sq ? double(r.bsp_slots) / double(r.poly_sq) : 0.0, r.ms_arrange * u);
         std::fflush(stdout);
     }
     return 0;
