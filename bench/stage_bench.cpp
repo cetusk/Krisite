@@ -67,7 +67,9 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 /// 深度 `d` のセルの一辺。
-std::int64_t cell_size(unsigned d) noexcept { return std::int64_t{1} << (kCoordBits - d); }
+std::int64_t cell_size(unsigned d) noexcept {
+    return std::int64_t{1} << (kCoordBits - d);
+}
 
 /// `(lo..hi)` の軸平行立方体を `m` に足す（**閉じているので合併しても PWN**）。
 void add_box(mesh::TriMesh& m, std::int64_t lox, std::int64_t loy, std::int64_t loz,
@@ -101,8 +103,8 @@ void add_cluster(mesh::TriMesh& m, unsigned d, int ci, int cj, int ck, int t, bo
     const std::int64_t z0 = std::int64_t{kCoordMin} + std::int64_t{ck} * cs;
     // **セルの内側 1/2 に収めます。** 端に寄せると隣のセルに漏れます
     const std::int64_t span = cs / 2;
-    const std::int64_t pitch = span / t;          // 立方体 1 個ぶんの間隔
-    const std::int64_t side = (pitch * 3) / 4;    // 立方体の一辺（間に隙間を残す）
+    const std::int64_t pitch = span / t;        // 立方体 1 個ぶんの間隔
+    const std::int64_t side = (pitch * 3) / 4;  // 立方体の一辺（間に隙間を残す）
     const std::int64_t bx = x0 + cs / 4;
     const std::int64_t by = y0 + cs / 4;
     const std::int64_t bz = z0 + cs / 4;
@@ -220,11 +222,11 @@ int main(int argc, char** argv) {
         {"葉", 2, 64, 16, 0, 0},
         // つまみ 3: 偏りを振る（葉数 16 と Σ を厳密に固定）。**中央の 19%**
         //   $t_2^2 n + t^2 (16-n) = 16384$ を満たす整数解を並べています
-        {"偏", 2, 16, 32, 0, 0},     // 一様。最大/平均 = 1.00
-        {"偏", 2, 16, 28, 68, 1},    // 最大/平均 = 2.23
-        {"偏", 2, 16, 24, 88, 1},    // 最大/平均 = 3.14
-        {"偏", 2, 16, 16, 112, 1},   // 最大/平均 = 5.09
-        {"偏", 2, 16, 8, 88, 2},     // 2 つ大きい（最大/平均 = 4.89）
+        {"偏", 2, 16, 32, 0, 0},    // 一様。最大/平均 = 1.00
+        {"偏", 2, 16, 28, 68, 1},   // 最大/平均 = 2.23
+        {"偏", 2, 16, 24, 88, 1},   // 最大/平均 = 3.14
+        {"偏", 2, 16, 16, 112, 1},  // 最大/平均 = 5.09
+        {"偏", 2, 16, 8, 88, 2},    // 2 つ大きい（最大/平均 = 4.89）
         // つまみ 2 の続き: **実データの葉数まで上げる**（Σ は同じ 9,437,184）。
         //
         // > **`ThreadPool::kDefaultMinItems = 64`。** 葉が 64 未満だと arrange は
@@ -237,30 +239,30 @@ int main(int argc, char** argv) {
         {"深", 4, 4096, 2, 0, 0},
     };
 
-    std::printf("| つまみ | 葉 L | t | 大 t₂×n | 空でない葉 | **最大/平均** | 多角形 |"
-                " **Σ P_ℓ²** | **BSP 枠** | **BSP 使用** | arrange ms |"
-                " **辺/多角形** | **最大辺** | **平面/多角形** | **枠/ΣP²** |"
-                " **c_arrange (ns/単位)** |\n");
+    std::printf(
+        "| つまみ | 葉 L | t | 大 t₂×n | 空でない葉 | **最大/平均** | 多角形 |"
+        " **Σ P_ℓ²** | **BSP 枠** | **BSP 使用** | arrange ms |"
+        " **辺/多角形** | **最大辺** | **平面/多角形** | **枠/ΣP²** |"
+        " **c_arrange (ns/単位)** |\n");
     std::printf("|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     for (const Config& c : cfgs) {
         // **つまみを絞れるようにします。** 足した段だけを回すため
         if (only != nullptr && std::string(c.knob) != only) continue;
         const Run r = measure(c, threads, &pool, reps);
         // **偏りを数字で出します。** 「偏らせた」と言うだけでは列が独立か分かりません
-        const double mean = (c.t2 > 0)
-                                ? double(c.t2 * c.n_big + c.t * (c.L - c.n_big)) / double(c.L)
-                                : double(c.t);
+        const double mean =
+            (c.t2 > 0) ? double(c.t2 * c.n_big + c.t * (c.L - c.n_big)) / double(c.L) : double(c.t);
         const double skew = (c.t2 > 0 ? double(std::max(c.t2, c.t)) : double(c.t)) / mean;
         char big[32] = "-";
         if (c.t2 > 0) std::snprintf(big, sizeof(big), "%d×%d", c.t2, c.n_big);
         const double u = r.poly_sq ? 1e6 / double(r.poly_sq) : 0.0;  // ms → ns/単位
-        std::printf("| %s | %d | %d | %s | %zu | %.2f | %zu | **%zu** | %zu | %zu | %.2f |"
-                    " **%.2f** | **%zu** | **%.2f** | **%.4f** | **%.3f** |\n",
-                    c.knob, c.L, c.t, big, r.leaves, skew, r.polys, r.poly_sq, r.bsp_slots,
-                    r.bsp_used, r.ms_arrange,
-                    r.frag_n ? double(r.frag_edges) / double(r.frag_n) : 0.0, r.frag_edges_max,
-                    r.leaf_in ? double(r.leaf_planes) / double(r.leaf_in) : 0.0,
-                    r.poly_sq ? double(r.bsp_slots) / double(r.poly_sq) : 0.0, r.ms_arrange * u);
+        std::printf(
+            "| %s | %d | %d | %s | %zu | %.2f | %zu | **%zu** | %zu | %zu | %.2f |"
+            " **%.2f** | **%zu** | **%.2f** | **%.4f** | **%.3f** |\n",
+            c.knob, c.L, c.t, big, r.leaves, skew, r.polys, r.poly_sq, r.bsp_slots, r.bsp_used,
+            r.ms_arrange, r.frag_n ? double(r.frag_edges) / double(r.frag_n) : 0.0,
+            r.frag_edges_max, r.leaf_in ? double(r.leaf_planes) / double(r.leaf_in) : 0.0,
+            r.poly_sq ? double(r.bsp_slots) / double(r.poly_sq) : 0.0, r.ms_arrange * u);
         std::fflush(stdout);
     }
     return 0;

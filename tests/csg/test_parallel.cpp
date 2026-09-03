@@ -398,36 +398,37 @@ void test_exit_ordering() {
     // **通常は 1 巡で足ります**（24 ≫ 12）ので、実行時間はほぼ変わりません。
     int rounds = 0;
     for (; rounds < 3 && chances < 12; ++rounds)
-    // **∩ と ＼ が分裂頂点を作ります**（∪ は 0）。実測で選びました
-    for (BoolOp op : {BoolOp::Intersection, BoolOp::Difference}) {
-        for (unsigned d = 0; d <= 3; ++d) {
-            std::string base;
-            for (std::size_t ti = 0; ti < std::size(kThreads); ++ti) {
-                ToMeshOptions tm;
-                tm.split_contacts = true;
-                tm.threads = kThreads[ti];
-                tm.pool = pools[ti].get();
-                ToMeshStats ts;
-                const BoolOptions o = all_on(d, d == 3, kThreads[ti], pools[ti].get());
-                const std::string sbytes =
-                    bytes(to_mesh(boolean(from_mesh(a), from_mesh(b), op, o), tm, &ts));
-                max_split = std::max(max_split, ts.split.split_vertices);
-                if (kThreads[ti] > 1 && ts.split.split_vertices >= 2 &&
-                    ts.split.fan_threads_used > 1) {
-                    ++chances;
-                }
-                const std::string tag = std::string("接触鎖 ") + op_name(op) + "（深度 " +
-                                        std::to_string(d) + "、スレッド " +
-                                        std::to_string(kThreads[ti]) + "）";
-                if (ti == 0) {
-                    base = sbytes;
-                } else {
-                    KRI_CHECK_MSG(sbytes == base, tag + ": **スレッド数で出力が変わった**（§7.1）");
-                    ++cmp;
+        // **∩ と ＼ が分裂頂点を作ります**（∪ は 0）。実測で選びました
+        for (BoolOp op : {BoolOp::Intersection, BoolOp::Difference}) {
+            for (unsigned d = 0; d <= 3; ++d) {
+                std::string base;
+                for (std::size_t ti = 0; ti < std::size(kThreads); ++ti) {
+                    ToMeshOptions tm;
+                    tm.split_contacts = true;
+                    tm.threads = kThreads[ti];
+                    tm.pool = pools[ti].get();
+                    ToMeshStats ts;
+                    const BoolOptions o = all_on(d, d == 3, kThreads[ti], pools[ti].get());
+                    const std::string sbytes =
+                        bytes(to_mesh(boolean(from_mesh(a), from_mesh(b), op, o), tm, &ts));
+                    max_split = std::max(max_split, ts.split.split_vertices);
+                    if (kThreads[ti] > 1 && ts.split.split_vertices >= 2 &&
+                        ts.split.fan_threads_used > 1) {
+                        ++chances;
+                    }
+                    const std::string tag = std::string("接触鎖 ") + op_name(op) + "（深度 " +
+                                            std::to_string(d) + "、スレッド " +
+                                            std::to_string(kThreads[ti]) + "）";
+                    if (ti == 0) {
+                        base = sbytes;
+                    } else {
+                        KRI_CHECK_MSG(sbytes == base,
+                                      tag + ": **スレッド数で出力が変わった**（§7.1）");
+                        ++cmp;
+                    }
                 }
             }
         }
-    }
     // **式で持ちます**（実測で書くと、比較が減っても PASS になります）。
     // **巡回数も式に入れます** — 入れないと、もう一巡した瞬間に空回りします
     KRI_CHECK_MSG(cmp == static_cast<std::size_t>(rounds) * 2 * 4 * 3,
@@ -471,21 +472,23 @@ void test_exit_ordering() {
                 if (rev == 0) rev_split += ts.split.split_vertices;
             }
             if (out[0] == out[1]) ++rev_same;
-            KRI_CHECK_MSG(out[0] == out[1],
-                          std::string("接触鎖 ") + op_name(op) + "（深度 " + std::to_string(d) +
-                              "）: **扇の計算順で出力が変わった**"
-                              "（ID の割り当てが計算順に依存している。§7.5）");
+            KRI_CHECK_MSG(out[0] == out[1], std::string("接触鎖 ") + op_name(op) + "（深度 " +
+                                                std::to_string(d) +
+                                                "）: **扇の計算順で出力が変わった**"
+                                                "（ID の割り当てが計算順に依存している。§7.5）");
             ++rev_cmp;
         }
     }
     // **式で持ちます**（2 演算 × 4 深度）
-    KRI_CHECK_MSG(rev_cmp == 2 * 4, "反転の比較数が式と合わない" + kritest::pair_msg(2 * 4, rev_cmp));
+    KRI_CHECK_MSG(rev_cmp == 2 * 4,
+                  "反転の比較数が式と合わない" + kritest::pair_msg(2 * 4, rev_cmp));
     // ★ **空回りの検査。** 分裂頂点が 1 つも無ければ、この比較は何も言っていません
     KRI_CHECK_MSG(rev_split > 0,
                   "**分裂頂点が 0 件**。扇の順序の反転が何も検査していない（空回り）");
-    std::printf("    §7.5 扇の順序を反転: **一致 %zu / %zu 構成**（分裂頂点 %zu 件。"
-                "**逐次・確定的**）\n",
-                rev_same, rev_cmp, rev_split);
+    std::printf(
+        "    §7.5 扇の順序を反転: **一致 %zu / %zu 構成**（分裂頂点 %zu 件。"
+        "**逐次・確定的**）\n",
+        rev_same, rev_cmp, rev_split);
 }
 
 int main() {

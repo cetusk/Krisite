@@ -435,9 +435,8 @@ int main(int argc, char** argv) {
         std::string why;
         unsigned long long h = 0;
         PairStruct ps;
-        const bool ok =
-            check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
-                      nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1));
+        const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
+                                  nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1));
         if (ps.nsi_a >= 0) {
             (ps.nsi_a ? nsi_declared : nsi_rejected) += 1;
             (ps.nsi_b ? nsi_declared : nsi_rejected) += 1;
@@ -454,8 +453,7 @@ int main(int argc, char** argv) {
             unsigned long long h0 = 0;
             std::string why0;
             const auto t0n = std::chrono::steady_clock::now();
-            const bool ok0 =
-                check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why0, &h0, &ps0, 0);
+            const bool ok0 = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why0, &h0, &ps0, 0);
             const double dt0 =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0n).count();
             std::printf(
@@ -532,8 +530,7 @@ int main(int argc, char** argv) {
     if (nsi_mode == 1 || nsi_mode == 2) {
         const std::size_t tot = nsi_declared + nsi_rejected;
         std::printf("**NSI: 宣言 %zu / 却下 %zu（%zu 模型ぶん、%.1f%%）**\n", nsi_declared,
-                    nsi_rejected, tot,
-                    tot ? 100.0 * double(nsi_declared) / double(tot) : 0.0);
+                    nsi_rejected, tot, tot ? 100.0 * double(nsi_declared) / double(tot) : 0.0);
     }
     return c.failed == 0 ? 0 : 1;
 }

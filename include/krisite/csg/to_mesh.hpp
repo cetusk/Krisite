@@ -92,7 +92,7 @@ struct ToMeshOptions {
     /// 扇の計算順に依存しています（＝変異 23 と同じ欠陥）。
     /// **スケジューラに依存しない番人**で、1 スレッドでも効きます。
     bool reverse_fan = false;
-    bool resolve_t = true;       ///< §6.2 の T 頂点解決
+    bool resolve_t = true;  ///< §6.2 の T 頂点解決
 };
 
 /// スープを三角メッシュにする（`SPEC-phase3.md` §6）。
