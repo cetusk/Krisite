@@ -13,6 +13,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,26 @@
 #include "thingi10k/loader.hpp"
 
 using namespace krisite;
+
+namespace {
+
+/// **`cp1.txt` の添字から変換を引きます**（`IMPL-phase5.md` §33 / §40）。
+///
+/// **`cp1.cpp` は `prepare(raw, 1000 + i)` を使います**（$i$ は一覧での添字）。
+/// **固定値を使うと別の入力を測ることになります。** §33 で `edge_source.cpp` を
+/// この形にしましたが、**このツールの監査を怠って同じ誤りが残っていました。**
+///
+/// **手で変換を書けない形にするのが対処**です。呼び出し側は `"AxB"` を渡すだけ。
+std::map<std::string, std::size_t> kri_cp1_index(const char* list) {
+    std::map<std::string, std::size_t> index;
+    std::ifstream f(list);
+    std::string id, nf;
+    std::size_t i = 0;
+    while (f >> id >> nf) index[id] = i++;
+    return index;
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 4096);
@@ -57,17 +79,32 @@ int main(int argc, char** argv) {
         " **辺/多角形** | **平面/多角形** | arrange |"
         " **収集 %%** | **存在 %%** | **準備 %%** | **断片 %%** | **共平面 %%** |"
         " classify | stitch | 判定 |\n");
-    std::printf("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
-                "---:|---:|---:|---|\n");
+    std::printf(
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "---:|---:|---:|---|\n");
 
-    for (int a = 2; a + 1 < argc; a += 2) {
+    const auto index = kri_cp1_index("data/thingi10k/cp1.txt");
+
+    // **対は `"AxB"` で渡します。** ファイル名を渡す形だと変換を手で書くことになり、
+    // §33 / §40 の取り違えが再発します
+    for (int a = 2; a < argc; ++a) {
+        const std::string key = argv[a];
+        const std::size_t xp = key.find('x');
+        if (xp == std::string::npos || index.count(key.substr(0, xp)) == 0 ||
+            index.count(key.substr(xp + 1)) == 0) {
+            std::printf("| `%s` | **一覧に無い** |\n", key.c_str());
+            continue;
+        }
+        const std::string ida = key.substr(0, xp), idb = key.substr(xp + 1);
         const auto qa =
-            krithingi::quantize(krithingi::load_kmesh(argv[a]), krithingi::make_transform(1000));
-        const auto qb = krithingi::quantize(krithingi::load_kmesh(argv[a + 1]),
-                                            krithingi::make_transform(1001));
+            krithingi::quantize(krithingi::load_kmesh("data/thingi10k/kmesh/" + ida + ".kmesh"),
+                                krithingi::make_transform(1000 + index.at(ida)));
+        const auto qb =
+            krithingi::quantize(krithingi::load_kmesh("data/thingi10k/kmesh/" + idb + ".kmesh"),
+                                krithingi::make_transform(1000 + index.at(idb)));
         const std::size_t n = qa.mesh.triangles.size() + qb.mesh.triangles.size();
         if (qa.mesh.triangles.empty() || qb.mesh.triangles.empty()) {
-            std::printf("| %s | **読み込み失敗** |\n", argv[a]);
+            std::printf("| `%s` | **読み込み失敗** |\n", key.c_str());
             continue;
         }
         const csg::PolySoup A = csg::from_mesh(qa.mesh), B = csg::from_mesh(qb.mesh);
@@ -149,7 +186,7 @@ int main(int argc, char** argv) {
         std::printf(
             "| `%s` | %zu | **%.3f** | %zu | **%zu** | %zu | %zu | %zu | **%.2f** | **%.2f** |"
             " %.0f | **%.1f** | **%.1f** | **%.1f** | **%.1f** | **%.1f** | %.0f | %.0f | %s |\n",
-            argv[a] + 22, n, ts.front(), P, best.leaf_poly_sq, best.leaf_nonempty,
+            key.c_str(), n, ts.front(), P, best.leaf_poly_sq, best.leaf_nonempty,
             best.bsp_cut_slots, best.bsp_cuts_used,
             best.frag_edges_count ? double(best.frag_edges_total) / double(best.frag_edges_count)
                                   : 0.0,
