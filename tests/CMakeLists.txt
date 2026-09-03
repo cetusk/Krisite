@@ -79,6 +79,9 @@ krisite_add_test(ray_index     csg/test_ray_index.cpp)
 # 三角形分割は変わるのでバイトでは守れない。位相で見る（体積は volume_gmp）。
 # **ケース 26 が唯一 NSI を発火させる**ので、空回りの番人を置いてある
 krisite_add_test(nsi           csg/test_nsi.cpp)
+# **自己交差の検査**（SPEC-phase3 §5.6）。NSI を宣言してよいかを機械的に確かめる。
+# 健全側に倒した検査なので、**意図的に自己交差させた入力が落ちること**を番人にする
+krisite_add_test(self_intersect csg/test_self_intersect.cpp)
 # **浮動小数点の体積恒等式の校正**（SPEC-phase5 §3.0）。閾値を実測から決めるための
 # 分布を出し、丸めの床が上がっていないことを見る回帰の番人でもある
 krisite_add_test(fp_volume_calib csg/fp_volume_calib.cpp)
