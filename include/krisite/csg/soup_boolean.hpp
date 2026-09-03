@@ -133,6 +133,11 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.frag_edges_count += b.frag_edges_count;
     a.frag_edges_max = std::max(a.frag_edges_max, b.frag_edges_max);
     a.leaf_planes_total += b.leaf_planes_total;
+    a.ms_arr_gather += b.ms_arr_gather;
+    a.ms_arr_present += b.ms_arr_present;
+    a.ms_arr_prep += b.ms_arr_prep;
+    a.ms_arr_frag += b.ms_arr_frag;
+    a.ms_arr_coplanar += b.ms_arr_coplanar;
     a.leaf_nonempty += b.leaf_nonempty;
     a.leaf_single_src += b.leaf_single_src;
     a.bsp_cut_slots_single += b.bsp_cut_slots_single;
@@ -423,11 +428,22 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         std::vector<Fragment> local;
         std::vector<std::uint32_t> local_src, local_tag;
 
+        // **arrange を段に刻みます**（`PERF.md` §1.1）。葉の粒度なので計時は無視できます
+        using aclk = std::chrono::steady_clock;
+        auto a_t = aclk::now();
+        const auto a_lap = [&a_t]() {
+            const auto now = aclk::now();
+            const double ms = std::chrono::duration<double, std::milli>(now - a_t).count();
+            a_t = now;
+            return ms;
+        };
+
         std::vector<std::size_t> here;
         for (std::size_t i = 0; i < polys.size(); ++i) {
             if (octree::assign_to_cell(polys[i].aabb, cbox)) here.push_back(i);
         }
         st.leaf_poly_sq += here.size() * here.size();
+        st.ms_arr_gather += a_lap();
         if (here.empty()) {
             ++st.empty_cells;
             outl.empty_cell = true;
@@ -469,6 +485,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
         // **無次元群**（`PERF.md` §1.8）: この葉に居る**相異なる支持平面**の数
         st.leaf_planes_total += cell_tri_by_plane.size();
+        st.ms_arr_present += a_lap();
         // **葉に入った三角形の数を記録します**（`SPEC-phase5.md` の CP1.5）。
         // **EMBER §4.5.3 が最適化しているのはこの量**（部分問題の多角形数）で、
         // $P$ でも深度でもありません。ここで持たないと比較になりません。
@@ -586,6 +603,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             return cuts_memo.emplace(sup, std::move(cs)).first->second;
         };
 
+        st.ms_arr_prep += a_lap();
+
         for (std::size_t idx : here) {
             Fragment frag = polys[idx].frag;
             bool alive = true;
@@ -681,6 +700,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
         }
 
+        st.ms_arr_frag += a_lap();
+
         // ---- 共平面重複を【互いの辺平面で切って揃える】（EMBER §4.3 の C4）------
         //
         // **面併合をやめた代償です**（§3.1.4）。同じ平面に載る面が別々の三角形分割を
@@ -747,6 +768,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             local_src.swap(ns);
             local_tag.swap(nt);
         }
+
+        st.ms_arr_coplanar += a_lap();
 
         outl.frags = std::move(local);
         outl.src = std::move(local_src);
