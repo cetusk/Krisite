@@ -387,46 +387,108 @@ void test_exit_ordering() {
 
     // **機会を数えます**（`CLAUDE.md`「発火した」と「効いた」を分ける）。
     std::size_t chances = 0, max_split = 0, cmp = 0;
-    // **∩ と ＼ が分裂頂点を作ります**（∪ は 0）。実測で選びました
-    for (BoolOp op : {BoolOp::Intersection, BoolOp::Difference}) {
-        for (unsigned d = 0; d <= 3; ++d) {
-            std::string base;
-            for (std::size_t ti = 0; ti < std::size(kThreads); ++ti) {
-                ToMeshOptions tm;
-                tm.split_contacts = true;
-                tm.threads = kThreads[ti];
-                tm.pool = pools[ti].get();
-                ToMeshStats ts;
-                const BoolOptions o = all_on(d, d == 3, kThreads[ti], pools[ti].get());
-                const std::string sbytes =
-                    bytes(to_mesh(boolean(from_mesh(a), from_mesh(b), op, o), tm, &ts));
-                max_split = std::max(max_split, ts.split.split_vertices);
-                if (kThreads[ti] > 1 && ts.split.split_vertices >= 2 &&
-                    ts.split.fan_threads_used > 1) {
-                    ++chances;
-                }
-                const std::string tag = std::string("接触鎖 ") + op_name(op) + "（深度 " +
-                                        std::to_string(d) + "、スレッド " +
-                                        std::to_string(kThreads[ti]) + "）";
-                if (ti == 0) {
-                    base = sbytes;
-                } else {
-                    KRI_CHECK_MSG(sbytes == base, tag + ": **スレッド数で出力が変わった**（§7.1）");
-                    ++cmp;
+    // **番人自身がスケジューラに依存します。**
+    //
+    // > `fan_threads_used > 1` は「**複数のワーカーが実際に扇の仕事を取った**」ことで、
+    // > **取るかどうかは走行時の競合次第**です。機械が空いていれば 1 本が全部さらい、
+    // > 混んでいれば散ります。**単独実行で 23〜24、`ctest -j4` の競合下で 1** まで振れました。
+    //
+    // **回数を増やして解きます。** 足りなければもう一巡します。
+    // **「一度も散らない」なら本物の後退**（機構が壊れている）なので、そこでは落ちます。
+    // **通常は 1 巡で足ります**（24 ≫ 12）ので、実行時間はほぼ変わりません。
+    int rounds = 0;
+    for (; rounds < 3 && chances < 12; ++rounds)
+        // **∩ と ＼ が分裂頂点を作ります**（∪ は 0）。実測で選びました
+        for (BoolOp op : {BoolOp::Intersection, BoolOp::Difference}) {
+            for (unsigned d = 0; d <= 3; ++d) {
+                std::string base;
+                for (std::size_t ti = 0; ti < std::size(kThreads); ++ti) {
+                    ToMeshOptions tm;
+                    tm.split_contacts = true;
+                    tm.threads = kThreads[ti];
+                    tm.pool = pools[ti].get();
+                    ToMeshStats ts;
+                    const BoolOptions o = all_on(d, d == 3, kThreads[ti], pools[ti].get());
+                    const std::string sbytes =
+                        bytes(to_mesh(boolean(from_mesh(a), from_mesh(b), op, o), tm, &ts));
+                    max_split = std::max(max_split, ts.split.split_vertices);
+                    if (kThreads[ti] > 1 && ts.split.split_vertices >= 2 &&
+                        ts.split.fan_threads_used > 1) {
+                        ++chances;
+                    }
+                    const std::string tag = std::string("接触鎖 ") + op_name(op) + "（深度 " +
+                                            std::to_string(d) + "、スレッド " +
+                                            std::to_string(kThreads[ti]) + "）";
+                    if (ti == 0) {
+                        base = sbytes;
+                    } else {
+                        KRI_CHECK_MSG(sbytes == base,
+                                      tag + ": **スレッド数で出力が変わった**（§7.1）");
+                        ++cmp;
+                    }
                 }
             }
         }
-    }
-    // **式で持ちます**（実測で書くと、比較が減っても PASS になります）
-    KRI_CHECK_MSG(cmp == 2 * 4 * 3, "比較数が式と合わない" + kritest::pair_msg(2 * 4 * 3, cmp));
+    // **式で持ちます**（実測で書くと、比較が減っても PASS になります）。
+    // **巡回数も式に入れます** — 入れないと、もう一巡した瞬間に空回りします
+    KRI_CHECK_MSG(cmp == static_cast<std::size_t>(rounds) * 2 * 4 * 3,
+                  "比較数が式と合わない" +
+                      kritest::pair_msg(static_cast<std::size_t>(rounds) * 2 * 4 * 3, cmp));
     // ★ **機構が動いたことを数えます**（案 A）。
     // **0 なら、この検査は変異 23 について何も言っていません。**
     KRI_CHECK_MSG(chances >= 12,
                   "**出口の順序が効く機会が足りない**（分裂頂点 2 以上 かつ 扇が複数スレッド）"
                   "。変異 23 の検出が確率的に戻ります" +
                       kritest::pair_msg(12, chances));
-    std::printf("    分裂頂点 最大 %zu / 順序が効く機会 %zu 件 / 比較 %zu 件\n", max_split, chances,
-                cmp);
+    std::printf("    分裂頂点 最大 %zu / 順序が効く機会 %zu 件 / 比較 %zu 件 / **%d 巡**\n",
+                max_split, chances, cmp, rounds);
+
+    // ---- ★ 確定的な番人（`SPEC-phase4.md` §7.5。仕様担当の承認済み）--------------
+    //
+    // **上の機会の数え上げはスケジューラに依存します**（`IMPL-phase5.md` §37）。
+    // **扇の計算順を明示的に反転**すれば、確率性が完全に消えます。
+    //
+    //   正しい実装  `compute` は `plan[v]` にしか書かず、ID は頂点の順に配られる
+    //               → **順序を変えてもバイト単位で同一**
+    //   変異 23     ID が完了順に配られる → **順序を変えるとバイトが変わる**
+    //
+    // **1 スレッドで効きます。** スレッド数にも機械の負荷にも依存しません。
+    // **一致した数を数えます。** 「一致」と決め打ちで出力すると、
+    // **落ちているのに出力は成功に見えます**（実際にそう書いて見落としました）
+    std::size_t rev_cmp = 0, rev_split = 0, rev_same = 0;
+    for (BoolOp op : {BoolOp::Intersection, BoolOp::Difference}) {
+        for (unsigned d = 0; d <= 3; ++d) {
+            const BoolOptions o = all_on(d, d == 3, 1u, pools[0].get());
+            const PolySoup soup = boolean(from_mesh(a), from_mesh(b), op, o);
+            std::string out[2];
+            for (int rev = 0; rev < 2; ++rev) {
+                ToMeshOptions tm;
+                tm.split_contacts = true;
+                tm.threads = 1;
+                tm.pool = pools[0].get();
+                tm.reverse_fan = (rev != 0);
+                ToMeshStats ts;
+                out[rev] = bytes(to_mesh(soup, tm, &ts));
+                if (rev == 0) rev_split += ts.split.split_vertices;
+            }
+            if (out[0] == out[1]) ++rev_same;
+            KRI_CHECK_MSG(out[0] == out[1], std::string("接触鎖 ") + op_name(op) + "（深度 " +
+                                                std::to_string(d) +
+                                                "）: **扇の計算順で出力が変わった**"
+                                                "（ID の割り当てが計算順に依存している。§7.5）");
+            ++rev_cmp;
+        }
+    }
+    // **式で持ちます**（2 演算 × 4 深度）
+    KRI_CHECK_MSG(rev_cmp == 2 * 4,
+                  "反転の比較数が式と合わない" + kritest::pair_msg(2 * 4, rev_cmp));
+    // ★ **空回りの検査。** 分裂頂点が 1 つも無ければ、この比較は何も言っていません
+    KRI_CHECK_MSG(rev_split > 0,
+                  "**分裂頂点が 0 件**。扇の順序の反転が何も検査していない（空回り）");
+    std::printf(
+        "    §7.5 扇の順序を反転: **一致 %zu / %zu 構成**（分裂頂点 %zu 件。"
+        "**逐次・確定的**）\n",
+        rev_same, rev_cmp, rev_split);
 }
 
 int main() {

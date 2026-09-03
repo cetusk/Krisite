@@ -127,6 +127,12 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.cache_entries += b.cache_entries;
     a.cache_bytes += b.cache_bytes;
     a.leaf_input_total += b.leaf_input_total;
+    a.leaf_input_sq += b.leaf_input_sq;
+    a.leaf_poly_sq += b.leaf_poly_sq;
+    a.frag_edges_total += b.frag_edges_total;
+    a.frag_edges_count += b.frag_edges_count;
+    a.frag_edges_max = std::max(a.frag_edges_max, b.frag_edges_max);
+    a.leaf_planes_total += b.leaf_planes_total;
     a.leaf_nonempty += b.leaf_nonempty;
     a.leaf_single_src += b.leaf_single_src;
     a.bsp_cut_slots_single += b.bsp_cut_slots_single;
@@ -421,6 +427,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         for (std::size_t i = 0; i < polys.size(); ++i) {
             if (octree::assign_to_cell(polys[i].aabb, cbox)) here.push_back(i);
         }
+        st.leaf_poly_sq += here.size() * here.size();
         if (here.empty()) {
             ++st.empty_cells;
             outl.empty_cell = true;
@@ -460,6 +467,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 }
             }
         }
+        // **無次元群**（`PERF.md` §1.8）: この葉に居る**相異なる支持平面**の数
+        st.leaf_planes_total += cell_tri_by_plane.size();
         // **葉に入った三角形の数を記録します**（`SPEC-phase5.md` の CP1.5）。
         // **EMBER §4.5.3 が最適化しているのはこの量**（部分問題の多角形数）で、
         // $P$ でも深度でもありません。ここで持たないと比較になりません。
@@ -475,6 +484,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             single_src_cell = (n_present == 1);
             if (in_leaf > 0) {
                 st.leaf_input_total += in_leaf;
+                st.leaf_input_sq += in_leaf * in_leaf;
                 ++st.leaf_nonempty;
                 st.leaf_input_max = std::max(st.leaf_input_max, in_leaf);
                 if (single_src_cell) {
@@ -661,6 +671,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 pieces.swap(next);
             }
             for (Fragment& p : pieces) {
+                // **無次元群**（`PERF.md` §1.8）。辺数 = 頂点数
+                st.frag_edges_total += p.edge.size();
+                ++st.frag_edges_count;
+                st.frag_edges_max = std::max(st.frag_edges_max, p.edge.size());
                 local.push_back(std::move(p));
                 local_src.push_back(polys[idx].src);
                 local_tag.push_back(polys[idx].tag);

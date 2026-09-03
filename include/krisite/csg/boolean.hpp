@@ -123,6 +123,28 @@ struct BoolStats {
     std::size_t leaf_input_total = 0;
     /// 同上の最大
     std::size_t leaf_input_max = 0;
+    /// **$\sum_\ell P_\ell^2$**（`PERF.md` #1′）。局所 BSP の費用が $O(P_\ell^2)$ なら、
+    /// **これが arrange の説明変数**になります。**最大や平均では代用できません。**
+    ///
+    /// 2 通り持ちます — **入力三角形**（葉に届いた source の三角形）と
+    /// **多角形**（葉に割り当てられた `polys`）。**どちらが効くかは測って決めます。**
+    std::size_t leaf_input_sq = 0;
+    std::size_t leaf_poly_sq = 0;
+    // ---- 無次元群（`PERF.md` §1.8。**借りてよいのは無次元群が一致するときだけ**）----
+    //
+    // **$\sum_\ell P_\ell^2$ が同じでも「単位の中身」が違えば、
+    // 単位あたりの費用は違って当然です。** 合成と実データで揃っているかを見ます。
+    /// 出来た断片の辺の総数（**頂点数 = 辺数**）と、その断片の個数。
+    ///
+    /// > **分母に `fragments` を使ってはいけません。** あれは
+    /// > **`out.polys.size()`（最終出力の多角形数）**で、arrange が作った断片の数とは
+    /// > 別の量です。**平均が最大を超えて気づきました**（`IMPL-phase5.md` §38）。
+    std::size_t frag_edges_total = 0;
+    std::size_t frag_edges_count = 0;
+    std::size_t frag_edges_max = 0;
+    /// 葉ごとの**相異なる支持平面の数**の総和。÷ `leaf_input_total` で
+    /// 「葉あたりの平面数 / 多角形数」
+    std::size_t leaf_planes_total = 0;
     /// 空でない葉の数（平均を出すための分母）
     std::size_t leaf_nonempty = 0;
     /// **単一 source の葉**（`SPEC-phase5.md` の (c)）。

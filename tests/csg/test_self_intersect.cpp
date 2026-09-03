@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <string>
 
+#include "krisite/csg/polysoup.hpp"
 #include "krisite/mesh/self_intersect.hpp"
 
 #include "corpus.hpp"
@@ -17,6 +18,7 @@
 
 using krisite::mesh::is_self_intersecting;
 using krisite::mesh::SelfIntersectStats;
+namespace csg = krisite::csg;
 using krisite::mesh::TriMesh;
 
 namespace {
@@ -32,6 +34,23 @@ TriMesh crossing_quads() {
         {0, -s, -s}, {0, s, -s}, {0, s, s}, {0, -s, s},  // x = 0 の板（貫く）
     };
     m.triangles = {{0, 1, 2}, {0, 2, 3}, {4, 5, 6}, {4, 6, 7}};
+    return m;
+}
+
+/// **PWN のまま自己交差する入力。** 重なった 2 つの立方体を 1 枚のメッシュにします。
+///
+/// **`crossing_quads` は `from_mesh` に渡せません**（∂S ≠ 0 で入口の契約に落ちる）。
+/// **`from_mesh` の配線を検査するには、契約を満たしたまま自己交差するものが要ります。**
+TriMesh overlapping_cubes() {
+    // **座標は比で書きます**（`SPEC-phase1.md` §9.0）。角どうしが食い込む配置に。
+    TriMesh m = kritest::box(kritest::at(-1, 2), kritest::at(-1, 2), kritest::at(-1, 2), 0, 0, 0);
+    const TriMesh n = kritest::box(kritest::at(-1, 4), kritest::at(-1, 4), kritest::at(-1, 4),
+                                   kritest::at(1, 2), kritest::at(1, 2), kritest::at(1, 2));
+    const std::uint32_t off = static_cast<std::uint32_t>(m.vertices.size());
+    for (const auto& v : n.vertices) m.vertices.push_back(v);
+    for (const auto& t : n.triangles) {
+        m.triangles.push_back({t[0] + off, t[1] + off, t[2] + off});
+    }
     return m;
 }
 
@@ -74,6 +93,7 @@ int main() {
 
     // ★ **番人**: 意図的に自己交差させたものが落ちること
     check("**十字に交差した 2 板**", crossing_quads(), true);
+    check("**重なった 2 立方体（PWN）**", overlapping_cubes(), true);
 
     // コーパスの入力すべて（**自己交差しない前提で作ってあります**）
     std::size_t corpus_clean = 0;
@@ -87,6 +107,30 @@ int main() {
     KRI_CHECK_MSG(corpus_clean == want,
                   "コーパスの入力に自己交差ありと判定されたものがある（偽陽性が多すぎる）" +
                       kritest::pair_msg(want, corpus_clean));
+
+    // ---- `from_mesh(..., verify_nsi)` の配線 ------------------------------------
+    //
+    // > **仕様に書いた要求が実装されたかを、フェーズの締めで突き合わせること**
+    // > （`CLAUDE.md`）。§5.6 の NSI 旗は Phase 3 / 4 を素通りしました。
+    //
+    // **検査を「実装した」と「配線した」は別**なので、`from_mesh` を通して見ます。
+    {
+        const TriMesh clean = kritest::cases::case26_a();
+        const TriMesh dirty = overlapping_cubes();
+
+        // 既定は**宣言しない**。安全側です
+        KRI_CHECK_MSG(csg::from_mesh(clean).nsi[0] == 0,
+                      "既定で NSI を宣言してしまっている（安全側でない）");
+
+        csg::FromMeshOptions fm;
+        fm.verify_nsi = true;
+        // **通ったものだけ真**
+        KRI_CHECK_MSG(csg::from_mesh(clean, fm).nsi[0] == 1,
+                      "検査を通る入力で NSI が宣言されない（機構が空回り）");
+        KRI_CHECK_MSG(csg::from_mesh(dirty, fm).nsi[0] == 0,
+                      "**自己交差する入力で NSI が宣言された**（健全でない）");
+        std::printf("\n  from_mesh: 既定 0 / 検査つき clean 1 / 検査つき dirty 0\n");
+    }
 
     // **空回りの検査。** 1 件も検出しないなら、この検査は何も言っていません
     KRI_CHECK_MSG(g_dirty > 0, "自己交差を 1 件も検出していない（検査が空回り）");

@@ -144,6 +144,15 @@ struct PairStruct {
     double ms_arrange = 0, ms_classify = 0, ms_stitch = 0;
     std::size_t unresolved = 0, edges_excess = 0, edges_deficient = 0;
     std::size_t max_edge_degree = 0;
+    /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
+    /// **検査は量子化後に走る**ので、模型ごとにキャッシュできません（§33）。
+    int nsi_a = -1, nsi_b = -1;
+    /// **`from_mesh` 2 回ぶんの秒数（検査込み）。**
+    ///
+    /// **検査だけの時間ではありません。** 分けて測ろうとすると `from_mesh` を
+    /// 2 度走らせることになるので、**含んだまま記録して、そう書きます。**
+    /// 検査単独の費用は `quantstat` が別に出しています（実測 0.09 秒/模型）。
+    double fm_seconds = 0;
 
     void add(const csg::BoolStats& b, const csg::ToMeshStats& t, const mesh::TopologyReport& r,
              std::size_t np) {
@@ -179,20 +188,37 @@ struct PairStruct {
           << ' ' << (long long)ms_stitch << ' ' << unresolved << ' ' << edges_excess << ' '
           << edges_deficient << ' ' << max_edge_degree << ' ' << leaf_single_src << ' '
           << leaf_single_max << ' ' << leaf_both_max << ' ' << bsp_slots << ' ' << bsp_used << ' '
-          << bsp_slots_single << ' ' << bsp_used_single << ' ' << vol_err << ' ' << diff_err;
+          << bsp_slots_single << ' ' << bsp_used_single << ' ' << vol_err << ' ' << diff_err << ' '
+          << nsi_a << ' ' << nsi_b << ' ' << fm_seconds;
     }
 };
 
 /// §3.1 の検査。**解析的期待値は使えない**ので恒等式と位相で見ます。
 bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOptions& o,
                par::ThreadPool* pool, std::string* why, unsigned long long* hash_out = nullptr,
-               PairStruct* ps = nullptr, bool declare_nsi = false) {
-    csg::PolySoup A = csg::from_mesh(a), B = csg::from_mesh(b);
+               PairStruct* ps = nullptr, int nsi_decl = 0) {
     // **NSI は呼び出し側が宣言します**（`SPEC-phase3.md` §5.6、EMBER §4.5.1）。
-    // **検証しません。** CP1 の母集団はメタデータで「自己交差なし」と分類された
-    // モデルですが、**量子化後の性質は保証されません**（§1.0）。
-    // だからこそ**既定は偽**で、宣言があるときだけ省きます。
-    if (declare_nsi) {
+    // ライブラリは検証しません。**宣言してよいかを確かめるのは呼び出し側の仕事**で、
+    // `from_mesh` の `verify_nsi` がその補助です。
+    //
+    // **CP1 の母集団はメタデータで「自己交差なし」と分類されたモデルですが、
+    // 量子化後の性質は保証されません**（§1.0。実測で 1,000 件中 59〜70 件が該当）。
+    // だからこそ**既定は宣言しない**で、`nsi_decl == 1` のときだけ検査して通ったものを宣言します。
+    //
+    //   0 … 宣言しない（従来）
+    //   1 … **検査して、通ったものだけ宣言する**（既定の運用）
+    //   2 … 検査せずに宣言する（旧挙動。§20 の測定を再現するためだけに残す）
+    csg::FromMeshOptions fm;
+    fm.verify_nsi = (nsi_decl == 1);
+    const auto tsi = std::chrono::steady_clock::now();
+    csg::PolySoup A = csg::from_mesh(a, fm), B = csg::from_mesh(b, fm);
+    if (ps != nullptr && nsi_decl == 1) {
+        ps->fm_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - tsi).count();
+        ps->nsi_a = A.nsi[0] ? 1 : 0;
+        ps->nsi_b = B.nsi[0] ? 1 : 0;
+    }
+    if (nsi_decl == 2) {
         A.nsi.assign(A.sources.size(), 1);
         B.nsi.assign(B.sources.size(), 1);
     }
@@ -275,8 +301,15 @@ int main(int argc, char** argv) {
     const bool verify_index = (argc > 5) && (std::atoi(argv[5]) != 0);
     // **済みの対をやり直すモード。** 既定は追記（再開）
     const bool redo = (argc > 6) && (std::atoi(argv[6]) != 0);
-    // **NSI の扱い**: 0 = 宣言しない（従来）/ 1 = 宣言する / 2 = 両方回してハッシュを比べる
+    // **NSI の扱い**:
+    //   0 … 宣言しない（従来）
+    //   1 … **検査して、通ったものだけ宣言する**（(a) の既定の運用）
+    //   2 … 検査つきの宣言と、宣言なしの両方を回して突き合わせる
+    //   3 … 検査せずに宣言する（旧 1。§20 の測定を再現するためだけに残す）
     const int nsi_mode = (argc > 7) ? std::atoi(argv[7]) : 0;
+    // 宣言の内訳（(a) の空回り検査）。**「検査を入れた」と「検査が効いた」は別**なので、
+    // **宣言できた数と落ちた数を必ず出します。**
+    std::size_t nsi_declared = 0, nsi_rejected = 0;
     std::size_t verified = 0;
     // **この対だけを回す**（空なら全件）。失敗の分類のように、
     // **少数の対だけ構造を採りたい**場面のためです（`SPEC-phase5.md` §1.5.4）。
@@ -402,8 +435,12 @@ int main(int argc, char** argv) {
         std::string why;
         unsigned long long h = 0;
         PairStruct ps;
-        const bool ok =
-            check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps, nsi_mode != 0);
+        const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
+                                  nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1));
+        if (ps.nsi_a >= 0) {
+            (ps.nsi_a ? nsi_declared : nsi_rejected) += 1;
+            (ps.nsi_b ? nsi_declared : nsi_rejected) += 1;
+        }
         const double dt_first =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - tp).count();
         // **NSI の宣言で出力が変わらないこと**（`SPEC-phase5.md` (c) の検証）。
@@ -416,17 +453,16 @@ int main(int argc, char** argv) {
             unsigned long long h0 = 0;
             std::string why0;
             const auto t0n = std::chrono::steady_clock::now();
-            const bool ok0 =
-                check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why0, &h0, &ps0, false);
+            const bool ok0 = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why0, &h0, &ps0, 0);
             const double dt0 =
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0n).count();
             std::printf(
                 "  NSI %s | バイト %s | P %zu -> %zu (%.2f 倍) | 秒 %.1f -> %.1f (%.2f 倍) "
-                "| 省いたセル %zu | 判定 %s -> %s\n",
+                "| 省いたセル %zu | 宣言 A=%d B=%d(from_mesh %.2f 秒) | 判定 %s -> %s\n",
                 key.c_str(), (h0 == h) ? "**一致**" : "**不一致**", ps0.polys, ps.polys,
                 ps.polys ? double(ps0.polys) / double(ps.polys) : 0.0, dt0, dt_first,
-                dt_first > 0 ? dt0 / dt_first : 0.0, ps.bsp_cells_skipped,
-                ok0 ? "ok" : why0.c_str(), ok ? "ok" : why.c_str());
+                dt_first > 0 ? dt0 / dt_first : 0.0, ps.bsp_cells_skipped, ps.nsi_a, ps.nsi_b,
+                ps.fm_seconds, ok0 ? "ok" : why0.c_str(), ok ? "ok" : why.c_str());
             std::fflush(stdout);
             // **ハッシュ不一致で止めません**（`IMPL-phase5.md` §20.2）。
             // NSI は切断を減らすので**三角形分割が変わります。**
@@ -445,7 +481,10 @@ int main(int argc, char** argv) {
             o2.ray_index = !o.ray_index;
             unsigned long long h2 = 0;
             std::string why2;
-            const bool ok2 = check_one(prep[i].mesh, prep[j].mesh, o2, &pool, &why2, &h2);
+            // **NSI の扱いを揃えます。** 揃えないと「索引の比較」のつもりで
+            // **NSI の有無を比べる**ことになり、番人が黙って無意味になります。
+            const bool ok2 = check_one(prep[i].mesh, prep[j].mesh, o2, &pool, &why2, &h2, nullptr,
+                                       nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1));
             if (!ok2 || h2 != h) {
                 ++c.failed;
                 why = "索引の有無で出力が変わった";
@@ -484,6 +523,14 @@ int main(int argc, char** argv) {
                 c.failed, c.halted, s);
     if (verify_index) {
         std::printf("**索引の有無でハッシュ一致: %zu 対**\n", verified);
+    }
+    // **機構が空回りしていないことを別に検査します**（`CLAUDE.md`）。
+    // 検査つきの宣言では、**宣言できた数と落ちた数の両方が出ます。**
+    // 片方が 0 なら、検査が効いていないか、母集団が偏っています。
+    if (nsi_mode == 1 || nsi_mode == 2) {
+        const std::size_t tot = nsi_declared + nsi_rejected;
+        std::printf("**NSI: 宣言 %zu / 却下 %zu（%zu 模型ぶん、%.1f%%）**\n", nsi_declared,
+                    nsi_rejected, tot, tot ? 100.0 * double(nsi_declared) / double(tot) : 0.0);
     }
     return c.failed == 0 ? 0 : 1;
 }

@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "krisite/mesh/self_intersect.hpp"
 #include "krisite/mesh/topology.hpp"
 
 #include "thingi10k/loader.hpp"
@@ -40,9 +41,11 @@ int main(int argc, char** argv) {
         }
     }
     std::printf("# 量子化の統計（b=%d、%zu 件）\n", KRISITE_COORD_BITS, ids.size());
-    std::printf("id 元面数 量子化後 落ち 併合 ∂S=0 辺多様体 頂点多様体 成分 χ 余分辺 不足辺\n");
+    std::printf(
+        "id 元面数 量子化後 落ち 併合 ∂S=0 辺多様体 頂点多様体 成分 χ 余分辺 不足辺"
+        " 自己交差\n");
 
-    std::size_t n_merged = 0, n_dropped = 0, n_nonmanifold = 0, n_boundary = 0;
+    std::size_t n_merged = 0, n_dropped = 0, n_nonmanifold = 0, n_boundary = 0, n_si = 0;
     std::size_t merged_total = 0;
     for (std::size_t i = 0; i < ids.size(); ++i) {
         const krithingi::RawMesh raw =
@@ -51,23 +54,28 @@ int main(int argc, char** argv) {
         const krithingi::Quantized q =
             krithingi::quantize(raw, krithingi::make_transform(1000 + i));
         const mesh::TopologyReport t = mesh::check_topology(q.mesh.triangles);
+        // **自己交差**（`SPEC-phase3.md` §5.6）。**変換が cp1.cpp と同じ（1000 + 添字）で
+        // なければ意味がありません** — 別の変換では量子化の結果が変わります
+        const bool si = mesh::is_self_intersecting(q.mesh);
         const bool bz = mesh::boundary_is_zero(q.mesh);
         const bool nm = !(t.edge_manifold && t.vertex_manifold);
         if (q.merged_vertices > 0) ++n_merged;
         if (q.dropped_degenerate > 0) ++n_dropped;
         if (nm) ++n_nonmanifold;
+        if (si) ++n_si;
         if (!bz) ++n_boundary;
         merged_total += q.merged_vertices;
-        std::printf("%s %zu %zu %zu %zu %d %d %d %zu %lld %zu %zu\n", ids[i].c_str(), nf[i],
+        std::printf("%s %zu %zu %zu %zu %d %d %d %zu %lld %zu %zu %d\n", ids[i].c_str(), nf[i],
                     q.mesh.triangles.size(), q.dropped_degenerate, q.merged_vertices, (int)bz,
                     (int)t.edge_manifold, (int)t.vertex_manifold, t.components, t.chi,
-                    t.edges_excess, t.edges_deficient);
+                    t.edges_excess, t.edges_deficient, (int)si);
         if ((i + 1) % 200 == 0) std::fprintf(stderr, "  %zu / %zu\n", i + 1, ids.size());
     }
     std::printf("\n# 集計（b=%d）\n", KRISITE_COORD_BITS);
     std::printf("# 件数 %zu / 併合ありのモデル %zu / 落ちありのモデル %zu\n", ids.size(), n_merged,
                 n_dropped);
     std::printf("# 併合された頂点（延べ） %zu\n", merged_total);
-    std::printf("# **量子化後に非多様体** %zu / ∂S≠0 %zu\n", n_nonmanifold, n_boundary);
+    std::printf("# **量子化後に非多様体** %zu / ∂S≠0 %zu / **自己交差 %zu**\n", n_nonmanifold,
+                n_boundary, n_si);
     return 0;
 }

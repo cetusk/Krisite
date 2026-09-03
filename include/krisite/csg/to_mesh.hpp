@@ -37,6 +37,15 @@ namespace krisite::csg {
 struct SoupMesh {
     std::vector<geom::HPointD> vertices;
     std::vector<mesh::Tri> triangles;
+    /// **三角形ごとの由来 source**（`SPEC-phase3.md` §4.3 の由来タグ）。
+    ///
+    /// `triangles` と同じ長さ。**接触の分裂は三角形の順序と個数を変えない**ので
+    /// （`split_contacts` は `out = tris` から始めて置き換えるだけ）、
+    /// 分裂の後もそのまま対応します。
+    ///
+    /// **次数 4 の辺で「4 枚がどの source から来たか」を数えるのに要ります** —
+    /// 自己接触（A/A・B/B）か 2 立体の接触（A–B）かは、これでしか分かりません。
+    std::vector<int> tri_src;
     bool empty() const noexcept { return triangles.empty(); }
 };
 
@@ -77,7 +86,13 @@ struct ToMeshOptions {
     /// 持ち回すプール。`nullptr` なら呼び出しごとに作ります。
     par::ThreadPool* pool = nullptr;
     bool split_contacts = true;  ///< §6.3。既定 ON、フラグで無効化可
-    bool resolve_t = true;       ///< §6.2 の T 頂点解決
+    /// **扇の計算を逆順で回す**（`SPEC-phase4.md` §7.5）。`mesh::SplitOptions` へ渡します。
+    ///
+    /// **出力はバイト単位で変わってはいけません。** 変わるなら、ID の割り当てが
+    /// 扇の計算順に依存しています（＝変異 23 と同じ欠陥）。
+    /// **スケジューラに依存しない番人**で、1 スレッドでも効きます。
+    bool reverse_fan = false;
+    bool resolve_t = true;  ///< §6.2 の T 頂点解決
 };
 
 /// スープを三角メッシュにする（`SPEC-phase3.md` §6）。
@@ -201,10 +216,10 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
             fan_triangulate(tp, poly_tris[pi], &t);
         }
     });
-    std::vector<int> tri_src;
     for (std::size_t pi = 0; pi < s.polys.size(); ++pi) {
         for (const mesh::Tri& t : poly_tris[pi]) out.triangles.push_back(t);
-        tri_src.insert(tri_src.end(), poly_tris[pi].size(), static_cast<int>(s.polys[pi].src));
+        out.tri_src.insert(out.tri_src.end(), poly_tris[pi].size(),
+                           static_cast<int>(s.polys[pi].src));
     }
     for (const TJunctionStats& t : tl_t) detail::merge_tjunction_stats(st.t, t);
 
@@ -214,8 +229,10 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
     if (opt.split_contacts && !out.triangles.empty()) {
         std::vector<std::uint32_t> origin;
         // **頂点ごとに独立**（§3）。ID の割り当ては逐次なので決定的です
+        mesh::SplitOptions sopt;
+        sopt.reverse_fan = opt.reverse_fan;
         out.triangles = mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split,
-                                             nullptr, nullptr, &pool);
+                                             nullptr, nullptr, &pool, sopt);
         for (std::uint32_t o : origin) out.vertices.push_back(out.vertices[o]);
     }
 
