@@ -145,6 +145,8 @@ struct Run {
     /// **無次元群**（`PERF.md` §1.8）。実データと揃っているかを見ます
     std::size_t frag_edges = 0, frag_edges_max = 0, leaf_planes = 0, leaf_in = 0, frags = 0;
     std::size_t frag_n = 0;
+    /// **arrange の段別内訳**（CPU ms。スレッドをまたいで合算するので壁時計ではありません）
+    double g = 0, pr = 0, pp = 0, fr = 0, cp = 0;
 };
 
 Run measure(const Config& c, unsigned threads, par::ThreadPool* pool, int reps) {
@@ -185,6 +187,11 @@ Run measure(const Config& c, unsigned threads, par::ThreadPool* pool, int reps) 
         best.leaf_in = bs.leaf_input_total;
         best.frags = bs.fragments;
         best.frag_n = bs.frag_edges_count;
+        best.g = bs.ms_arr_gather;
+        best.pr = bs.ms_arr_present;
+        best.pp = bs.ms_arr_prep;
+        best.fr = bs.ms_arr_frag;
+        best.cp = bs.ms_arr_coplanar;
         best.polys = out.polys.size();
     }
     return best;
@@ -240,10 +247,9 @@ int main(int argc, char** argv) {
     };
 
     std::printf(
-        "| つまみ | 葉 L | t | 大 t₂×n | 空でない葉 | **最大/平均** | 多角形 |"
-        " **Σ P_ℓ²** | **BSP 枠** | **BSP 使用** | arrange ms |"
-        " **辺/多角形** | **最大辺** | **平面/多角形** | **枠/ΣP²** |"
-        " **c_arrange (ns/単位)** |\n");
+        "| つまみ | 葉 L | t | 大 t₂×n | 空でない葉 | 多角形 | **Σ P_ℓ²** | arrange ms |"
+        " **c_arrange** | **平面/多角形** |"
+        " **収集 %%** | **存在 %%** | **準備 %%** | **断片 %%** | **共平面 %%** | CPU ms 計 |\n");
     std::printf("|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
     for (const Config& c : cfgs) {
         // **つまみを絞れるようにします。** 足した段だけを回すため
@@ -256,13 +262,16 @@ int main(int argc, char** argv) {
         char big[32] = "-";
         if (c.t2 > 0) std::snprintf(big, sizeof(big), "%d×%d", c.t2, c.n_big);
         const double u = r.poly_sq ? 1e6 / double(r.poly_sq) : 0.0;  // ms → ns/単位
+        // **段別の割合**（`PERF.md` §1.1）。絶対値ではなく割合を見ます
+        const double tot = r.g + r.pr + r.pp + r.fr + r.cp;
+        const double q = tot > 0 ? 100.0 / tot : 0.0;
+        (void)skew;
         std::printf(
-            "| %s | %d | %d | %s | %zu | %.2f | %zu | **%zu** | %zu | %zu | %.2f |"
-            " **%.2f** | **%zu** | **%.2f** | **%.4f** | **%.3f** |\n",
-            c.knob, c.L, c.t, big, r.leaves, skew, r.polys, r.poly_sq, r.bsp_slots, r.bsp_used,
-            r.ms_arrange, r.frag_n ? double(r.frag_edges) / double(r.frag_n) : 0.0,
-            r.frag_edges_max, r.leaf_in ? double(r.leaf_planes) / double(r.leaf_in) : 0.0,
-            r.poly_sq ? double(r.bsp_slots) / double(r.poly_sq) : 0.0, r.ms_arrange * u);
+            "| %s | %d | %d | %s | %zu | %zu | **%zu** | %.2f | **%.2f** | **%.2f** |"
+            " **%.1f** | **%.1f** | **%.1f** | **%.1f** | **%.1f** | %.0f |\n",
+            c.knob, c.L, c.t, big, r.leaves, r.polys, r.poly_sq, r.ms_arrange, r.ms_arrange * u,
+            r.leaf_in ? double(r.leaf_planes) / double(r.leaf_in) : 0.0, r.g * q, r.pr * q,
+            r.pp * q, r.fr * q, r.cp * q, tot);
         std::fflush(stdout);
     }
     return 0;

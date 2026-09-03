@@ -53,15 +53,12 @@ int main(int argc, char** argv) {
     std::printf("| 最適化 | `-O2` |\n\n");
 
     std::printf(
-        "| 対 | 入力 n | 秒（最小） | 秒（中央） | 秒（最大） | P | 領域 | レイ |"
-        " 三角形検査 | ΣP_葉 | 葉あたり最大 | **Σ入力²** | **Σ多角形²** | 葉 | 単一 source 葉 |"
-        " **BSP 枠** | **BSP 使用** | **辺/多角形** | **最大辺** | **平面/多角形** |"
-        " **枠/ΣP²** | arrange | classify | "
-        "stitch | 判定 | 最大/最小 |\n");
-    std::printf(
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
-        "---:|---:|---:|---|---:|"
-        "\n");
+        "| 対 | 入力 n | 秒（最小） | P | **Σ多角形²** | 葉 | **BSP 枠** | **BSP 使用** |"
+        " **辺/多角形** | **平面/多角形** | arrange |"
+        " **収集 %%** | **存在 %%** | **準備 %%** | **断片 %%** | **共平面 %%** |"
+        " classify | stitch | 判定 |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+                "---:|---:|---:|---|\n");
 
     for (int a = 2; a + 1 < argc; a += 2) {
         const auto qa =
@@ -123,6 +120,11 @@ int main(int argc, char** argv) {
                 acc.frag_edges_count += bs.frag_edges_count;
                 acc.frag_edges_max = std::max(acc.frag_edges_max, bs.frag_edges_max);
                 acc.leaf_planes_total += bs.leaf_planes_total;
+                acc.ms_arr_gather += bs.ms_arr_gather;
+                acc.ms_arr_present += bs.ms_arr_present;
+                acc.ms_arr_prep += bs.ms_arr_prep;
+                acc.ms_arr_frag += bs.ms_arr_frag;
+                acc.ms_arr_coplanar += bs.ms_arr_coplanar;
                 acc.leaf_input_max = std::max(acc.leaf_input_max, bs.leaf_input_max);
                 acc.ms_arrange += bs.ms_arrange;
                 acc.ms_classify += bs.ms_classify;
@@ -140,23 +142,22 @@ int main(int argc, char** argv) {
             }
         }
         std::sort(ts.begin(), ts.end());
+        // **段別の割合**（`PERF.md` §1.1）
+        const double atot = best.ms_arr_gather + best.ms_arr_present + best.ms_arr_prep +
+                            best.ms_arr_frag + best.ms_arr_coplanar;
+        const double aq = atot > 0 ? 100.0 / atot : 0.0;
         std::printf(
-            "| `%s` | %zu | **%.3f** | %.3f | %.3f | %zu | %zu | %zu | %zu | %zu | %zu |"
-            " %zu | %zu | %zu | %zu | %zu | %zu | **%.2f** | **%zu** | **%.2f** | **%.4f** |"
-            " %.0f | %.0f | %.0f | %s | %.3f |\n",
-            argv[a] + 22, n, ts.front(), ts[ts.size() / 2], ts.back(), P, best.regions,
-            best.raycasts, best.ray_tri_tests, best.leaf_input_total, best.leaf_input_max,
-            best.leaf_input_sq, best.leaf_poly_sq, best.leaf_nonempty, best.leaf_single_src,
+            "| `%s` | %zu | **%.3f** | %zu | **%zu** | %zu | %zu | %zu | **%.2f** | **%.2f** |"
+            " %.0f | **%.1f** | **%.1f** | **%.1f** | **%.1f** | **%.1f** | %.0f | %.0f | %s |\n",
+            argv[a] + 22, n, ts.front(), P, best.leaf_poly_sq, best.leaf_nonempty,
             best.bsp_cut_slots, best.bsp_cuts_used,
             best.frag_edges_count ? double(best.frag_edges_total) / double(best.frag_edges_count)
                                   : 0.0,
-            best.frag_edges_max,
             best.leaf_input_total ? double(best.leaf_planes_total) / double(best.leaf_input_total)
                                   : 0.0,
-            best.leaf_poly_sq ? double(best.bsp_cut_slots) / double(best.leaf_poly_sq) : 0.0,
-            best_ms_arr, best_ms_cls, best_ms_sti,
-            (ts.back() / ts.front() <= 1.10) ? "**清浄**" : "**棄却（汚染）**",
-            ts.back() / ts.front());
+            best_ms_arr, best.ms_arr_gather * aq, best.ms_arr_present * aq, best.ms_arr_prep * aq,
+            best.ms_arr_frag * aq, best.ms_arr_coplanar * aq, best_ms_cls, best_ms_sti,
+            (ts.back() / ts.front() <= 1.10) ? "**清浄**" : "**棄却（汚染）**");
     }
     return 0;
 }
