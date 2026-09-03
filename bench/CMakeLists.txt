@@ -13,3 +13,8 @@ target_include_directories(pred_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tes
 add_executable(soup_bench soup_bench.cpp)
 target_link_libraries(soup_bench PRIVATE krisite)
 target_include_directories(soup_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../tests)
+
+# Krisite — 段別の費用係数 c_b を合成入力で測る（PERF.md §1.1）。
+# **コーパスは使いません**（葉の分布を独立に振る必要があるため、入力を自分で作ります）。
+add_executable(stage_bench stage_bench.cpp)
+target_link_libraries(stage_bench PRIVATE krisite)

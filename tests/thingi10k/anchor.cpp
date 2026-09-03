@@ -54,10 +54,13 @@ int main(int argc, char** argv) {
 
     std::printf(
         "| 対 | 入力 n | 秒（最小） | 秒（中央） | 秒（最大） | P | 領域 | レイ |"
-        " 三角形検査 | ΣP_葉 | 葉あたり最大 | **Σ入力²** | **Σ多角形²** | arrange | classify | "
+        " 三角形検査 | ΣP_葉 | 葉あたり最大 | **Σ入力²** | **Σ多角形²** | 葉 | 単一 source 葉 |"
+        " **BSP 枠** | **BSP 使用** | **辺/多角形** | **最大辺** | **平面/多角形** |"
+        " **枠/ΣP²** | arrange | classify | "
         "stitch | 判定 | 最大/最小 |\n");
     std::printf(
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|"
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
+        "---:|---:|---:|---|---:|"
         "\n");
 
     for (int a = 2; a + 1 < argc; a += 2) {
@@ -108,6 +111,18 @@ int main(int argc, char** argv) {
                 acc.leaf_input_total += bs.leaf_input_total;
                 acc.leaf_input_sq += bs.leaf_input_sq;
                 acc.leaf_poly_sq += bs.leaf_poly_sq;
+                // **局所 BSP の切断数。** 合成が実データを代表しているかの切り分けに要る
+                // （`PERF.md` §1.1 の完了条件。**時間ではなく仕事の量で比べます**）
+                acc.leaf_nonempty += bs.leaf_nonempty;
+                acc.leaf_single_src += bs.leaf_single_src;
+                acc.bsp_cut_slots += bs.bsp_cut_slots;
+                acc.bsp_cuts_used += bs.bsp_cuts_used;
+                // **無次元群**（`PERF.md` §1.8）。合成と「単位の中身」を揃えるため
+                acc.fragments += bs.fragments;
+                acc.frag_edges_total += bs.frag_edges_total;
+                acc.frag_edges_count += bs.frag_edges_count;
+                acc.frag_edges_max = std::max(acc.frag_edges_max, bs.frag_edges_max);
+                acc.leaf_planes_total += bs.leaf_planes_total;
                 acc.leaf_input_max = std::max(acc.leaf_input_max, bs.leaf_input_max);
                 acc.ms_arrange += bs.ms_arrange;
                 acc.ms_classify += bs.ms_classify;
@@ -127,10 +142,19 @@ int main(int argc, char** argv) {
         std::sort(ts.begin(), ts.end());
         std::printf(
             "| `%s` | %zu | **%.3f** | %.3f | %.3f | %zu | %zu | %zu | %zu | %zu | %zu |"
-            " %zu | %zu | %.0f | %.0f | %.0f | %s | %.3f |\n",
+            " %zu | %zu | %zu | %zu | %zu | %zu | **%.2f** | **%zu** | **%.2f** | **%.4f** |"
+            " %.0f | %.0f | %.0f | %s | %.3f |\n",
             argv[a] + 22, n, ts.front(), ts[ts.size() / 2], ts.back(), P, best.regions,
             best.raycasts, best.ray_tri_tests, best.leaf_input_total, best.leaf_input_max,
-            best.leaf_input_sq, best.leaf_poly_sq, best_ms_arr, best_ms_cls, best_ms_sti,
+            best.leaf_input_sq, best.leaf_poly_sq, best.leaf_nonempty, best.leaf_single_src,
+            best.bsp_cut_slots, best.bsp_cuts_used,
+            best.frag_edges_count ? double(best.frag_edges_total) / double(best.frag_edges_count)
+                                  : 0.0,
+            best.frag_edges_max,
+            best.leaf_input_total ? double(best.leaf_planes_total) / double(best.leaf_input_total)
+                                  : 0.0,
+            best.leaf_poly_sq ? double(best.bsp_cut_slots) / double(best.leaf_poly_sq) : 0.0,
+            best_ms_arr, best_ms_cls, best_ms_sti,
             (ts.back() / ts.front() <= 1.10) ? "**清浄**" : "**棄却（汚染）**",
             ts.back() / ts.front());
     }
