@@ -127,6 +127,29 @@ private:
 
 }  // namespace detail
 
+/// `split_contacts` の設定（`SPEC-phase4.md` §7.5）。
+///
+/// **構造体で渡します。** 位置引数に `bool` を足すと、ポインタが暗黙に `bool` へ
+/// 変換されて**取り違えがコンパイルを通ります**（`CLAUDE.md`「位置引数が多く型が
+/// 同じ小関数は、規律ではなく設計で守ってください」）。
+struct SplitOptions {
+    /// **扇の計算を頂点の逆順で回す**（`SPEC-phase4.md` §7.5。仕様担当の承認済み）。
+    ///
+    /// **番人をスケジューラから切り離すための旗**です。
+    /// `BoolOptions::reverse_regions` と同じ形で、前例があります。
+    ///
+    /// 正しい実装では **`compute` は `plan[v]` にしか書かず、ID は `assign_ids` が
+    /// 頂点の順に配る**ので、**呼ぶ順序を変えても出力はバイト単位で同一**です。
+    ///
+    /// **変異 23（出口のバリアを外す）では ID が完了順に配られる**ので、
+    /// 順序を変えると**バイトが変わります。1 スレッドでも確定的に捕まります。**
+    ///
+    /// > §27 の案 A は `fan_threads_used > 1` を数えていましたが、
+    /// > **「機構が動く」こと自体がスケジューラ依存**でした（`IMPL-phase5.md` §37）。
+    /// > **確率性は消えず、番人の側へ移っていただけ**です。
+    bool reverse_fan = false;
+};
+
 /// 接触を分裂させ、新しい三角形列を返す（§5.1）。
 ///
 /// 新しく作った頂点の元 ID は `origin` に積みます（座標を複製するのは呼び出し側）。
@@ -139,7 +162,8 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
                                        SplitStats* stats = nullptr,
                                        const std::vector<int>* owner = nullptr,
                                        const std::vector<char>* from_early_out = nullptr,
-                                       par::ThreadPool* pool = nullptr) {
+                                       par::ThreadPool* pool = nullptr,
+                                       const SplitOptions& sopt = {}) {
     using clk = std::chrono::steady_clock;
     const auto ms_since = [](clk::time_point a) {
         return std::chrono::duration<double, std::milli>(clk::now() - a).count();
@@ -416,8 +440,18 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
     };
 #endif
     auto t_fan = clk::now();
+    // **扇の計算だけを逆順にします**（`SplitOptions::reverse_fan`）。
+    // ID は `assign_ids` が頂点の順に配るので、**正しい実装では出力が変わりません。**
+    // **変異 23 では ID が計算順に配られるので、ここで確定的に落ちます。**
+    //
+    // **プールより優先します。** プールに任せると添字順で回り、1 スレッドでは
+    // 順序が変わらないので**番人が空回りします**（実際に空回りしました）。
 #if defined(KRISITE_MUTATION_NO_EXIT_BARRIER)
-    if (pool != nullptr) {
+    // **反転はプールより優先します。** プールに任せると添字順で回るので、
+    // **1 スレッドでは順序が変わらず、番人が空回りします**（実際に空回りしました）
+    if (sopt.reverse_fan) {
+        for (std::size_t v = vertex_count; v-- > 0;) compute_fused(v, 0u);
+    } else if (pool != nullptr) {
         pool->run(vertex_count, compute_fused, 256);
     } else {
         for (std::size_t v = 0; v < vertex_count; ++v) compute_fused(v, 0u);
@@ -426,7 +460,9 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
     for (char c : fan_tid_seen) st.fan_threads_used += (c != 0) ? 1u : 0u;
     auto t_apply = clk::now();
 #else
-    if (pool != nullptr) {
+    if (sopt.reverse_fan) {
+        for (std::size_t v = vertex_count; v-- > 0;) compute(v, 0u);
+    } else if (pool != nullptr) {
         // **扇は 1 項目あたりが軽い**（0.6 µs）ので、下限を既定より上げます
         // （損益分岐 ≈ 50。`SPEC-phase4.md` §6.3）
         pool->run(vertex_count, compute, 256);
