@@ -93,6 +93,10 @@ krisite_add_test(cp5           csg/test_cp5.cpp)
 krisite_add_test(cp5n          csg/test_cp5n.cpp)
 # **n 項のケース 17 / 18**（SPEC-phase3 §9）。別の演算木で同じ立体を作る恒等式。
 krisite_add_test(nary          csg/test_nary.cpp)
+# SPEC-phase3 §5.2.0 / §9 のケース 27。**「内側」の定義（w > 0）**。
+# 既存の検査（位相・体積・分割戦略・決定性・正解器）がすべて素通りするので、
+# **絶対値で検査します**（§9.1）。
+krisite_add_test(winding csg/test_winding.cpp)
 # **凸分割**（SPEC-phase3 §4.1）。三角形化との比較と、決定性。
 krisite_add_test(convex        csg/test_convex.cpp)
 # **並列化**（SPEC-phase4 §7）。決定性が主検出器。
