@@ -67,6 +67,21 @@ struct Indicator {
     };
     std::vector<Node> nodes;
 
+    /// **「内側」の判定を $w > 0$ にする**（`IMPL-phase5.md` §53）。**既定は偽。**
+    ///
+    /// > **自己交差した入力では巻き数が負になる領域が生じます。**
+    /// > $w = -1$ の領域は「面が裏返っている部分」で、**立体の内部ではありません。**
+    /// > **$w \ne 0$ だと、これを内側と判定します。**
+    ///
+    /// **巻き数が負にならない入力（自己交差なし）では、$w \ne 0$ と一致します。**
+    /// **だから CP1 では問題が出ませんでした。**
+    ///
+    /// **既定を変えていません。** 仕様（`SPEC-phase3.md` §5）が訂正されるまでは、
+    /// **検証のための旗**です。$n$ 項の演算では条件がもっと複雑になるので
+    /// （$A \setminus B$ は $w_A > 0$ かつ $w_B \le 0$）、
+    /// **単純な置き換えでよいかは演算ごとに確かめる必要があります。**
+    bool positive_inside = false;
+
     bool eval(const std::vector<std::int32_t>& w) const {
         KRISITE_CHECK(!nodes.empty(), "Indicator: 空の式");
         std::vector<char> v(nodes.size(), 0);
@@ -75,7 +90,8 @@ struct Indicator {
             switch (n.kind) {
                 case Kind::Source:
                     KRISITE_CHECK(n.src < w.size(), "Indicator: source の添字が範囲外");
-                    v[i] = (w[n.src] != 0) ? 1 : 0;  // **非零なら内側**（§5.1）
+                    // **既定は「非零なら内側」**（§5.1）。旗が立つと「正なら内側」
+                    v[i] = (positive_inside ? (w[n.src] > 0) : (w[n.src] != 0)) ? 1 : 0;
                     break;
                 case Kind::Not:
                     v[i] = v[n.a] ? 0 : 1;
@@ -155,6 +171,15 @@ struct PolySoup {
     /// （実測: 局所 BSP の仕事の 81〜91% がそこにありました。`IMPL-phase5.md` §19）。
     ///
     /// **偽なら従来どおり切ります。** 安全側に倒れます。
+    /// **多角形ごとの、領域の巻き数**（表 / 裏）。
+    ///
+    /// **`BoolOptions::record_winding` が真のときだけ埋まります**（既定は偽）。
+    /// 多角形の数だけ確保するので、**診断のときにだけ払う費用**です。
+    ///
+    /// **隣り合うべき 2 つの断片が「違う巻き数を持つ」のか
+    /// 「同じ巻き数なのに繋がっていない」のかを分けるのに要ります**
+    /// （前者は分類の問題、後者は縫合の問題。`IMPL-phase5.md` §52）。
+    std::vector<std::vector<std::int32_t>> poly_w_front, poly_w_back;
     std::vector<std::uint8_t> nsi;
     std::vector<std::uint8_t> nnc;
     /// 指示関数（§5.2）。**表ではなく関数**

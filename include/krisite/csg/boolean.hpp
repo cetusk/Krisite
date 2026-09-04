@@ -207,6 +207,11 @@ struct BoolStats {
     std::size_t empty_cells = 0;          ///< どちらも居ないので丸ごと飛ばしたセル
     std::size_t early_out_fragments = 0;  ///< そのセルで作った断片（分類を省いた数）
     std::size_t early_out_raycasts = 0;   ///< セルの隅（**整数点**）1 つで済ませた判定
+    /// **early-out が求めた巻き数が負だった回数**（`IMPL-phase5.md` §55.2）。
+    ///
+    /// 以前は `-1` を「未確定」の印にしていたので、**ここが非零なら誤認が起きていました。**
+    /// **番人としても使えます** — 修正後にこれが非零なら、修正が効いた証拠です。
+    std::size_t early_out_negative = 0;
 
     /// §4 の構成点キャッシュ（§4.4 の記録）。
     std::size_t cache_hits = 0;
@@ -407,6 +412,11 @@ struct BoolOptions {
     /// **並列化できるかを機構で確かめるためのフラグ**です。出力の順序は変わりますが、
     /// **幾何の多重集合は変わらないはず**です。
     bool reverse_regions = false;
+    /// **領域の巻き数を出力に残す**（`IMPL-phase5.md` §52）。**既定は偽。**
+    ///
+    /// **診断のためだけの旗**です。多角形の数だけ確保するので、
+    /// **切っておけば費用はゼロ**です。
+    bool record_winding = false;
 };
 
 /// ブール演算。`depth` は八分木の深度（実行時パラメータ。SPEC-phase1 §2.2）。
