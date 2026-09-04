@@ -54,6 +54,14 @@ struct SoupMesh {
     /// **異常な辺に接する面が、同じ入力三角形から 3 枚以上出ていないか**を
     /// 調べるのに要ります（`IMPL-phase5.md` §50）。
     std::vector<std::uint32_t> tri_tag;
+    /// **三角形ごとの、スープの多角形の添字**（`triangles` と同じ長さ）。
+    ///
+    /// **これがあると、出力の三角形から支持平面・向き・領域まで辿れます。**
+    /// 由来タグ（元の多角形 ID）とは別で、**こちらは演算後の多角形**を指します。
+    ///
+    /// **異常な辺に接する面が、どの領域から出たか**を調べるのに要ります
+    /// （`IMPL-phase5.md` §52）。
+    std::vector<std::uint32_t> tri_poly;
     /// **頂点ごとの平面 3 つ組**（`vertices` と同じ長さ）。
     ///
     /// 頂点は「支持平面 1 枚 + 隣り合う辺平面 2 枚」の交点として作られます。
@@ -252,6 +260,8 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         // **由来タグ（元の多角形 ID）も引き継ぎます**（§4.3）。
         // `tri_src` だけでは「同じ入力三角形から何枚出たか」が分かりません
         out.tri_tag.insert(out.tri_tag.end(), poly_tris[pi].size(), s.polys[pi].tag);
+        out.tri_poly.insert(out.tri_poly.end(), poly_tris[pi].size(),
+                            static_cast<std::uint32_t>(pi));
     }
     for (const TJunctionStats& t : tl_t) detail::merge_tjunction_stats(st.t, t);
 

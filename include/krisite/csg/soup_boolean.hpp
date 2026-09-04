@@ -899,6 +899,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // スレッド数に依らず出力はビット単位で同一になります（§4.2）
     std::vector<Poly> region_poly(region_order.size());
     std::vector<char> region_emit(region_order.size(), 0);
+    // **診断の旗が立っているときだけ確保します**（`IMPL-phase5.md` §52）。
+    // 切っておけば空のままで、費用はゼロです
+    std::vector<std::vector<std::int32_t>> region_wf(opt.record_winding ? region_order.size() : 0),
+        region_wb(opt.record_winding ? region_order.size() : 0);
 #if defined(KRISITE_MUTATION_JOIN_ORDER)
     // 変異 20: **結合時の正準な整列を外す**（`SPEC-phase4.md` §7.5）。
     //
@@ -1025,13 +1029,24 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #else
         region_poly[ri] = std::move(q);
         region_emit[ri] = 1;
+        // **診断の旗が立っているときだけ、領域の巻き数を控えます**（§52）
+        if (opt.record_winding) {
+            region_wf[ri] = w_front;
+            region_wb[ri] = w_back;
+        }
 #endif
     });
 
     // **領域の順に結合します**（§4.2）。**ここが出力の多角形の並びを決めます。**
 #if !defined(KRISITE_MUTATION_JOIN_ORDER)
     for (std::size_t ri = 0; ri < region_order.size(); ++ri) {
-        if (region_emit[ri] != 0) out.polys.push_back(std::move(region_poly[ri]));
+        if (region_emit[ri] != 0) {
+            if (opt.record_winding) {
+                out.poly_w_front.push_back(std::move(region_wf[ri]));
+                out.poly_w_back.push_back(std::move(region_wb[ri]));
+            }
+            out.polys.push_back(std::move(region_poly[ri]));
+        }
     }
 #endif
     for (unsigned k = 0; k < nthreads; ++k) {
