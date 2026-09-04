@@ -24,6 +24,7 @@
 #include "krisite/mesh/topology.hpp"
 #include "krisite/par/thread_pool.hpp"
 
+#include "corpus_expect.hpp"
 #include "thingi10k/loader.hpp"
 #include "volume_fp.hpp"
 
@@ -144,6 +145,20 @@ struct PairStruct {
     double ms_arrange = 0, ms_classify = 0, ms_stitch = 0;
     std::size_t unresolved = 0, edges_excess = 0, edges_deficient = 0;
     std::size_t max_edge_degree = 0;
+    // ---- 除外の判定に要る 4 項目（`SPEC-phase2.md` §9.3.1）----------------------
+    //
+    // **除外の 7 条件のうち、記録していたのは 3 つだけでした**
+    // （`unresolved > 0` / 不足辺 0 / 最大次数 ≤ 4）。**残る 4 つが無いので、
+    // 実データの記録からは除外かどうかを判定できませんでした**（`IMPL-phase5.md` §48）。
+    //
+    // **`check_topology` は既に呼ばれており、`TopologyReport` に全項目が入っています。
+    // 記録していないだけでした。**
+    std::size_t edges_odd_degree = 0;
+    std::size_t nonmanifold_unexplained = 0;
+    /// 3 演算すべてで成立したか（**論理積**。1 つでも崩れたら除外できません）
+    int all_oriented = 1, all_no_degenerate = 1;
+    /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
+    int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
     /// **検査は量子化後に走る**ので、模型ごとにキャッシュできません（§33）。
     int nsi_a = -1, nsi_b = -1;
@@ -180,6 +195,18 @@ struct PairStruct {
         edges_excess += r.edges_excess;
         edges_deficient += r.edges_deficient;
         max_edge_degree = std::max(max_edge_degree, r.max_edge_degree);
+        // **除外の判定に要る 4 項目**（§9.3.1）
+        edges_odd_degree += r.edges_odd_degree;
+        nonmanifold_unexplained += r.nonmanifold_vertices_unexplained;
+        all_oriented &= r.oriented ? 1 : 0;
+        all_no_degenerate &= r.no_degenerate ? 1 : 0;
+        {
+            const kritest::Exclusion ex = kritest::exclusion_when_split(t.split.unresolved, r);
+            std::string why;
+            if (ex != kritest::Exclusion::None && kritest::exclusion_conditions_ok(ex, r, &why)) {
+                ++excluded_ops;
+            }
+        }
     }
     void print(std::ostream& o) const {
         o << polys << ' ' << fragments << ' ' << regions << ' ' << raycasts << ' ' << ray_tri_tests
@@ -189,7 +216,9 @@ struct PairStruct {
           << edges_deficient << ' ' << max_edge_degree << ' ' << leaf_single_src << ' '
           << leaf_single_max << ' ' << leaf_both_max << ' ' << bsp_slots << ' ' << bsp_used << ' '
           << bsp_slots_single << ' ' << bsp_used_single << ' ' << vol_err << ' ' << diff_err << ' '
-          << nsi_a << ' ' << nsi_b << ' ' << fm_seconds;
+          << nsi_a << ' ' << nsi_b << ' ' << fm_seconds << ' ' << edges_odd_degree << ' '
+          << nonmanifold_unexplained << ' ' << all_oriented << ' ' << all_no_degenerate << ' '
+          << excluded_ops;
     }
 };
 
