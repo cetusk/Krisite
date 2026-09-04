@@ -207,6 +207,11 @@ struct BoolStats {
     std::size_t empty_cells = 0;          ///< どちらも居ないので丸ごと飛ばしたセル
     std::size_t early_out_fragments = 0;  ///< そのセルで作った断片（分類を省いた数）
     std::size_t early_out_raycasts = 0;   ///< セルの隅（**整数点**）1 つで済ませた判定
+    /// **early-out が求めた巻き数が負だった回数**（`IMPL-phase5.md` §55.2）。
+    ///
+    /// 以前は `-1` を「未確定」の印にしていたので、**ここが非零なら誤認が起きていました。**
+    /// **番人としても使えます** — 修正後にこれが非零なら、修正が効いた証拠です。
+    std::size_t early_out_negative = 0;
 
     /// §4 の構成点キャッシュ（§4.4 の記録）。
     std::size_t cache_hits = 0;

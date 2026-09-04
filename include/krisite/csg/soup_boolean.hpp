@@ -111,6 +111,7 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.empty_cells += b.empty_cells;
     a.early_out_cells += b.early_out_cells;
     a.early_out_raycasts += b.early_out_raycasts;
+    a.early_out_negative += b.early_out_negative;
     a.split_plane_slots += b.split_plane_slots;
     a.split_planes_used += b.split_planes_used;
     a.bsp_cut_slots += b.bsp_cut_slots;
@@ -369,7 +370,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     std::vector<octree::Cell> frag_cell;
     std::vector<std::uint32_t> frag_src, frag_tag;
     /// セルで「多角形が 1 枚も無かった source」の内外（-1 = 未確定）。§3.2 の early-out
-    std::vector<std::vector<std::int8_t>> frag_forced;
+    std::vector<std::vector<std::int32_t>> frag_forced;
+    /// **その source の巻き数が確定しているか**（`frag_forced` と同じ形）。
+    /// **符号のある量に負を番人の値として使わないため**（`IMPL-phase5.md` §55.2）
+    std::vector<std::vector<char>> frag_forced_known;
 
     // **セル面の平面は先に登録します。** 平面表は葉の処理中に伸ばせません
     // （共有される可変状態になります）。セルだけで決まるので前に出せます。
@@ -392,7 +396,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     struct LeafOut {
         std::vector<Fragment> frags;
         std::vector<std::uint32_t> src, tag;
-        std::vector<std::int8_t> forced;
+        std::vector<std::int32_t> forced;
+        std::vector<char> forced_known;
         bool empty_cell = false;
         bool active = false;
     };
@@ -513,7 +518,15 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
         }
 
-        std::vector<std::int8_t> forced(n_src, -1);
+        // **未確定は別の変数で持ちます**（`IMPL-phase5.md` §55.2）。
+        //
+        // > **符号のある量に「負を番人の値として使う」設計が誤りでした。**
+        // > 以前は `-1` を未確定の印にしており、**巻き数が $-1$ の領域と
+        // > 区別できませんでした。** 自己交差した入力では巻き数が負になります。
+        //
+        // **`std::int8_t` もやめます。** 巻き数は入力の面数まで大きくなり得ます。
+        std::vector<std::int32_t> forced(n_src, 0);
+        std::vector<char> forced_known(n_src, 0);
         if (opt.early_out) {
             const geom::IPoint corner{static_cast<std::int32_t>(cbox.lo[0]),
                                       static_cast<std::int32_t>(cbox.lo[1]),
@@ -528,7 +541,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 KRISITE_CHECK(cf == 0 && cb == 0,
                               "early-out: セルの隅が source の曲面に載っている"
                               "（曲面が無いはずのセル）");
-                forced[i] = static_cast<std::int8_t>(wo);
+                forced[i] = wo;
+                forced_known[i] = 1;
+                if (wo < 0) ++st.early_out_negative;  // **欠陥が届く範囲を数えます**
                 ++st.early_out_raycasts;
                 any = true;
             }
@@ -775,6 +790,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         outl.src = std::move(local_src);
         outl.tag = std::move(local_tag);
         outl.forced = forced;
+        outl.forced_known = forced_known;
         outl.active = !outl.frags.empty();
         if (outl.active) ++st.active_cells;
     });
@@ -795,6 +811,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             frag_src.push_back(o.src[i]);
             frag_tag.push_back(o.tag[i]);
             frag_forced.push_back(o.forced);
+            frag_forced_known.push_back(o.forced_known);
         }
     }
     for (const BoolStats& t : tl_stats) detail::merge_stats(st, t);
@@ -937,14 +954,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
         bool need_point = false;
         for (std::size_t i2 = 0; i2 < n_src; ++i2) {
-            if (frag_forced[pick][i2] < 0) need_point = true;
+            if (frag_forced_known[pick][i2] == 0) need_point = true;
         }
         geom::HPointD rep{};
         if (need_point) rep = interior_point(out.table, f, cache, &st.interior);
 
         std::vector<std::int32_t> w_front(n_src, 0), w_back(n_src, 0);
         for (std::size_t i2 = 0; i2 < n_src; ++i2) {
-            if (frag_forced[pick][i2] >= 0) {
+            if (frag_forced_known[pick][i2] != 0) {
                 // セルに曲面が無い source。隅で決めた巻き数が全体で一定
                 w_front[i2] = frag_forced[pick][i2];
                 w_back[i2] = frag_forced[pick][i2];
