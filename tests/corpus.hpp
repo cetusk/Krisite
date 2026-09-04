@@ -664,6 +664,62 @@ inline TriMesh case26p_b() {
     return bumpy_box(-5, 7, 16, 2);
 }
 
+/// **向きを逆にした立方体を足す**（`SPEC-phase3.md` §9 のケース 27）。
+///
+/// **面を反転すると法線が内向きになり、巻き数が負になります。**
+/// **$\partial S = 0$ は保たれます** — 各辺の向きも一緒に反転するので、
+/// 隣接する面との打ち消しが成立したままです。
+inline void add_oriented_box(TriMesh& m, std::int32_t lo, std::int32_t hi, bool flip) {
+    const auto o = static_cast<std::uint32_t>(m.vertices.size());
+    for (int k = 0; k < 8; ++k)
+        m.vertices.push_back({(k & 1) ? hi : lo, (k & 2) ? hi : lo, (k & 4) ? hi : lo});
+    static const std::uint32_t t[12][3] = {{0, 3, 1}, {0, 2, 3}, {4, 5, 7}, {4, 7, 6},
+                                           {0, 1, 5}, {0, 5, 4}, {1, 3, 7}, {1, 7, 5},
+                                           {3, 2, 6}, {3, 6, 7}, {2, 0, 4}, {2, 4, 6}};
+    for (const auto& x : t) {
+        if (flip) {
+            m.triangles.push_back({o + x[0], o + x[2], o + x[1]});
+        } else {
+            m.triangles.push_back({o + x[0], o + x[1], o + x[2]});
+        }
+    }
+}
+
+/// **ケース 27a: 逆向きの立方体 1 個**（12 三角形。`SPEC-phase3.md` §9.1）。
+///
+/// **すべての領域が $w = -1$ なので、正しくは「立体は無い」**です。
+/// **旧定義（$w \ne 0$）では、裏返った立方体を「立体」として出力します。**
+///
+/// **既存の検査をすべて素通りします** — 多様体な出力が返り、体積の恒等式は
+/// 符号が変わるだけで成立し、**正解器も同じ誤りを持っています。**
+inline TriMesh case27a() {
+    TriMesh m;
+    add_oriented_box(m, at(-1, 2), 0, true);
+    return m;
+}
+
+/// **ケース 27b: 大きい立方体 + 外に置いた逆向きの小さい立方体**（24 三角形）。
+///
+/// **一部だけが裏返る形**で、実データに近いと考えられます。
+/// **かたまりの数で違いが出ます**（旧定義で 2、正しい定義で 1）。
+inline TriMesh case27b() {
+    TriMesh m;
+    add_oriented_box(m, at(-1, 2), 0, false);
+    add_oriented_box(m, at(1, 8), at(3, 8), true);
+    return m;
+}
+
+/// **ケース 27c: 27b と同じ配置で、どちらも正しい向き**（対照）。
+///
+/// **巻き数が負にならないので、$w \ne 0$ と $w > 0$ で出力が完全に一致するはず**です。
+/// **定義を変えたときに、自己交差しない入力の挙動が変わっていないことを守ります。**
+inline TriMesh case27c() {
+    TriMesh m;
+    add_oriented_box(m, at(-1, 2), 0, false);
+    add_oriented_box(m, at(1, 8), at(3, 8), false);
+    return m;
+}
+
 /// ケース 25: 細分された立方体の対（$k=2$ で 48 三角形。**最小の再現**）。
 inline TriMesh case25_a() {
     return tess_box(-12, 4, 16, 2);
