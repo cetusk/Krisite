@@ -46,6 +46,27 @@ struct SoupMesh {
     /// **次数 4 の辺で「4 枚がどの source から来たか」を数えるのに要ります** —
     /// 自己接触（A/A・B/B）か 2 立体の接触（A–B）かは、これでしか分かりません。
     std::vector<int> tri_src;
+    /// **三角形ごとの由来タグ**（`SPEC-phase3.md` §4.3。**元の多角形 ID**）。
+    ///
+    /// `tri_src` は「どちらの入力メッシュか」しか区別しません。
+    /// **「元の何番目の三角形か」は、ここでしか分かりません。**
+    ///
+    /// **異常な辺に接する面が、同じ入力三角形から 3 枚以上出ていないか**を
+    /// 調べるのに要ります（`IMPL-phase5.md` §50）。
+    std::vector<std::uint32_t> tri_tag;
+    /// **頂点ごとの平面 3 つ組**（`vertices` と同じ長さ）。
+    ///
+    /// 頂点は「支持平面 1 枚 + 隣り合う辺平面 2 枚」の交点として作られます。
+    /// **その 3 つ組が、頂点の同一性の第 1 段の鍵**です。
+    ///
+    /// **値で併合された頂点では、代表の 3 つ組だけが残ります。**
+    /// 何個の 3 つ組がその頂点に落ちたかは `vertex_merged` が持ちます。
+    std::vector<std::array<PlaneId, 3>> vertex_key;
+    /// **その頂点に落ちた平面 3 つ組の数**（1 なら併合されていない）。
+    ///
+    /// **2 以上なら「4 枚以上の平面が 1 点で交わった」**ということです。
+    /// **別位置の 2 本の辺が 1 本に束ねられていないか**を調べるのに要ります。
+    std::vector<std::uint32_t> vertex_merged;
     bool empty() const noexcept { return triangles.empty(); }
 };
 
@@ -125,6 +146,7 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
     // **4 平面以上が 1 点で交わると 3つ組が違っても同じ点になる**ので、第2段が要ります。
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
     std::vector<geom::HPointD> points;
+    std::vector<std::array<PlaneId, 3>> point_key;
     std::vector<std::vector<std::uint32_t>> raw(s.polys.size());
 
     for (std::size_t pi = 0; pi < s.polys.size(); ++pi) {
@@ -138,6 +160,9 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
             if (it == by_key.end()) {
                 const auto id = static_cast<std::uint32_t>(points.size());
                 points.push_back(fragment_vertex(s.table, f, i));
+                // **3 つ組を控えます**（`IMPL-phase5.md` §50）。
+                // 頂点の同一性の第 1 段の鍵で、**異常な辺の端点を調べるのに要ります**
+                point_key.push_back(k);
                 it = by_key.emplace(k, id).first;
             }
             raw[pi].push_back(it->second);
@@ -172,6 +197,10 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         }
         if (best != i) ++st.canonical_swaps;
         out.vertices.push_back(points[order[best]]);
+        // **代表の 3 つ組と、この頂点に落ちた 3 つ組の数**（§50）。
+        // **2 以上なら 4 枚以上の平面が 1 点で交わっています**
+        out.vertex_key.push_back(point_key[order[best]]);
+        out.vertex_merged.push_back(static_cast<std::uint32_t>(j - i));
         if (j - i > 1) st.merged_by_value += (j - i - 1);
         i = j;
     }
@@ -220,6 +249,9 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         for (const mesh::Tri& t : poly_tris[pi]) out.triangles.push_back(t);
         out.tri_src.insert(out.tri_src.end(), poly_tris[pi].size(),
                            static_cast<int>(s.polys[pi].src));
+        // **由来タグ（元の多角形 ID）も引き継ぎます**（§4.3）。
+        // `tri_src` だけでは「同じ入力三角形から何枚出たか」が分かりません
+        out.tri_tag.insert(out.tri_tag.end(), poly_tris[pi].size(), s.polys[pi].tag);
     }
     for (const TJunctionStats& t : tl_t) detail::merge_tjunction_stats(st.t, t);
 
@@ -233,7 +265,13 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         sopt.reverse_fan = opt.reverse_fan;
         out.triangles = mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split,
                                              nullptr, nullptr, &pool, sopt);
-        for (std::uint32_t o : origin) out.vertices.push_back(out.vertices[o]);
+        // **分裂で複製された頂点は、元の頂点と同じ位置・同じ 3 つ組**です。
+        // **添えた情報も一緒に複製しないと、長さが合わなくなります**
+        for (std::uint32_t o : origin) {
+            out.vertices.push_back(out.vertices[o]);
+            out.vertex_key.push_back(out.vertex_key[o]);
+            out.vertex_merged.push_back(out.vertex_merged[o]);
+        }
     }
 
     st.ms_split = lap(t_stage);
