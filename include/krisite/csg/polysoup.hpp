@@ -67,6 +67,21 @@ struct Indicator {
     };
     std::vector<Node> nodes;
 
+    /// **「内側」の判定を $w > 0$ にする**（`IMPL-phase5.md` §53）。**既定は偽。**
+    ///
+    /// > **自己交差した入力では巻き数が負になる領域が生じます。**
+    /// > $w = -1$ の領域は「面が裏返っている部分」で、**立体の内部ではありません。**
+    /// > **$w \ne 0$ だと、これを内側と判定します。**
+    ///
+    /// **巻き数が負にならない入力（自己交差なし）では、$w \ne 0$ と一致します。**
+    /// **だから CP1 では問題が出ませんでした。**
+    ///
+    /// **既定を変えていません。** 仕様（`SPEC-phase3.md` §5）が訂正されるまでは、
+    /// **検証のための旗**です。$n$ 項の演算では条件がもっと複雑になるので
+    /// （$A \setminus B$ は $w_A > 0$ かつ $w_B \le 0$）、
+    /// **単純な置き換えでよいかは演算ごとに確かめる必要があります。**
+    bool positive_inside = false;
+
     bool eval(const std::vector<std::int32_t>& w) const {
         KRISITE_CHECK(!nodes.empty(), "Indicator: 空の式");
         std::vector<char> v(nodes.size(), 0);
@@ -75,7 +90,8 @@ struct Indicator {
             switch (n.kind) {
                 case Kind::Source:
                     KRISITE_CHECK(n.src < w.size(), "Indicator: source の添字が範囲外");
-                    v[i] = (w[n.src] != 0) ? 1 : 0;  // **非零なら内側**（§5.1）
+                    // **既定は「非零なら内側」**（§5.1）。旗が立つと「正なら内側」
+                    v[i] = (positive_inside ? (w[n.src] > 0) : (w[n.src] != 0)) ? 1 : 0;
                     break;
                 case Kind::Not:
                     v[i] = v[n.a] ? 0 : 1;
