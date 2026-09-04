@@ -294,6 +294,17 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 4096);
     const std::string list = (argc > 1) ? argv[1] : "data/thingi10k/cp1.txt";
+    // **付随ファイルは一覧の名前から機械的に決めます**（`cp1.txt` → `cp1_*`）。
+    //
+    // **CP2 / CP3 で書き換えないため**です。手で書くと、CP1 の記録に CP2 の結果を
+    // 追記する事故が起きます（§40 の変換の取り違えと同じ形 — **手で書ける口を塞ぐ**）。
+    const std::string stem = [&list] {
+        const std::size_t sl = list.find_last_of('/');
+        std::string b = (sl == std::string::npos) ? list : list.substr(sl + 1);
+        const std::size_t dot = b.rfind(".txt");
+        return (dot == std::string::npos) ? b : b.substr(0, dot);
+    }();
+    const std::string base = "data/thingi10k/" + stem;
     const std::size_t limit = (argc > 2) ? std::strtoul(argv[2], nullptr, 10) : 0;
     const unsigned depth = (argc > 3) ? static_cast<unsigned>(std::atoi(argv[3])) : 6;
     const unsigned nthreads = (argc > 4) ? static_cast<unsigned>(std::atoi(argv[4])) : 16;
@@ -315,7 +326,7 @@ int main(int argc, char** argv) {
     // **少数の対だけ構造を採りたい**場面のためです（`SPEC-phase5.md` §1.5.4）。
     std::vector<std::string> only;
     {
-        std::ifstream f("data/thingi10k/cp1_only.txt");
+        std::ifstream f(base + "_only.txt");
         std::string line;
         while (std::getline(f, line)) {
             if (!line.empty()) only.push_back(line.substr(0, line.find(' ')));
@@ -324,7 +335,7 @@ int main(int argc, char** argv) {
     // 資源上限で落ちた対（1 行 1 対）。**手で足すのではなく、監視スクリプトが足します**
     std::vector<std::string> skip;
     {
-        std::ifstream f("data/thingi10k/cp1_skip.txt");
+        std::ifstream f(base + "_skip.txt");
         std::string line;
         while (std::getline(f, line)) {
             if (!line.empty()) skip.push_back(line.substr(0, line.find(' ')));
@@ -396,11 +407,11 @@ int main(int argc, char** argv) {
     // **やり直しモードは別のファイルに書きます。** 追記すると再開の記録が濁ります
     // **やり直しは b ごとに別ファイル**。混ぜると意味が変わります
     const std::string done_path =
-        redo ? ("data/thingi10k/cp1_struct_b" + std::to_string(KRISITE_COORD_BITS) + ".txt")
-             : "data/thingi10k/cp1_results.txt";
+        redo ? (base + "_struct_b" + std::to_string(KRISITE_COORD_BITS) + ".txt")
+             : (base + "_results.txt");
     std::vector<std::string> already;
     {
-        std::ifstream f("data/thingi10k/cp1_results.txt");
+        std::ifstream f(base + "_results.txt");
         std::string line;
         while (std::getline(f, line)) {
             if (!line.empty()) already.push_back(line.substr(0, line.find(' ')));

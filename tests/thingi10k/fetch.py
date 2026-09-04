@@ -128,9 +128,32 @@ def select(rows, which, count, seed):
         ]
     elif which == "cp2":
         # 交差のあるモデル（自己交差入力。self-union が効くか）
-        pool = [r for r in rows if (num(r, "num_self_intersections") or 0) > 0]
+        #
+        # **面数の帯は CP1 と同じにします**（`SPEC-phase5.md` §2）。
+        # **CP2 で変えるのは「自己交差の有無」だけ**です。
+        #
+        # 帯を切らないと、自己交差する模型は複雑な形状に偏るぶん規模も大きくなり
+        # （実測: 中央 2.0 倍、90% 分位 5.1 倍、最大 19.8 倍）、
+        # **「自己交差の効果」と「規模の効果」が交絡します。**
+        #
+        # **規模を広げるのは別の目的**です。CP3（全 10K）かその先で扱ってください。
+        pool = [
+            r
+            for r in rows
+            if (num(r, "num_self_intersections") or 0) > 0
+            and 1000 <= (num(r, "num_faces") or 0) <= 100000
+        ]
     elif which == "cp3":
-        pool = list(rows)
+        # 全 10K。**solid・多様体・自己交差の条件は課しません**
+        # （PWN でない模型や退化した模型を含めて、入口の検査が働くかを試すため）。
+        #
+        # **ただし面数の帯は CP1 / CP2 と同じにします**（`SPEC-phase5.md` §2）。
+        # **CP3 で変えるのは「模型の性質」だけ**です。
+        #
+        # **規模の上限を試すのは別の工程です**（§7.1）。CP3 に混ぜると、
+        # 失敗したときに「入口の検査が捉えられない性質のせい」なのか
+        # 「規模が大きすぎたせい」なのかが分かりません。
+        pool = [r for r in rows if 1000 <= (num(r, "num_faces") or 0) <= 100000]
     else:
         raise SystemExit(f"未知の集合: {which}")
     pool.sort(key=lambda r: int(r["file_id"]))

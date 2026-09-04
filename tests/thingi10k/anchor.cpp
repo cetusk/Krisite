@@ -72,6 +72,27 @@ int main(int argc, char** argv) {
         "| **汚染の判定** | **最大/最小 > %.2f なら棄却**（内側の load average は"
         "外部の負荷を見ないので、**ばらつきで判定します**。`IMPL-phase5.md` §26） |\n",
         1.10);
+    // ---- ★ 定常状態で測る（`PERF.md` §1.5 / §5.4）------------------------------
+    //
+    // **「冷えた 1 回目」は最速値であって代表値ではありません。**
+    // CP2 / CP3 は何時間も連続で回るので、**定常（熱い）が代表的**です。
+    // そして**冷やすのは待つしかない**のに対し、**温めるのは走らせればよい。**
+    //
+    // **ドリフト検査を測定に埋め込みます**（アイドルより確実。`/proc/loadavg` が
+    // 使えなかったときと同じ形）。**先頭の対を最後にもう一度測り、差で判定します。**
+    const double warm_sec =
+        (std::getenv("KRI_WARMUP_SEC") != nullptr) ? std::atof(std::getenv("KRI_WARMUP_SEC")) : 0.0;
+    // **判定は 3%。** 判定したい差は 1.70 対 1.87 = 10% で、ドリフト δ は
+    // 係数の幅を最大 $(1+\delta)$ 倍に膨らませます。**信号の 1/3 以下**が要ります。
+    // **発明した数字ではありません。**
+    const double kDriftTol = 0.03;
+    std::printf("| **ウォームアップ** | **%.0f 秒**（先頭の対を空回し。定常に入れるため） |\n",
+                warm_sec);
+    std::printf("| **ドリフト検査** | **先頭の対を最後にもう一度測る。差 > %.0f%% なら棄却** |\n",
+                kDriftTol * 100);
+    std::printf(
+        "| **測定順** | **大きさ順にしない**（後の対ほど熱く、残留ドリフトが規模と"
+        "相関して $W_b$ の指数に直接効きます） |\n");
     std::printf("| 最適化 | `-O2` |\n\n");
 
     std::printf(
@@ -84,6 +105,10 @@ int main(int argc, char** argv) {
         "---:|---:|---:|---|\n");
 
     const auto index = kri_cp1_index("data/thingi10k/cp1.txt");
+    // ドリフト検査用。**先頭の対の最小値**を覚えておき、最後の測定と比べます
+    std::string drift_key;
+    double drift_first = 0.0, drift_last = 0.0;
+    bool warmed = false;
 
     // **対は `"AxB"` で渡します。** ファイル名を渡す形だと変換を手で書くことになり、
     // §33 / §40 の取り違えが再発します
@@ -109,6 +134,40 @@ int main(int argc, char** argv) {
         }
         const csg::PolySoup A = csg::from_mesh(qa.mesh), B = csg::from_mesh(qb.mesh);
         par::ThreadPool pool(nthreads);
+
+        // ---- ウォームアップ（**先頭の対だけ。結果は捨てます**）------------------
+        if (!warmed) {
+            warmed = true;
+            const auto w0 = std::chrono::steady_clock::now();
+            std::size_t nrun = 0;
+            while (std::chrono::duration<double>(std::chrono::steady_clock::now() - w0).count() <
+                   warm_sec) {
+                csg::BoolOptions o;
+                o.depth = 6;
+                o.adaptive = true;
+                o.cull_planes = true;
+                o.early_out = true;
+                o.cache_points = true;
+                o.local_bsp = true;
+                o.split_contacts = true;
+                o.threads = nthreads;
+                o.pool = &pool;
+                csg::ToMeshOptions tm;
+                tm.split_contacts = true;
+                tm.threads = nthreads;
+                tm.pool = &pool;
+                for (csg::BoolOp op :
+                     {csg::BoolOp::Union, csg::BoolOp::Intersection, csg::BoolOp::Difference}) {
+                    csg::to_mesh(csg::boolean(A, B, op, o), tm);
+                }
+                ++nrun;
+            }
+            if (warm_sec > 0) {
+                std::printf("<!-- ウォームアップ %.0f 秒 / %zu 巡（`%s`）-->\n", warm_sec, nrun,
+                            key.c_str());
+                std::fflush(stdout);
+            }
+        }
 
         std::vector<double> ts;
         csg::BoolStats best{};
@@ -179,6 +238,12 @@ int main(int argc, char** argv) {
             }
         }
         std::sort(ts.begin(), ts.end());
+        // **先頭の対の最小値**を基準に、**最後の測定**と比べます
+        if (drift_key.empty()) {
+            drift_key = key;
+            drift_first = ts.front();
+        }
+        if (key == drift_key) drift_last = ts.front();
         // **段別の割合**（`PERF.md` §1.1）
         const double atot = best.ms_arr_gather + best.ms_arr_present + best.ms_arr_prep +
                             best.ms_arr_frag + best.ms_arr_coplanar;
@@ -195,6 +260,17 @@ int main(int argc, char** argv) {
             best_ms_arr, best.ms_arr_gather * aq, best.ms_arr_present * aq, best.ms_arr_prep * aq,
             best.ms_arr_frag * aq, best.ms_arr_coplanar * aq, best_ms_cls, best_ms_sti,
             (ts.back() / ts.front() <= 1.10) ? "**清浄**" : "**棄却（汚染）**");
+    }
+    // ---- ★ ドリフトの判定（測定自身に定常を判定させます）------------------------
+    if (!drift_key.empty() && drift_last > 0 && drift_last != drift_first) {
+        const double d = std::abs(drift_last - drift_first) / std::min(drift_first, drift_last);
+        std::printf(
+            "\n**ドリフト検査**（`%s`）: 最初 **%.3f s** / 最後 **%.3f s** / "
+            "**差 %.1f%%** → **%s**\n",
+            drift_key.c_str(), drift_first, drift_last, d * 100,
+            (d <= kDriftTol) ? "**定常。採用**" : "**棄却。ウォームアップを延ばして再実行**");
+    } else if (!drift_key.empty()) {
+        std::printf("\n**ドリフト検査は未実施**（先頭の対を最後にもう一度渡してください）\n");
     }
     return 0;
 }

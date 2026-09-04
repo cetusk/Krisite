@@ -4,6 +4,8 @@
 
 ## 0. この文書の位置づけ
 
+> **用語の定義は `SPEC-phase1.md` §0.5 にあります**（正しさ / 正解器 / 番人 / 空回り）。
+
 **Phase 3 は中核を作り直すフェーズです。並列化はしません**（Phase 4）。
 
 判断の材料は [`DECISION-core-contract.md`](DECISION-core-contract.md)、
