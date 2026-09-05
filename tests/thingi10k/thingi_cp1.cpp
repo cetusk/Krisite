@@ -283,12 +283,34 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     // **対ごとの構造を採ります**（`SPEC-phase5.md` §1.5.0）。3 演算ぶんを合算。
     csg::SoupMesh out3[3];
     int k3 = 0;
+    // **★ 段ごとの進捗を出します**（2026-09-05 追加）。
+    //
+    // **対の中で「いまどの段にいるか」を出していませんでした。**
+    // 1 対に 2 時間以上かかったとき、**「進んでいるか」を判断する材料がありませんでした**
+    // （プロセスの CPU 時間しか見えず、`gdb` もこの環境にありません）。
+    //
+    // **`CLAUDE.md`「測定は、要求されなければ実装されません」**に当たります。
+    //
+    // **費用はほぼゼロです**（対あたり 6 行）。**打ち切りの判断に直接効きます。**
+    const char* kOpName[3] = {"∪", "∩", "＼"};
+    const auto t_pair = std::chrono::steady_clock::now();
+    const auto lap = [&t_pair]() {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t_pair).count();
+    };
     for (csg::BoolOp op :
          {csg::BoolOp::Union, csg::BoolOp::Intersection, csg::BoolOp::Difference}) {
         csg::BoolStats bs;
         csg::ToMeshStats ts;
+        std::printf("      [%6.1f s] %s 中核…\n", lap(), kOpName[k3]);
+        std::fflush(stdout);
         const csg::PolySoup soup = csg::boolean(A, B, op, o, &bs);
+        std::printf("      [%6.1f s] %s 中核 完了（多角形 %zu、断片 %zu）→ 出口…\n", lap(),
+                    kOpName[k3], soup.polys.size(), bs.raw_fragments);
+        std::fflush(stdout);
         out3[k3] = csg::to_mesh(soup, tm, &ts);
+        std::printf("      [%6.1f s] %s 出口 完了（三角形 %zu、頂点 %zu）\n", lap(), kOpName[k3],
+                    out3[k3].triangles.size(), out3[k3].vertices.size());
+        std::fflush(stdout);
         if (ps != nullptr) {
             ps->add(bs, ts, mesh::check_topology(out3[k3].triangles), soup.polys.size());
         }
