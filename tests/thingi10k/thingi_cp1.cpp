@@ -1,3 +1,10 @@
+// **★ この実行ファイルは `build/tests/cp1`（コーパスのテスト、`tests/csg/test_cp1.cpp`）
+// とは【別物】です。** 以前は両方とも `cp1` という名前になり得ました
+// （`CLAUDE.md`「同じ名前の実行ファイルを 2 つ作らないでください」）。
+//
+//     tests/csg/test_cp1.cpp      コーパスのテスト。`ctest` に入っている
+//     tests/thingi10k/thingi_cp1.cpp  **実データのドライバ。`ctest` に入っていない**
+//
 // Krisite — Phase 5 CP1: 実データでの正しさ（`SPEC-phase5.md` §3、§9）
 //
 // **拒否 / 失敗 / 停止を分けて数えます**（§1）。混ぜると数字が意味を失います。
@@ -162,6 +169,15 @@ struct PairStruct {
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
     /// **検査は量子化後に走る**ので、模型ごとにキャッシュできません（§33）。
     int nsi_a = -1, nsi_b = -1;
+    // ---- Phase 5 の 3 機構の発火（2026-09-05 追加）--------------------------------
+    //
+    // **実データの分布で、どれだけ効いたかを記録します。**
+    // **記録していなければ、後から「ログにない」となります**（`CLAUDE.md`）。
+    std::size_t cell_index_groups = 0;   ///< A-3: (葉, 支持平面) の組。**0 なら退避**
+    std::size_t assign_rejected = 0;     ///< 10-a: 落とした割り当て
+    std::size_t ray_kept = 0;            ///< D: 前判定を通った候補
+    std::size_t regions_negative_w = 0;  ///< **負の巻き数を持つ領域**（§2.9 の訂正が効いたか）
+    std::size_t regions_w_ge2 = 0;       ///< 巻き数 2 以上の領域
     /// **`from_mesh` 2 回ぶんの秒数（検査込み）。**
     ///
     /// **検査だけの時間ではありません。** 分けて測ろうとすると `from_mesh` を
@@ -188,6 +204,12 @@ struct PairStruct {
         bsp_slots_single += b.bsp_cut_slots_single;
         bsp_used_single += b.bsp_cuts_used_single;
         bsp_cells_skipped += b.bsp_cells_skipped_nsi;
+        // Phase 5 の 3 機構（2026-09-05 追加）
+        cell_index_groups += t.cell_index_groups;
+        assign_rejected += b.assign_rejected_plane;
+        ray_kept += b.ray_tri_kept;
+        regions_negative_w += b.regions_negative_w;
+        regions_w_ge2 += b.regions_w_ge2;
         ms_arrange += b.ms_arrange;
         ms_classify += b.ms_classify;
         ms_stitch += b.ms_stitch;
@@ -218,7 +240,10 @@ struct PairStruct {
           << bsp_slots_single << ' ' << bsp_used_single << ' ' << vol_err << ' ' << diff_err << ' '
           << nsi_a << ' ' << nsi_b << ' ' << fm_seconds << ' ' << edges_odd_degree << ' '
           << nonmanifold_unexplained << ' ' << all_oriented << ' ' << all_no_degenerate << ' '
-          << excluded_ops;
+          << excluded_ops
+          // Phase 5 の 3 機構（2026-09-05 追加）
+          << ' ' << cell_index_groups << ' ' << assign_rejected << ' ' << ray_kept << ' '
+          << regions_negative_w << ' ' << regions_w_ge2;
     }
 };
 
@@ -451,6 +476,37 @@ int main(int argc, char** argv) {
     };
     std::ofstream out(done_path, std::ios::app);
 
+    // **★ 回す前に「これから何対か」を出します**（`CLAUDE.md`「対象の数も設定の一部」）。
+    // **終わってから数えるのでは遅い。** 絞り込みの一覧が残っていて 2 対で終わった事例が
+    // あります（2026-09-05）。
+    {
+        std::size_t planned = 0, skipped_seen = 0, skipped_only = 0, skipped_halt = 0;
+        for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
+            const std::string key = ids[order[k]] + "x" + ids[order[k + 1]];
+            if (!only.empty() && std::find(only.begin(), only.end(), key) == only.end()) {
+                ++skipped_only;
+                continue;
+            }
+            if (!redo && seen(key)) {
+                ++skipped_seen;
+                continue;
+            }
+            if (std::find(skip.begin(), skip.end(), key) != skip.end()) {
+                ++skipped_halt;
+                continue;
+            }
+            ++planned;
+        }
+        std::printf(
+            "\n**これから %zu 対を回します**（全 %zu 対。既済 %zu / 一覧で除外 %zu / "
+            "停止済み %zu）\n",
+            planned, order.size() / 2, skipped_seen, skipped_only, skipped_halt);
+        if (!only.empty()) {
+            std::printf(
+                "**★ `%s_only.txt` が %zu 件に絞っています。**全件回すなら退避してください\n",
+                base.c_str(), only.size());
+        }
+    }
     std::printf("\n## ブール演算（対 %zu、スレッド %u）\n\n", order.size() / 2, nthreads);
     const auto t0 = std::chrono::steady_clock::now();
     for (std::size_t k = 0; k + 1 < order.size(); k += 2) {

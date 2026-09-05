@@ -149,6 +149,7 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.bsp_cells_skipped_nsi += b.bsp_cells_skipped_nsi;
     a.ray_tri_tests += b.ray_tri_tests;
     a.ray_tri_hits += b.ray_tri_hits;
+    a.ray_tri_kept += b.ray_tri_kept;
     a.ray_tri_aabb += b.ray_tri_aabb;
     a.ray_tri_fwd += b.ray_tri_fwd;
     a.ray_tri_fwd_only += b.ray_tri_fwd_only;
@@ -291,12 +292,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
     }
     auto ray_support = [&](std::size_t i, std::size_t* tested, std::size_t* hits = nullptr,
-                           std::size_t* aabb = nullptr, std::size_t* fwd = nullptr,
-                           std::size_t* fwd1 = nullptr, std::size_t* cheap = nullptr) {
+                           std::size_t* kept = nullptr, std::size_t* aabb = nullptr,
+                           std::size_t* fwd = nullptr, std::size_t* fwd1 = nullptr,
+                           std::size_t* cheap = nullptr) {
         RaySupport sup;
         sup.planes = ray_planes[i].data();
         sup.tested = tested;
         sup.hits = hits;
+        sup.kept = kept;
         sup.prefilter = opt.ray_prefilter;
         // **計測は既定で切ります。** 旗を立てたときだけ数えます（費用が要るため）
         if (opt.record_ray_filter) {
@@ -1053,8 +1056,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // 撤去でピークが 8,242 → 1,438 MB。**出力はバイト一致、時間は不変。**
             Wnd v{};
             winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
-                          ray_support(i2, &st.ray_tri_tests, &st.ray_tri_hits, &st.ray_tri_aabb,
-                                      &st.ray_tri_fwd, &st.ray_tri_fwd_only, &st.ray_cheap_tests));
+                          ray_support(i2, &st.ray_tri_tests, &st.ray_tri_hits, &st.ray_tri_kept,
+                                      &st.ray_tri_aabb, &st.ray_tri_fwd, &st.ray_tri_fwd_only,
+                                      &st.ray_cheap_tests));
             ++st.raycasts;
             ++st.regions;
             w_front[i2] = v.w_other + v.c_front;

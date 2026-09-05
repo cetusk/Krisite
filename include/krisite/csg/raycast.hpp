@@ -141,6 +141,9 @@ struct RaySupport {
     const RayIndex* index[3] = {nullptr, nullptr, nullptr};
     /// 実際に走査した三角形の数を足し込みます（計測用。任意）。
     std::size_t* tested = nullptr;
+    /// **前判定を通った候補の数**（`prefilter` が偽なら候補と同数。計測用。任意）。
+    /// **`tested` との比が D の絞り込みの効きです。**
+    std::size_t* kept = nullptr;
     /// **そのうち実際に寄与した三角形の数**（計測用。任意）。
     ///
     /// **`tested` との比が、索引の絞り込みの効きです**
@@ -266,6 +269,8 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
             if (geom::cmp_axis_int(p, vlo, vv) < 0) return;
             if (geom::cmp_axis_int(p, vhi, vv) > 0) return;
         }
+
+        if (sup.kept != nullptr) ++*sup.kept;
 
         if (sup.fwd_only != nullptr) {
             // **D-2 単独**（D-1 を掛けない）

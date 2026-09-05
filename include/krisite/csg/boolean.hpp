@@ -225,6 +225,8 @@ struct BoolStats {
     ///
     /// **`ray_tri_tests` との比が、索引の絞り込みの効きです。**
     /// **A-3 と同じ形の問い**で、A-3 では「索引が返す候補の 99.9% が捨てられている」でした。
+    /// **D の前判定を通った候補の数**（`ray_tri_tests` との比が絞り込みの効き）。
+    std::size_t ray_tri_kept = 0;
     std::size_t ray_tri_hits = 0;
     /// **投影 AABB の前判定を通った候補の数**（同上）。
     /// **`ray_tri_tests` との比が、安い前判定で落とせる分です。**
