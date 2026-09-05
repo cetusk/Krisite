@@ -81,7 +81,12 @@ struct BoolStats {
     /// セル添字の差の最大（軸ごとの最大）。0 は同一セル内、1 は隣接まで。
     /// **2 以上が出たら併合の誤り**（本来別の点を同一視した）を疑ってください。
     std::size_t max_merge_span = 0;
-    std::size_t merge_groups = 0;              ///< 2 点以上が併合されたグループの数
+    /// **2 点以上が併合されたグループの数**（＝広がりが 1 以上の点の数）。
+    ///
+    /// > **★ この計数と `max_merge_span` は、2026-09-05 まで二項メッシュ経路にしか
+    /// > 実装されていませんでした。** スープ経路（実際に使う経路）では常に 0 で、
+    /// > **番人が空回りしていました**（`DESIGN-phase5-hotspots.md` §9.4）。
+    std::size_t merge_groups = 0;
     std::size_t duplicate_fragments = 0;       ///< 重複割り当てが生んだ重複断片（§5.4）
     std::size_t coplanar_same = 0;             ///< 共平面重複のうち向きが同じ対の数
     std::size_t coplanar_opposite = 0;         ///< 向きが逆の対の数

@@ -178,7 +178,8 @@ public:
     /// > **スープ経路で 0 なら、機構が空回りしています**（`CLAUDE.md`）。
     bool build(const PlaneTable& table, const std::vector<geom::HPointD>& verts,
                const std::vector<octree::Aabb>& box, const std::vector<PlaneId>& support,
-               par::ThreadPool* pool = nullptr) {
+               par::ThreadPool* pool = nullptr, std::size_t* locate_tests = nullptr,
+               std::size_t* group_tests = nullptr) {
         slot_.assign(box.size(), kNoGroup);
         group_.clear();
         if (box.empty() || verts.empty()) return false;
@@ -231,6 +232,7 @@ public:
                 std::uint32_t lo = 0, hi = 1u << dmax;
                 while (lo < hi) {
                     const std::uint32_t mid = lo + (hi - lo + 1) / 2;
+                    if (locate_tests != nullptr) ++*locate_tests;
                     if (geom::side(geom::plane_axis_aligned(A, octree::cell_bound(dmax, mid)),
                                    verts[v]) >= 0) {
                         lo = mid;
@@ -239,6 +241,7 @@ public:
                     }
                 }
                 const std::uint32_t m = (lo >= (1u << dmax)) ? (1u << dmax) - 1 : lo;
+                if (locate_tests != nullptr) ++*locate_tests;
                 const bool on_line =
                     geom::side(geom::plane_axis_aligned(A, octree::cell_bound(dmax, m)),
                                verts[v]) == 0;
@@ -279,6 +282,10 @@ public:
             std::vector<std::uint32_t>& out = group_[g];
             for (std::uint32_t v : bucket[gkey[g].first]) {
                 if (geom::side(pl, verts[v]) == 0) out.push_back(v);
+            }
+            if (group_tests != nullptr) {
+                // **並列区間なので、スレッド局所ではなく原子的に足します**（計測用）
+                __atomic_fetch_add(group_tests, bucket[gkey[g].first].size(), __ATOMIC_RELAXED);
             }
         };
         if (pool != nullptr) {

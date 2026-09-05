@@ -103,6 +103,11 @@ struct ToMeshStats {
     /// **0 なら退避しています**（箱がセルの箱でなかった、または旗が偽）。
     /// **スープ経路（`boolean` の出力）で 0 なら、機構が空回りしています。**
     std::size_t cell_index_groups = 0;
+    /// **A-3 の位置決め（頂点をセルに割り振る二分探索）が走った回数**。
+    /// **Morton なら不要になります**（`DESIGN-phase5-hotspots.md` §9.3 の恩恵 3）。
+    std::size_t cell_index_locate_tests = 0;
+    /// **A-3 の (葉, 平面) ごとの照合が走った回数**（索引の本体）。
+    std::size_t cell_index_group_tests = 0;
     TJunctionStats t{};
     mesh::SplitStats split{};
 };
@@ -246,7 +251,9 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
             box.push_back(q.aabb);
             sup.push_back(q.frag.support);
         }
-        used_cell_index = cell_index.build(s.table, out.vertices, box, sup, &pool);
+        used_cell_index = cell_index.build(s.table, out.vertices, box, sup, &pool,
+                                           &st.cell_index_locate_tests,
+                                           &st.cell_index_group_tests);
     }
     if (!used_cell_index) {
         std::vector<PlaneId> sup;

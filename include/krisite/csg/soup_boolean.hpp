@@ -870,6 +870,15 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     PointCache* const cache = opt.cache_points ? &stitch_cache : nullptr;
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
     std::vector<geom::HPointD> points;
+    // **併合グループの空間的な広がり**（`SPEC-phase4.md` §2.6 / §5.4）。
+    //
+    // > **★ この計数は二項メッシュ経路にしか無く、スープ経路では一度も測られて
+    // > いませんでした**（2026-09-05 に発覚。`DESIGN-phase5-hotspots.md` §9.4）。
+    // > **「広がりが 1 セルとその隣接に収まる」は、縫合をセル並列にできるかの前提**で、
+    // > **実際に使う経路で測っていなければ根拠になりません。**
+    //
+    // 点ごとに、その点を参照した断片のセル添字（最大深度に正規化）の範囲を持ちます。
+    std::vector<std::array<std::uint32_t, 3>> pt_lo, pt_hi;
     std::vector<std::vector<std::uint32_t>> raw(frags.size());
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
         const Fragment& f = frags[fi];
@@ -877,13 +886,24 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         raw[fi].reserve(n);
         for (std::size_t i = 0; i < n; ++i) {
             const auto k = detail::vertex_key(f, i);
+            std::uint32_t cix[3];
+            octree::normalized_index(frag_cell[fi], opt.depth, cix);
             auto it = by_key.find(k);
             if (it == by_key.end()) {
                 const auto id = static_cast<std::uint32_t>(points.size());
                 points.push_back(fragment_vertex(out.table, f, i, cache));
+                pt_lo.push_back({cix[0], cix[1], cix[2]});
+                pt_hi.push_back({cix[0], cix[1], cix[2]});
                 it = by_key.emplace(k, id).first;
             }
             raw[fi].push_back(it->second);
+            {
+                const std::uint32_t id2 = it->second;
+                for (int t = 0; t < 3; ++t) {
+                    if (cix[t] < pt_lo[id2][t]) pt_lo[id2][t] = cix[t];
+                    if (cix[t] > pt_hi[id2][t]) pt_hi[id2][t] = cix[t];
+                }
+            }
         }
     }
     st.constructed_points = points.size();
@@ -917,6 +937,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         ids.reserve(raw[fi].size());
         for (std::uint32_t v : raw[fi]) ids.push_back(remap[v]);
         regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
+    }
+
+    // **広がりの集計**（`SPEC-phase4.md` §2.6 の前提を、実際に使う経路で測る）
+    for (std::size_t i = 0; i < pt_lo.size(); ++i) {
+        std::size_t span = 0;
+        for (int t = 0; t < 3; ++t) span = std::max(span, std::size_t{pt_hi[i][t] - pt_lo[i][t]});
+        if (span > 0) ++st.merge_groups;
+        st.max_merge_span = std::max(st.max_merge_span, span);
     }
 
     st.ms_stitch = lap(t_stage);
