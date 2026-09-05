@@ -32,7 +32,10 @@
 #include <utility>
 #include <vector>
 
+#include <unordered_map>
+
 #include "krisite/csg/plane_table.hpp"
+#include "krisite/octree/adaptive.hpp"
 #include "krisite/geom/point.hpp"
 #include "krisite/geom/predicates.hpp"
 #include "krisite/par/thread_pool.hpp"
@@ -137,6 +140,176 @@ private:
     std::map<PlaneId, std::vector<std::uint32_t>> map_;
 };
 
+/// **セルで区切った平面→頂点の索引**（`DESIGN-phase5-hotspots.md` §6.3 の A-3）。
+///
+/// `PlaneVertexIndex` は $O(\text{平面} \times \text{全頂点})$ で、**実測で出口の 82%、
+/// 全体の 75% を占めていました**（`69268`、深度 8 で $4.13 \times 10^{10}$ 回の `side`）。
+///
+/// **絞り込みの根拠は幾何の事実です。**
+///
+///   多角形の辺は、その多角形の中にある。
+///   多角形は、八分木の 1 つの葉の【閉じた箱】の中にある（幾何がセル境界でクリップされる）。
+///   ⟹ 辺の内部に載る頂点は、その葉の閉じた箱の中にある。
+///
+/// **平面 ID の別名問題の影響を受けません。**「交線を平面 ID の対で索引する」
+/// （相異なる 2 平面が同一の交線を与え得る）や「頂点の平面 3 つ組で絞る」
+/// （4 枚以上が 1 点で交わる）は**漏れる**ので採っていません（§6.2）。
+///
+/// **費用**: $\sum_\ell |\text{支持平面}_\ell| \times |V_\ell|$。
+/// 実測の削減は **3〜391 倍**で、**出力が占めるセルの数**で決まります（`BENCH.md`）。
+///
+/// **閉じた箱**であることが要点です。**面にちょうど載る頂点は、隣り合う葉にも属します。**
+/// 半開区間で入れると、共有面の上の T 頂点を粗い側で見落とします。
+class CellPlaneVertexIndex {
+public:
+    /// `box[i]` は多角形 `i` が属する葉の箱、`support[i]` はその支持平面。
+    ///
+    /// **葉は八分木のセルなので、深度と添字で一意に決まります。**
+    /// 頂点は「最大深度の格子でどのセルに入るか」を二分探索で求め、
+    /// **境界にちょうど載っていれば両側**を候補にします。
+    /// **`false` を返したら、この索引は使えません。** 呼び出し側は従来の
+    /// `PlaneVertexIndex` に退避してください。
+    ///
+    /// **`box` が八分木のセルの箱でないときに起こります。** `from_mesh` 直後のスープでは
+    /// `Poly::aabb` は**三角形の外接箱**で、セルの箱ではありません
+    /// （`boolean` を通ると分類の段でセルの箱に置き換わります）。
+    ///
+    /// > **退避したことを `groups() == 0` で観測できます。**
+    /// > **スープ経路で 0 なら、機構が空回りしています**（`CLAUDE.md`）。
+    bool build(const PlaneTable& table, const std::vector<geom::HPointD>& verts,
+               const std::vector<octree::Aabb>& box, const std::vector<PlaneId>& support,
+               par::ThreadPool* pool = nullptr) {
+        slot_.assign(box.size(), kNoGroup);
+        group_.clear();
+        if (box.empty() || verts.empty()) return false;
+
+        // ---- 1. 箱 → 葉（深度と添字）。**箱の辺の長さから深度が決まる** ----
+        //
+        // **セルの箱でなければ諦めます。** 立方体でない、辺が 2 冪でない、
+        // 格子に載っていない、のいずれかで判定できます。
+        const auto depth_of = [](std::int64_t side_len) -> unsigned {
+            for (unsigned d = 0; d + 1 <= kCoordBits; ++d) {
+                if ((std::int64_t{1} << (kCoordBits - d)) == side_len) return d;
+            }
+            return kNoDepth;
+        };
+        std::unordered_map<std::uint64_t, std::uint32_t> leaf_id;
+        std::vector<std::uint32_t> poly_leaf(box.size());
+        unsigned dmax = 0;
+        for (std::size_t i = 0; i < box.size(); ++i) {
+            const std::int64_t sx = box[i].hi[0] - box[i].lo[0];
+            if (sx != box[i].hi[1] - box[i].lo[1] || sx != box[i].hi[2] - box[i].lo[2]) return false;
+            const unsigned d = depth_of(sx);
+            if (d == kNoDepth) return false;
+            const std::int64_t step = std::int64_t{1} << (kCoordBits - d);
+            for (int t = 0; t < 3; ++t) {
+                if (((box[i].lo[t] - kCoordMin) % step) != 0) return false;
+            }
+            const std::uint32_t ix = static_cast<std::uint32_t>(
+                (box[i].lo[0] - kCoordMin) >> (kCoordBits - d));
+            const std::uint32_t iy = static_cast<std::uint32_t>(
+                (box[i].lo[1] - kCoordMin) >> (kCoordBits - d));
+            const std::uint32_t iz = static_cast<std::uint32_t>(
+                (box[i].lo[2] - kCoordMin) >> (kCoordBits - d));
+            dmax = std::max(dmax, d);
+            const std::uint64_t k = leaf_key(d, ix, iy, iz);
+            auto it = leaf_id.find(k);
+            if (it == leaf_id.end()) {
+                it = leaf_id.emplace(k, static_cast<std::uint32_t>(leaf_id.size())).first;
+            }
+            poly_leaf[i] = it->second;
+        }
+
+        // ---- 2. 頂点を葉に配る。**閉じた箱**なので、面に載る頂点は複数の葉に入る ----
+        std::vector<std::vector<std::uint32_t>> bucket(leaf_id.size());
+        for (std::uint32_t v = 0; v < verts.size(); ++v) {
+            std::uint32_t lo3[3], hi3[3];
+            for (int ax = 0; ax < 3; ++ax) {
+                const geom::Axis A =
+                    (ax == 0) ? geom::Axis::X : (ax == 1) ? geom::Axis::Y : geom::Axis::Z;
+                // 最大深度の格子で、cell_bound(dmax, m) <= v となる最大の m
+                std::uint32_t lo = 0, hi = 1u << dmax;
+                while (lo < hi) {
+                    const std::uint32_t mid = lo + (hi - lo + 1) / 2;
+                    if (geom::side(geom::plane_axis_aligned(A, octree::cell_bound(dmax, mid)),
+                                   verts[v]) >= 0) {
+                        lo = mid;
+                    } else {
+                        hi = mid - 1;
+                    }
+                }
+                const std::uint32_t m = (lo >= (1u << dmax)) ? (1u << dmax) - 1 : lo;
+                const bool on_line =
+                    geom::side(geom::plane_axis_aligned(A, octree::cell_bound(dmax, m)),
+                               verts[v]) == 0;
+                lo3[ax] = (on_line && m > 0) ? m - 1 : m;
+                hi3[ax] = m;
+            }
+            for (std::uint32_t i = lo3[0]; i <= hi3[0]; ++i)
+                for (std::uint32_t j = lo3[1]; j <= hi3[1]; ++j)
+                    for (std::uint32_t k = lo3[2]; k <= hi3[2]; ++k) {
+                        // 最大深度のセルから、それを含む葉へ上る（葉は空間を分割する）
+                        for (unsigned d = 0; d <= dmax; ++d) {
+                            const unsigned sh = dmax - d;
+                            auto it = leaf_id.find(leaf_key(d, i >> sh, j >> sh, k >> sh));
+                            if (it == leaf_id.end()) continue;
+                            std::vector<std::uint32_t>& b = bucket[it->second];
+                            if (b.empty() || b.back() != v) b.push_back(v);
+                            break;
+                        }
+                    }
+        }
+
+        // ---- 3. (葉, 支持平面) の組ごとに、載っている頂点を集める ----
+        std::unordered_map<std::uint64_t, std::uint32_t> gid;
+        std::vector<std::pair<std::uint32_t, PlaneId>> gkey;
+        for (std::size_t i = 0; i < box.size(); ++i) {
+            const std::uint64_t k =
+                (static_cast<std::uint64_t>(poly_leaf[i]) << 32) | static_cast<std::uint32_t>(support[i]);
+            auto it = gid.find(k);
+            if (it == gid.end()) {
+                it = gid.emplace(k, static_cast<std::uint32_t>(gkey.size())).first;
+                gkey.emplace_back(poly_leaf[i], support[i]);
+            }
+            slot_[i] = it->second;
+        }
+        group_.assign(gkey.size(), {});
+        const auto work = [&](std::size_t g, unsigned) {
+            const geom::PlaneD& pl = table.at(gkey[g].second);
+            std::vector<std::uint32_t>& out = group_[g];
+            for (std::uint32_t v : bucket[gkey[g].first]) {
+                if (geom::side(pl, verts[v]) == 0) out.push_back(v);
+            }
+        };
+        if (pool != nullptr) {
+            pool->run(gkey.size(), work);
+        } else {
+            for (std::size_t g = 0; g < gkey.size(); ++g) work(g, 0u);
+        }
+        return true;
+    }
+
+    /// 多角形 `pi` の候補（その葉の箱に入り、その支持平面に載る頂点）。
+    const std::vector<std::uint32_t>& candidates(std::size_t pi) const {
+        static const std::vector<std::uint32_t> kEmpty;
+        return (slot_[pi] == kNoGroup) ? kEmpty : group_[slot_[pi]];
+    }
+
+    /// **(葉, 支持平面) の組の数**。0 なら機構が空回りしています。
+    std::size_t groups() const noexcept { return group_.size(); }
+
+private:
+    static constexpr std::uint32_t kNoGroup = 0xFFFFFFFFu;
+    static constexpr unsigned kNoDepth = 0xFFFFFFFFu;
+    static std::uint64_t leaf_key(unsigned d, std::uint32_t i, std::uint32_t j,
+                                  std::uint32_t k) noexcept {
+        return (static_cast<std::uint64_t>(d) << 60) | (static_cast<std::uint64_t>(i) << 40) |
+               (static_cast<std::uint64_t>(j) << 20) | static_cast<std::uint64_t>(k);
+    }
+    std::vector<std::uint32_t> slot_;
+    std::vector<std::vector<std::uint32_t>> group_;
+};
+
 namespace detail {
 
 /// `a` と `b` が異なる最初の軸と、その向き。すべて同じなら `false`。
@@ -191,12 +364,13 @@ struct TPolygon {
 ///
 /// **1 個ずつ入れてはいけません**（§2.4.3）。生成された部分辺にさらに候補が載る場合を
 /// 取りこぼします。ここでは元の線分について候補を**全部集めてから**並べて入れます。
-inline TPolygon insert_t_vertices(const PlaneTable& table, const std::vector<geom::HPointD>& verts,
-                                  const PlaneVertexIndex& index, PlaneId support,
-                                  const std::vector<PlaneId>& edge,
-                                  const std::vector<std::uint32_t>& poly,
-                                  TJunctionStats* stats = nullptr,
-                                  const std::vector<char>* from_cache = nullptr) {
+inline TPolygon insert_t_vertices_with(const PlaneTable& table,
+                                      const std::vector<geom::HPointD>& verts,
+                                      const std::vector<std::uint32_t>& cand_in,
+                                      const std::vector<PlaneId>& edge,
+                                      const std::vector<std::uint32_t>& poly,
+                                      TJunctionStats* stats = nullptr,
+                                      const std::vector<char>* from_cache = nullptr) {
     KRISITE_CHECK(poly.size() == edge.size(), "insert_t_vertices: 頂点数と辺数が違う");
     const std::size_t n = poly.size();
 
@@ -222,8 +396,7 @@ inline TPolygon insert_t_vertices(const PlaneTable& table, const std::vector<geo
     for (std::uint32_t i = 0; i < n; ++i) out.orig.push_back(i);
     (void)table;
     (void)verts;
-    (void)index;
-    (void)support;
+    (void)cand_in;
     (void)edge;
     (void)stats;
     (void)from_cache;
@@ -238,8 +411,8 @@ inline TPolygon insert_t_vertices(const PlaneTable& table, const std::vector<geo
         out.orig.push_back(static_cast<std::uint32_t>(j));
 
         if (stats) ++stats->edges_scanned;
-        const std::vector<std::uint32_t>* cand = index.find(support);
-        if (cand == nullptr) continue;
+        const std::vector<std::uint32_t>* cand = &cand_in;
+        if (cand->empty()) continue;
         if (stats) stats->candidates += cand->size();
 
         // 手順 2: **両方の平面に載っていて**、区間の内部にあるものを【全部】集める。
@@ -289,6 +462,24 @@ inline TPolygon insert_t_vertices(const PlaneTable& table, const std::vector<geo
         }
     }
     return out;
+}
+
+/// **旧署名の互換ラッパ**（`PlaneVertexIndex` を引く形）。
+///
+/// **二項メッシュ経路（`boolean_op`）と `test_tjunction.cpp` が使います。**
+/// **二項経路は意図的に素朴なまま**にしています — 正解器は被検体と別経路で書く
+/// （`IMPL-phase5.md` §12）。スープ経路の A-3（`CellPlaneVertexIndex`）は
+/// **ここを通りません。**
+inline TPolygon insert_t_vertices(const PlaneTable& table, const std::vector<geom::HPointD>& verts,
+                                  const PlaneVertexIndex& index, PlaneId support,
+                                  const std::vector<PlaneId>& edge,
+                                  const std::vector<std::uint32_t>& poly,
+                                  TJunctionStats* stats = nullptr,
+                                  const std::vector<char>* from_cache = nullptr) {
+    static const std::vector<std::uint32_t> kEmpty;
+    const std::vector<std::uint32_t>* c = index.find(support);
+    return insert_t_vertices_with(table, verts, (c == nullptr) ? kEmpty : *c, edge, poly, stats,
+                                  from_cache);
 }
 
 namespace detail {

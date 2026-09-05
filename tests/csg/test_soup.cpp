@@ -342,6 +342,76 @@ void test_chain_is_exact() {
     KRI_CHECK_MSG(b1 > 0, "構成点が 1 つも無い。**空回りです**");
 }
 
+/// **A-3（セルで区切った T 字接合の索引）**（`DESIGN-phase5-hotspots.md` §6.3）。
+///
+/// **見るのは 3 つです。**
+///
+///   1. **旗の ON / OFF で出力がバイト単位で一致すること**（厳密な絞り込みなので）
+///   2. **挿入された T 頂点が 1 個も変わらないこと**（絞り込みが厳密であることの直接の検査）
+///   3. ★ **機構が実際に発火したこと**（`cell_index_groups > 0`）
+///
+/// **3 が要ります。** 箱がセルの箱でなければ従来の索引に退避する形なので、
+/// **退避したまま緑になり得ます**（`CLAUDE.md`「足した機構が実際に発火したことを、
+/// テスト自身に確かめさせること」）。
+///
+/// **`from_mesh` 直後のスープでは `Poly::aabb` は三角形の外接箱**なので、
+/// **必ず `boolean` を通した出力で確かめます。**
+void test_cell_index() {
+    std::printf("  A-3: セルで区切った T 字接合の索引\n");
+    std::size_t n = 0, fired = 0, groups_total = 0;
+    for (const kritest::Case& c : kritest::corpus()) {
+        const TriMesh a = c.make_a(), b = c.make_b();
+        for (unsigned d = 0; d <= kMaxDepth; ++d) {
+            const csg::BoolOptions o = kritest::phase1_options(d);
+            for (csg::BoolOp op : {csg::BoolOp::Union, csg::BoolOp::Intersection,
+                                   csg::BoolOp::Difference}) {
+                const csg::PolySoup s =
+                    csg::boolean(csg::from_mesh(a), csg::from_mesh(b), op, o);
+                if (s.polys.empty()) continue;
+                csg::ToMeshOptions on, off;
+                on.cell_index = true;
+                off.cell_index = false;
+                csg::ToMeshStats st_on, st_off;
+                const csg::SoupMesh m_on = csg::to_mesh(s, on, &st_on);
+                const csg::SoupMesh m_off = csg::to_mesh(s, off, &st_off);
+                const std::string tag =
+                    std::string(c.id) + " 深度 " + std::to_string(d) + " 演算 " +
+                    std::to_string(static_cast<int>(op));
+                ++n;
+                if (st_on.cell_index_groups > 0) ++fired;
+                groups_total += st_on.cell_index_groups;
+                // 1. バイト一致（頂点も三角形も同じ並びで同じ値）
+                KRI_CHECK_MSG(m_on.vertices.size() == m_off.vertices.size(),
+                              tag + ": A-3 で頂点数が変わった" +
+                                  kritest::pair_msg(m_on.vertices.size(), m_off.vertices.size()));
+                KRI_CHECK_MSG(m_on.triangles == m_off.triangles,
+                              tag + ": A-3 で三角形の並びが変わった");
+                bool same = m_on.vertices.size() == m_off.vertices.size();
+                for (std::size_t i = 0; same && i < m_on.vertices.size(); ++i) {
+                    same = geom::cmp_h_lex(m_on.vertices[i], m_off.vertices[i]) == 0;
+                }
+                KRI_CHECK_MSG(same, tag + ": A-3 で頂点の値が変わった");
+                // 2. T 頂点が 1 個も変わらない（**絞り込みが厳密であることの直接の検査**）
+                KRI_CHECK_MSG(st_on.t.inserted == st_off.t.inserted,
+                              tag + ": A-3 で T 頂点の数が変わった。**絞り込みが漏れています**" +
+                                  kritest::pair_msg(st_on.t.inserted, st_off.t.inserted));
+                // 絞り込みが効いていること（候補が増えることはない）
+                KRI_CHECK_MSG(st_on.t.candidates <= st_off.t.candidates,
+                              tag + ": A-3 で候補が増えた" +
+                                  kritest::pair_msg(st_on.t.candidates, st_off.t.candidates));
+            }
+        }
+    }
+    std::printf("    %zu 件。**機構が発火したのは %zu 件**（(葉,支持平面) の組 計 %zu）\n", n,
+                fired, groups_total);
+    // 3. ★ **空回りの検査。** 退避したまま緑になっていないか。
+    KRI_CHECK_MSG(n > 0, "A-3: 比較が 1 件も回っていない。**空回りです**");
+    KRI_CHECK_MSG(fired == n,
+                  "**A-3 が発火していない件がある。** `boolean` の出力なら箱はセルの箱の"
+                  "はずで、退避は起きません" +
+                      kritest::pair_msg(fired, n));
+}
+
 }  // namespace
 
 int main() {
@@ -351,6 +421,7 @@ int main() {
     test_chain_is_exact();
     test_classification_is_order_independent();
     test_local_bsp_vs_over_subdivision();
+    test_cell_index();
     std::printf("\n");
     return kritest::finish("csg/soup");
 }
