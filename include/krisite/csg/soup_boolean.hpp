@@ -292,8 +292,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     }
     auto ray_support = [&](std::size_t i, std::size_t* tested, std::size_t* hits = nullptr,
                            std::size_t* aabb = nullptr, std::size_t* fwd = nullptr,
-                           std::size_t* fwd1 = nullptr,
-                           std::size_t* cheap = nullptr) {
+                           std::size_t* fwd1 = nullptr, std::size_t* cheap = nullptr) {
         RaySupport sup;
         sup.planes = ray_planes[i].data();
         sup.tested = tested;
@@ -483,8 +482,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 const geom::PlaneD& pl = out.table.at(polys[i].frag.support);
                 // **退化した平面は絞りません。** 法線が 0 だと `plane_crosses_box` は
                 // `d == 0` のときしか真を返さず、絞り込みが保守的でなくなります。
-                if (!geom::is_degenerate(pl) &&
-                    !geom::plane_crosses_box(pl, cbox.lo, cbox.hi)) {
+                if (!geom::is_degenerate(pl) && !geom::plane_crosses_box(pl, cbox.lo, cbox.hi)) {
                     ++st.assign_rejected_plane;
                     continue;
                 }
@@ -1055,8 +1053,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // 撤去でピークが 8,242 → 1,438 MB。**出力はバイト一致、時間は不変。**
             Wnd v{};
             winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
-                          ray_support(i2, &st.ray_tri_tests, &st.ray_tri_hits, &st.ray_tri_aabb, &st.ray_tri_fwd,
-                                     &st.ray_tri_fwd_only, &st.ray_cheap_tests));
+                          ray_support(i2, &st.ray_tri_tests, &st.ray_tri_hits, &st.ray_tri_aabb,
+                                      &st.ray_tri_fwd, &st.ray_tri_fwd_only, &st.ray_cheap_tests));
             ++st.raycasts;
             ++st.regions;
             w_front[i2] = v.w_other + v.c_front;

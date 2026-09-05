@@ -286,8 +286,10 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
             std::int64_t vlo = detail::comp(a, vv), vhi = vlo;
             for (const geom::IPoint* q : {&b, &c}) {
                 const std::int64_t cu = detail::comp(*q, uu), cv = detail::comp(*q, vv);
-                ulo = std::min(ulo, cu); uhi = std::max(uhi, cu);
-                vlo = std::min(vlo, cv); vhi = std::max(vhi, cv);
+                ulo = std::min(ulo, cu);
+                uhi = std::max(uhi, cu);
+                vlo = std::min(vlo, cv);
+                vhi = std::max(vhi, cv);
             }
             bool in = true;
             {
@@ -297,7 +299,10 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
                 for (int k = 0; k < 4; ++k) {
                     if (sup.cheap_tests != nullptr) ++*sup.cheap_tests;
                     const int sg = geom::side(geom::plane_axis_aligned(ax4[k], bd4[k]), p);
-                    if (want[k] > 0 ? (sg < 0) : (sg > 0)) { in = false; break; }
+                    if (want[k] > 0 ? (sg < 0) : (sg > 0)) {
+                        in = false;
+                        break;
+                    }
                 }
             }
             if (in) {

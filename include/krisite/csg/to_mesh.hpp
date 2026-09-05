@@ -252,8 +252,7 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
             sup.push_back(q.frag.support);
         }
         used_cell_index = cell_index.build(s.table, out.vertices, box, sup, &pool,
-                                           &st.cell_index_locate_tests,
-                                           &st.cell_index_group_tests);
+                                           &st.cell_index_locate_tests, &st.cell_index_group_tests);
     }
     if (!used_cell_index) {
         std::vector<PlaneId> sup;

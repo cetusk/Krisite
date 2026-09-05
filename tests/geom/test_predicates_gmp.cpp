@@ -338,15 +338,15 @@ int main(int argc, char** argv) {
             KRI_CHECK(cmp_axis_int(h, cc - 1, kAxes[ax]) > 0);
             // **`cmp_h` と一致すること**（別経路の照合）
             KRI_CHECK(cmp_axis_int(h, cc, kAxes[ax]) ==
-                      cmp_h(h, to_homogeneous(IPoint{
-                                    ax == 0 ? static_cast<std::int32_t>(cc) : 0,
-                                    ax == 1 ? static_cast<std::int32_t>(cc) : 0,
-                                    ax == 2 ? static_cast<std::int32_t>(cc) : 0}),
+                      cmp_h(h,
+                            to_homogeneous(IPoint{ax == 0 ? static_cast<std::int32_t>(cc) : 0,
+                                                  ax == 1 ? static_cast<std::int32_t>(cc) : 0,
+                                                  ax == 2 ? static_cast<std::int32_t>(cc) : 0}),
                             kAxes[ax]));
             ++on_plane;
         }
-        std::printf("       整数点 %ld 件 / **構成点が軸平行平面に載る場合 %ld 件**\n",
-                    exact, on_plane);
+        std::printf("       整数点 %ld 件 / **構成点が軸平行平面に載る場合 %ld 件**\n", exact,
+                    on_plane);
         KRI_CHECK_MSG(on_plane > 0, "境界ちょうどの構成が 1 件も作れていない。**空回りです**");
     }
 

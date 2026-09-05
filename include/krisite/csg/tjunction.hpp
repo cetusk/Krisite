@@ -29,15 +29,14 @@
 #include <array>
 #include <cstdint>
 #include <map>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include <unordered_map>
-
 #include "krisite/csg/plane_table.hpp"
-#include "krisite/octree/adaptive.hpp"
 #include "krisite/geom/point.hpp"
 #include "krisite/geom/predicates.hpp"
+#include "krisite/octree/adaptive.hpp"
 #include "krisite/par/thread_pool.hpp"
 
 namespace krisite::csg {
@@ -199,19 +198,20 @@ public:
         unsigned dmax = 0;
         for (std::size_t i = 0; i < box.size(); ++i) {
             const std::int64_t sx = box[i].hi[0] - box[i].lo[0];
-            if (sx != box[i].hi[1] - box[i].lo[1] || sx != box[i].hi[2] - box[i].lo[2]) return false;
+            if (sx != box[i].hi[1] - box[i].lo[1] || sx != box[i].hi[2] - box[i].lo[2])
+                return false;
             const unsigned d = depth_of(sx);
             if (d == kNoDepth) return false;
             const std::int64_t step = std::int64_t{1} << (kCoordBits - d);
             for (int t = 0; t < 3; ++t) {
                 if (((box[i].lo[t] - kCoordMin) % step) != 0) return false;
             }
-            const std::uint32_t ix = static_cast<std::uint32_t>(
-                (box[i].lo[0] - kCoordMin) >> (kCoordBits - d));
-            const std::uint32_t iy = static_cast<std::uint32_t>(
-                (box[i].lo[1] - kCoordMin) >> (kCoordBits - d));
-            const std::uint32_t iz = static_cast<std::uint32_t>(
-                (box[i].lo[2] - kCoordMin) >> (kCoordBits - d));
+            const std::uint32_t ix =
+                static_cast<std::uint32_t>((box[i].lo[0] - kCoordMin) >> (kCoordBits - d));
+            const std::uint32_t iy =
+                static_cast<std::uint32_t>((box[i].lo[1] - kCoordMin) >> (kCoordBits - d));
+            const std::uint32_t iz =
+                static_cast<std::uint32_t>((box[i].lo[2] - kCoordMin) >> (kCoordBits - d));
             dmax = std::max(dmax, d);
             const std::uint64_t k = leaf_key(d, ix, iy, iz);
             auto it = leaf_id.find(k);
@@ -226,8 +226,9 @@ public:
         for (std::uint32_t v = 0; v < verts.size(); ++v) {
             std::uint32_t lo3[3], hi3[3];
             for (int ax = 0; ax < 3; ++ax) {
-                const geom::Axis A =
-                    (ax == 0) ? geom::Axis::X : (ax == 1) ? geom::Axis::Y : geom::Axis::Z;
+                const geom::Axis A = (ax == 0)   ? geom::Axis::X
+                                     : (ax == 1) ? geom::Axis::Y
+                                                 : geom::Axis::Z;
                 // 最大深度の格子で、cell_bound(dmax, m) <= v となる最大の m
                 std::uint32_t lo = 0, hi = 1u << dmax;
                 while (lo < hi) {
@@ -267,8 +268,8 @@ public:
         std::unordered_map<std::uint64_t, std::uint32_t> gid;
         std::vector<std::pair<std::uint32_t, PlaneId>> gkey;
         for (std::size_t i = 0; i < box.size(); ++i) {
-            const std::uint64_t k =
-                (static_cast<std::uint64_t>(poly_leaf[i]) << 32) | static_cast<std::uint32_t>(support[i]);
+            const std::uint64_t k = (static_cast<std::uint64_t>(poly_leaf[i]) << 32) |
+                                    static_cast<std::uint32_t>(support[i]);
             auto it = gid.find(k);
             if (it == gid.end()) {
                 it = gid.emplace(k, static_cast<std::uint32_t>(gkey.size())).first;
@@ -277,21 +278,26 @@ public:
             slot_[i] = it->second;
         }
         group_.assign(gkey.size(), {});
+        // 計測用のスロット（`group_tests` が渡されたときだけ確保）
+        std::vector<std::size_t> gtests;
+        if (group_tests != nullptr) gtests.assign(gkey.size(), 0);
         const auto work = [&](std::size_t g, unsigned) {
             const geom::PlaneD& pl = table.at(gkey[g].second);
             std::vector<std::uint32_t>& out = group_[g];
             for (std::uint32_t v : bucket[gkey[g].first]) {
                 if (geom::side(pl, verts[v]) == 0) out.push_back(v);
             }
-            if (group_tests != nullptr) {
-                // **並列区間なので、スレッド局所ではなく原子的に足します**（計測用）
-                __atomic_fetch_add(group_tests, bucket[gkey[g].first].size(), __ATOMIC_RELAXED);
-            }
+            // **計測は群ごとのスロットに書きます**（並列区間なので原子操作を避ける。
+            // `__atomic_*` は GCC / Clang の組み込みで、**MSVC にありません**）
+            if (!gtests.empty()) gtests[g] = bucket[gkey[g].first].size();
         };
         if (pool != nullptr) {
             pool->run(gkey.size(), work);
         } else {
             for (std::size_t g = 0; g < gkey.size(); ++g) work(g, 0u);
+        }
+        if (group_tests != nullptr) {
+            for (std::size_t v : gtests) *group_tests += v;
         }
         return true;
     }
@@ -372,12 +378,12 @@ struct TPolygon {
 /// **1 個ずつ入れてはいけません**（§2.4.3）。生成された部分辺にさらに候補が載る場合を
 /// 取りこぼします。ここでは元の線分について候補を**全部集めてから**並べて入れます。
 inline TPolygon insert_t_vertices_with(const PlaneTable& table,
-                                      const std::vector<geom::HPointD>& verts,
-                                      const std::vector<std::uint32_t>& cand_in,
-                                      const std::vector<PlaneId>& edge,
-                                      const std::vector<std::uint32_t>& poly,
-                                      TJunctionStats* stats = nullptr,
-                                      const std::vector<char>* from_cache = nullptr) {
+                                       const std::vector<geom::HPointD>& verts,
+                                       const std::vector<std::uint32_t>& cand_in,
+                                       const std::vector<PlaneId>& edge,
+                                       const std::vector<std::uint32_t>& poly,
+                                       TJunctionStats* stats = nullptr,
+                                       const std::vector<char>* from_cache = nullptr) {
     KRISITE_CHECK(poly.size() == edge.size(), "insert_t_vertices: 頂点数と辺数が違う");
     const std::size_t n = poly.size();
 

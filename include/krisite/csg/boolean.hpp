@@ -110,7 +110,7 @@ struct BoolStats {
     /// **入力の符号付き体積 $V_\text{in} = \int w\,dV$ と出力の体積が食い違うのは、
     /// 巻き数が 0 と 1 以外の値を取る場所があるときだけ**です。その内訳の片方。
     std::size_t regions_w_ge2 = 0;
-    std::size_t raycasts = 0;                  ///< レイキャスト回数
+    std::size_t raycasts = 0;  ///< レイキャスト回数
     /// 代表点の構成（SPEC-phase3 §2.1 の段 0）。**どちらの経路で決まったか。**
     InteriorStats interior{};
     /// `side` と `intersect3` の呼び出し数（SPEC-phase1 §12）。

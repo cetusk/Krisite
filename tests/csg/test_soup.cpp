@@ -363,10 +363,9 @@ void test_cell_index() {
         const TriMesh a = c.make_a(), b = c.make_b();
         for (unsigned d = 0; d <= kMaxDepth; ++d) {
             const csg::BoolOptions o = kritest::phase1_options(d);
-            for (csg::BoolOp op : {csg::BoolOp::Union, csg::BoolOp::Intersection,
-                                   csg::BoolOp::Difference}) {
-                const csg::PolySoup s =
-                    csg::boolean(csg::from_mesh(a), csg::from_mesh(b), op, o);
+            for (csg::BoolOp op :
+                 {csg::BoolOp::Union, csg::BoolOp::Intersection, csg::BoolOp::Difference}) {
+                const csg::PolySoup s = csg::boolean(csg::from_mesh(a), csg::from_mesh(b), op, o);
                 if (s.polys.empty()) continue;
                 csg::ToMeshOptions on, off;
                 on.cell_index = true;
@@ -374,9 +373,8 @@ void test_cell_index() {
                 csg::ToMeshStats st_on, st_off;
                 const csg::SoupMesh m_on = csg::to_mesh(s, on, &st_on);
                 const csg::SoupMesh m_off = csg::to_mesh(s, off, &st_off);
-                const std::string tag =
-                    std::string(c.id) + " 深度 " + std::to_string(d) + " 演算 " +
-                    std::to_string(static_cast<int>(op));
+                const std::string tag = std::string(c.id) + " 深度 " + std::to_string(d) +
+                                        " 演算 " + std::to_string(static_cast<int>(op));
                 ++n;
                 if (st_on.cell_index_groups > 0) ++fired;
                 groups_total += st_on.cell_index_groups;
@@ -437,8 +435,8 @@ void test_exact_assign() {
     for (const kritest::Case& c : kritest::corpus()) {
         const TriMesh a = c.make_a(), b = c.make_b();
         for (unsigned d = 0; d <= kMaxDepth; ++d) {
-            for (csg::BoolOp op : {csg::BoolOp::Union, csg::BoolOp::Intersection,
-                                   csg::BoolOp::Difference}) {
+            for (csg::BoolOp op :
+                 {csg::BoolOp::Union, csg::BoolOp::Intersection, csg::BoolOp::Difference}) {
                 std::vector<std::size_t> cull[2];
                 csg::SoupMesh m[2];
                 std::size_t frag[2];
@@ -460,8 +458,7 @@ void test_exact_assign() {
                 if (rejected > 0) ++fired;
                 rejected_total += rejected;
                 // 1. バイト一致
-                KRI_CHECK_MSG(m[1].triangles == m[0].triangles,
-                              tag + ": 10-a で三角形が変わった");
+                KRI_CHECK_MSG(m[1].triangles == m[0].triangles, tag + ": 10-a で三角形が変わった");
                 KRI_CHECK_MSG(m[1].vertices.size() == m[0].vertices.size(),
                               tag + ": 10-a で頂点数が変わった" +
                                   kritest::pair_msg(m[1].vertices.size(), m[0].vertices.size()));
@@ -483,13 +480,16 @@ void test_exact_assign() {
                     ++leaves_cmp;
                     if (cull[1][li] != cull[0][li]) same_cull = false;
                 }
-                KRI_CHECK_MSG(same_cull,
-                              tag + ": **10-a が切断平面の側も絞っています**（§10.10 の役割の区別）");
+                KRI_CHECK_MSG(
+                    same_cull,
+                    tag + ": **10-a が切断平面の側も絞っています**（§10.10 の役割の区別）");
             }
         }
     }
-    std::printf("    %zu 件。**機構が発火したのは %zu 件**（落とした割り当て 計 %zu、"
-                "葉ごとの切断平面を %zu 葉で照合）\n", n, fired, rejected_total, leaves_cmp);
+    std::printf(
+        "    %zu 件。**機構が発火したのは %zu 件**（落とした割り当て 計 %zu、"
+        "葉ごとの切断平面を %zu 葉で照合）\n",
+        n, fired, rejected_total, leaves_cmp);
     // 4. ★ 空回りの検査
     KRI_CHECK_MSG(n > 0, "10-a: 比較が 1 件も回っていない。**空回りです**");
     KRI_CHECK_MSG(fired > 0,
@@ -518,8 +518,8 @@ void test_ray_prefilter() {
     for (const kritest::Case& c : kritest::corpus()) {
         const TriMesh a = c.make_a(), b = c.make_b();
         for (unsigned d = 0; d <= kMaxDepth; ++d) {
-            for (csg::BoolOp op : {csg::BoolOp::Union, csg::BoolOp::Intersection,
-                                   csg::BoolOp::Difference}) {
+            for (csg::BoolOp op :
+                 {csg::BoolOp::Union, csg::BoolOp::Intersection, csg::BoolOp::Difference}) {
                 csg::SoupMesh m[2];
                 std::size_t hits[2], tests[2];
                 for (int on = 1; on >= 0; --on) {
@@ -539,8 +539,7 @@ void test_ray_prefilter() {
                 cand_off += static_cast<double>(tests[0]);
                 if (hits[1] > 0) ++fired;
                 // 1. バイト一致
-                KRI_CHECK_MSG(m[1].triangles == m[0].triangles,
-                              tag + ": D で三角形が変わった");
+                KRI_CHECK_MSG(m[1].triangles == m[0].triangles, tag + ": D で三角形が変わった");
                 KRI_CHECK_MSG(m[1].vertices.size() == m[0].vertices.size(),
                               tag + ": D で頂点数が変わった" +
                                   kritest::pair_msg(m[1].vertices.size(), m[0].vertices.size()));
@@ -556,8 +555,8 @@ void test_ray_prefilter() {
             }
         }
     }
-    std::printf("    %zu 件。**レイキャストが走ったのは %zu 件**（索引の候補 計 %.0f）\n",
-                n, fired, cand_on);
+    std::printf("    %zu 件。**レイキャストが走ったのは %zu 件**（索引の候補 計 %.0f）\n", n, fired,
+                cand_on);
     // 3. ★ 空回りの検査
     KRI_CHECK_MSG(n > 0, "D: 比較が 1 件も回っていない。**空回りです**");
     KRI_CHECK_MSG(fired > 0, "**D: レイキャストが 1 件も走っていない。空回りです**");
