@@ -112,12 +112,15 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.early_out_cells += b.early_out_cells;
     a.early_out_raycasts += b.early_out_raycasts;
     a.early_out_negative += b.early_out_negative;
+    a.assign_rejected_plane += b.assign_rejected_plane;
     a.split_plane_slots += b.split_plane_slots;
     a.split_planes_used += b.split_planes_used;
     a.bsp_cut_slots += b.bsp_cut_slots;
     a.bsp_cuts_used += b.bsp_cuts_used;
     a.bsp_cuts_skipped += b.bsp_cuts_skipped;
     a.regions += b.regions;
+    a.regions_negative_w += b.regions_negative_w;
+    a.regions_w_ge2 += b.regions_w_ge2;
     a.raycasts += b.raycasts;
     a.interior.axis_line += b.interior.axis_line;
     a.interior.corner_offset += b.interior.corner_offset;
@@ -145,6 +148,12 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.bsp_cuts_used_single += b.bsp_cuts_used_single;
     a.bsp_cells_skipped_nsi += b.bsp_cells_skipped_nsi;
     a.ray_tri_tests += b.ray_tri_tests;
+    a.ray_tri_hits += b.ray_tri_hits;
+    a.ray_tri_kept += b.ray_tri_kept;
+    a.ray_tri_aabb += b.ray_tri_aabb;
+    a.ray_tri_fwd += b.ray_tri_fwd;
+    a.ray_tri_fwd_only += b.ray_tri_fwd_only;
+    a.ray_cheap_tests += b.ray_cheap_tests;
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
     a.leaf_input_max = std::max(a.leaf_input_max, b.leaf_input_max);
@@ -282,10 +291,23 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
         }
     }
-    auto ray_support = [&](std::size_t i, std::size_t* tested) {
+    auto ray_support = [&](std::size_t i, std::size_t* tested, std::size_t* hits = nullptr,
+                           std::size_t* kept = nullptr, std::size_t* aabb = nullptr,
+                           std::size_t* fwd = nullptr, std::size_t* fwd1 = nullptr,
+                           std::size_t* cheap = nullptr) {
         RaySupport sup;
         sup.planes = ray_planes[i].data();
         sup.tested = tested;
+        sup.hits = hits;
+        sup.kept = kept;
+        sup.prefilter = opt.ray_prefilter;
+        // **計測は既定で切ります。** 旗を立てたときだけ数えます（費用が要るため）
+        if (opt.record_ray_filter) {
+            sup.aabb_pass = aabb;
+            sup.fwd_pass = fwd;
+            sup.fwd_only = fwd1;
+            sup.cheap_tests = cheap;
+        }
         if (opt.ray_index) {
             for (std::size_t ax = 0; ax < 3; ++ax) sup.index[ax] = &ray_index[i][ax];
         }
@@ -402,6 +424,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         bool active = false;
     };
     std::vector<LeafOut> leaf_out(leaves.size());
+    // **検査用の書き出し**（`BoolOptions::leaf_cull_out`）。葉ごとに 1 スロットなので競合しません
+    if (opt.leaf_cull_out != nullptr) {
+        opt.leaf_cull_out->assign(leaves.size(), BoolOptions::kNotReached);
+    }
 
     // **プールは持ち回します。** 渡されなければこの呼び出しの間だけ作ります
     // （生成コストは 8 スレッドで 0.2 ms。呼び出しが多い場面では `opt.pool` を渡すこと）
@@ -445,7 +471,26 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
         std::vector<std::size_t> here;
         for (std::size_t i = 0; i < polys.size(); ++i) {
-            if (octree::assign_to_cell(polys[i].aabb, cbox)) here.push_back(i);
+            if (!octree::assign_to_cell(polys[i].aabb, cbox)) continue;
+            // **10-a**（`DESIGN-phase5-hotspots.md` §10）。AABB を通ったものだけ、
+            // **支持平面がセルの閉領域を横切るか**を見ます。
+            //
+            // **平面は無限なので保守的です。** 平面が横切らなければ、その平面上にある
+            // 三角形も交わらないので、**クリップは必ず空になります。落ちる断片はありません。**
+            //
+            // **ここは「どのセルで処理するか」だけです。**
+            // 切断平面の候補（`all_split` の絞り込み）にも、存在判定（early-out）にも
+            // 触っていません。**役割が違います**（`BoolOptions::exact_assign` の注記）。
+            if (opt.exact_assign) {
+                const geom::PlaneD& pl = out.table.at(polys[i].frag.support);
+                // **退化した平面は絞りません。** 法線が 0 だと `plane_crosses_box` は
+                // `d == 0` のときしか真を返さず、絞り込みが保守的でなくなります。
+                if (!geom::is_degenerate(pl) && !geom::plane_crosses_box(pl, cbox.lo, cbox.hi)) {
+                    ++st.assign_rejected_plane;
+                    continue;
+                }
+            }
+            here.push_back(i);
         }
         st.leaf_poly_sq += here.size() * here.size();
         st.ms_arr_gather += a_lap();
@@ -565,6 +610,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         const std::vector<PlaneId>& split_planes = opt.cull_planes ? culled : all_split;
         st.split_plane_slots += all_split.size();
         st.split_planes_used += split_planes.size();
+        if (opt.leaf_cull_out != nullptr) (*opt.leaf_cull_out)[li] = split_planes.size();
         st.max_planes_per_cell = std::max(st.max_planes_per_cell, split_planes.size());
 
         // ---- 局所 BSP の切断集合（`SPEC-phase3.md` §5.4）★ ----------------------
@@ -829,6 +875,15 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     PointCache* const cache = opt.cache_points ? &stitch_cache : nullptr;
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
     std::vector<geom::HPointD> points;
+    // **併合グループの空間的な広がり**（`SPEC-phase4.md` §2.6 / §5.4）。
+    //
+    // > **★ この計数は二項メッシュ経路にしか無く、スープ経路では一度も測られて
+    // > いませんでした**（2026-09-05 に発覚。`DESIGN-phase5-hotspots.md` §9.4）。
+    // > **「広がりが 1 セルとその隣接に収まる」は、縫合をセル並列にできるかの前提**で、
+    // > **実際に使う経路で測っていなければ根拠になりません。**
+    //
+    // 点ごとに、その点を参照した断片のセル添字（最大深度に正規化）の範囲を持ちます。
+    std::vector<std::array<std::uint32_t, 3>> pt_lo, pt_hi;
     std::vector<std::vector<std::uint32_t>> raw(frags.size());
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
         const Fragment& f = frags[fi];
@@ -836,13 +891,24 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         raw[fi].reserve(n);
         for (std::size_t i = 0; i < n; ++i) {
             const auto k = detail::vertex_key(f, i);
+            std::uint32_t cix[3];
+            octree::normalized_index(frag_cell[fi], opt.depth, cix);
             auto it = by_key.find(k);
             if (it == by_key.end()) {
                 const auto id = static_cast<std::uint32_t>(points.size());
                 points.push_back(fragment_vertex(out.table, f, i, cache));
+                pt_lo.push_back({cix[0], cix[1], cix[2]});
+                pt_hi.push_back({cix[0], cix[1], cix[2]});
                 it = by_key.emplace(k, id).first;
             }
             raw[fi].push_back(it->second);
+            {
+                const std::uint32_t id2 = it->second;
+                for (int t = 0; t < 3; ++t) {
+                    if (cix[t] < pt_lo[id2][t]) pt_lo[id2][t] = cix[t];
+                    if (cix[t] > pt_hi[id2][t]) pt_hi[id2][t] = cix[t];
+                }
+            }
         }
     }
     st.constructed_points = points.size();
@@ -876,6 +942,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         ids.reserve(raw[fi].size());
         for (std::uint32_t v : raw[fi]) ids.push_back(remap[v]);
         regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
+    }
+
+    // **広がりの集計**（`SPEC-phase4.md` §2.6 の前提を、実際に使う経路で測る）
+    for (std::size_t i = 0; i < pt_lo.size(); ++i) {
+        std::size_t span = 0;
+        for (int t = 0; t < 3; ++t) span = std::max(span, std::size_t{pt_hi[i][t] - pt_lo[i][t]});
+        if (span > 0) ++st.merge_groups;
+        st.max_merge_span = std::max(st.max_merge_span, span);
     }
 
     st.ms_stitch = lap(t_stage);
@@ -982,11 +1056,26 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // 撤去でピークが 8,242 → 1,438 MB。**出力はバイト一致、時間は不変。**
             Wnd v{};
             winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
-                          ray_support(i2, &st.ray_tri_tests));
+                          ray_support(i2, &st.ray_tri_tests, &st.ray_tri_hits, &st.ray_tri_kept,
+                                      &st.ray_tri_aabb, &st.ray_tri_fwd, &st.ray_tri_fwd_only,
+                                      &st.ray_cheap_tests));
             ++st.raycasts;
             ++st.regions;
             w_front[i2] = v.w_other + v.c_front;
             w_back[i2] = v.w_other + v.c_back;
+        }
+
+        // **巻き数の分布を数えます**（`SPEC-phase5.md` §2.9 の第四段階）。
+        // **捨てる領域も含めて数えます。** 訂正が効いたかの証拠なので、
+        // 出力に残ったものだけでは足りません。
+        {
+            bool neg = false, ge2 = false;
+            for (std::size_t i2 = 0; i2 < n_src; ++i2) {
+                if (w_front[i2] < 0 || w_back[i2] < 0) neg = true;
+                if (w_front[i2] >= 2 || w_back[i2] >= 2) ge2 = true;
+            }
+            if (neg) ++st.regions_negative_w;
+            if (ge2) ++st.regions_w_ge2;
         }
 
         const bool in_front = out.indicator.eval(w_front);

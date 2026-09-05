@@ -98,6 +98,16 @@ struct ToMeshStats {
     /// **0 なら機構が空回りしています**（`CLAUDE.md`「足した機構が実際に発火した
     /// ことを、テスト自身に確かめさせること」）。
     std::size_t canonical_swaps = 0;  ///< 第2段が併合した数
+    /// **A-3（セルで区切った索引）の (葉, 支持平面) の組の数**（`ToMeshOptions::cell_index`）。
+    ///
+    /// **0 なら退避しています**（箱がセルの箱でなかった、または旗が偽）。
+    /// **スープ経路（`boolean` の出力）で 0 なら、機構が空回りしています。**
+    std::size_t cell_index_groups = 0;
+    /// **A-3 の位置決め（頂点をセルに割り振る二分探索）が走った回数**。
+    /// **Morton なら不要になります**（`DESIGN-phase5-hotspots.md` §9.3 の恩恵 3）。
+    std::size_t cell_index_locate_tests = 0;
+    /// **A-3 の (葉, 平面) ごとの照合が走った回数**（索引の本体）。
+    std::size_t cell_index_group_tests = 0;
     TJunctionStats t{};
     mesh::SplitStats split{};
 };
@@ -122,6 +132,17 @@ struct ToMeshOptions {
     /// **スケジューラに依存しない番人**で、1 スレッドでも効きます。
     bool reverse_fan = false;
     bool resolve_t = true;  ///< §6.2 の T 頂点解決
+    /// **T 字接合の索引をセルで区切る**（`DESIGN-phase5-hotspots.md` §6.3 の A-3）。
+    ///
+    /// 平面ごとに全頂点を走査する代わりに、**多角形が属する葉の【閉じた箱】に
+    /// 入る頂点だけ**を候補にします。**厳密な絞り込みで、落ちる T 頂点はありません。**
+    ///
+    /// **偽にすると完全に外れます**（`CLAUDE.md`「機構を追加したら、それを外す経路も
+    /// 用意してください」）。**正しさの検査は真偽の両方で同じ出力を要求します。**
+    ///
+    /// **効くのはスープ経路だけです。二項メッシュ経路は意図的に素朴なまま**で、
+    /// この旗を見ません（正解器は被検体と別経路で書く）。
+    bool cell_index = true;
 };
 
 /// スープを三角メッシュにする（`SPEC-phase3.md` §6）。
@@ -217,15 +238,32 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
 
     // ---- 2. T 頂点の解決（§6.2）+ 3. 三角形化 --------------------------------
     PlaneVertexIndex index;
-    {
+    CellPlaneVertexIndex cell_index;
+    bool used_cell_index = false;
+    if (opt.cell_index) {
+        // **A-3（`DESIGN-phase5-hotspots.md` §6.3）。セルで区切って候補を絞ります。**
+        // 実測の削減は 3〜391 倍で、**出力が占めるセルの数**で決まります（`BENCH.md`）。
+        std::vector<octree::Aabb> box;
+        std::vector<PlaneId> sup;
+        box.reserve(s.polys.size());
+        sup.reserve(s.polys.size());
+        for (const Poly& q : s.polys) {
+            box.push_back(q.aabb);
+            sup.push_back(q.frag.support);
+        }
+        used_cell_index = cell_index.build(s.table, out.vertices, box, sup, &pool,
+                                           &st.cell_index_locate_tests, &st.cell_index_group_tests);
+    }
+    if (!used_cell_index) {
         std::vector<PlaneId> sup;
         sup.reserve(s.polys.size());
         for (const Poly& q : s.polys) sup.push_back(q.frag.support);
         std::sort(sup.begin(), sup.end());
         sup.erase(std::unique(sup.begin(), sup.end()), sup.end());
-        // **平面ごとに独立**（§3）。規模のあるコーパスでは出口の 88% を占めます
+        // **平面ごとに独立**（§3）。**A-3 を外したときの経路です。**
         index.build(s.table, out.vertices, sup, &pool);
     }
+    st.cell_index_groups = used_cell_index ? cell_index.groups() : 0;
     st.ms_index = lap(t_stage);
 
     // **多角形ごとに独立**（§3）。**スロットに書いて、あとで多角形の順に結合します**
@@ -241,8 +279,16 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         std::vector<PlaneId> edge = f.edge;
         TJunctionStats& t = tl_t[tid];
         if (opt.resolve_t) {
+            static const std::vector<std::uint32_t> kEmptyCand;
+            const std::vector<std::uint32_t>* cand = nullptr;
+            if (used_cell_index) {
+                cand = &cell_index.candidates(pi);
+            } else {
+                const std::vector<std::uint32_t>* c = index.find(f.support);
+                cand = (c == nullptr) ? &kEmptyCand : c;
+            }
             const TPolygon tp =
-                insert_t_vertices(s.table, out.vertices, index, f.support, edge, poly, &t);
+                insert_t_vertices_with(s.table, out.vertices, *cand, edge, poly, &t);
             fan_triangulate(tp, poly_tris[pi], &t);
         } else {
             TPolygon tp;
