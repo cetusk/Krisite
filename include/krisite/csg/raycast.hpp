@@ -141,6 +141,23 @@ struct RaySupport {
     const RayIndex* index[3] = {nullptr, nullptr, nullptr};
     /// 実際に走査した三角形の数を足し込みます（計測用。任意）。
     std::size_t* tested = nullptr;
+    /// **そのうち実際に寄与した三角形の数**（計測用。任意）。
+    ///
+    /// **`tested` との比が、索引の絞り込みの効きです**
+    /// （`DESIGN-phase5-hotspots.md` §11）。**A-3 と同じ形の問い**で、
+    /// A-3 では「索引が返す候補の 99.9% が捨てられている」でした。
+    std::size_t* hits = nullptr;
+    /// **投影した AABB に判定点が入る候補の数**（計測用。任意）。
+    ///
+    /// **索引はセルの単位でしか絞れません。** 三角形が段 $l$ の 4 セルを占めても、
+    /// **その三角形自身の投影 AABB はもっと小さい**ことがあります。
+    /// **この差が、安い前判定で落とせる分です**（`DESIGN-phase5-hotspots.md` §11）。
+    std::size_t* aabb_pass = nullptr;
+    /// **段ごとの候補数**（計測用。任意。`kRayIndexMaxLevels` 個の配列）。
+    ///
+    /// **大きい三角形が粗い段に入っているか**を見ます
+    /// （`SPEC-phase3.md` §5.5.0 の「未調査」）。
+    std::size_t* per_level = nullptr;
 };
 
 /// **巻き数**（`SPEC-phase3.md` §5.1）。判定点が `m` の表面に載っている場合も扱います。
@@ -192,6 +209,22 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
             (sup.planes != nullptr) ? sup.planes[j] : geom::plane_from_triangle(a, b, c);
         if (geom::is_degenerate(pl)) return;
 
+        if (sup.aabb_pass != nullptr) {
+            // **投影した AABB に判定点が入るか**（計測。実装では安い比較で書けます）
+            const geom::Axis uu = detail::proj_u(along), vv = detail::proj_v(along);
+            std::int64_t ulo = detail::comp(a, uu), uhi = ulo;
+            std::int64_t vlo = detail::comp(a, vv), vhi = vlo;
+            for (const geom::IPoint* q : {&b, &c}) {
+                const std::int64_t cu = detail::comp(*q, uu), cv = detail::comp(*q, vv);
+                ulo = std::min(ulo, cu); uhi = std::max(uhi, cu);
+                vlo = std::min(vlo, cv); vhi = std::max(vhi, cv);
+            }
+            const bool in = geom::side(geom::plane_axis_aligned(uu, ulo), p) >= 0 &&
+                            geom::side(geom::plane_axis_aligned(uu, uhi), p) <= 0 &&
+                            geom::side(geom::plane_axis_aligned(vv, vlo), p) >= 0 &&
+                            geom::side(geom::plane_axis_aligned(vv, vhi), p) <= 0;
+            if (in) ++*sup.aabb_pass;
+        }
         bool on_face = false, strict = false;
         if (geom::side(pl, p) == 0) {
             const geom::Axis ax = (arith::sign(pl.a) != 0)   ? geom::Axis::X
@@ -209,9 +242,11 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
             // **平面を使い回します。** ここで作り直すと 1 三角形あたり 2 回になります
             if (detail::crosses_with(pl, a, b, c, p, along)) {
                 *w_other += detail::normal_comp_sign(pl, along);
+                if (sup.hits != nullptr) ++*sup.hits;
             }
             return;
         }
+        if (sup.hits != nullptr) ++*sup.hits;  // 載っている面も「寄与した」に数えます
         // **載っている面（シート）。** レイはここから出るので、跨ぐかどうかは
         // レイの向きと基準法線の関係で決まります（下の分岐）。
         //
@@ -255,6 +290,7 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
             ++cur[best];
             visit(bv);
             ++visited;
+            if (sup.per_level != nullptr) ++sup.per_level[best];
         }
     }
     if (sup.tested != nullptr) *sup.tested += visited;

@@ -189,6 +189,11 @@ public:
         for (const Level& L : levels_) n += L.items.size();
         return n;
     }
+    /// 段 `l` の項目数（計測用。`DESIGN-phase5-hotspots.md` §11）。
+    /// **大きい三角形は粗い段に入ります。**段ごとの分布が偏りを示します。
+    std::size_t items_at(std::size_t l) const noexcept { return levels_[l].items.size(); }
+    /// 段 `l` の解像度（1 辺のセル数）。
+    std::uint32_t res_at(std::size_t l) const noexcept { return levels_[l].res; }
 
     /// 判定点 `p` の候補（**三角形番号の昇順**）を `out` に集めます。
     ///

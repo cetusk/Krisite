@@ -119,6 +119,8 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.bsp_cuts_used += b.bsp_cuts_used;
     a.bsp_cuts_skipped += b.bsp_cuts_skipped;
     a.regions += b.regions;
+    a.regions_negative_w += b.regions_negative_w;
+    a.regions_w_ge2 += b.regions_w_ge2;
     a.raycasts += b.raycasts;
     a.interior.axis_line += b.interior.axis_line;
     a.interior.corner_offset += b.interior.corner_offset;
@@ -146,6 +148,8 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.bsp_cuts_used_single += b.bsp_cuts_used_single;
     a.bsp_cells_skipped_nsi += b.bsp_cells_skipped_nsi;
     a.ray_tri_tests += b.ray_tri_tests;
+    a.ray_tri_hits += b.ray_tri_hits;
+    a.ray_tri_aabb += b.ray_tri_aabb;
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
     a.leaf_input_max = std::max(a.leaf_input_max, b.leaf_input_max);
@@ -283,10 +287,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
         }
     }
-    auto ray_support = [&](std::size_t i, std::size_t* tested) {
+    auto ray_support = [&](std::size_t i, std::size_t* tested, std::size_t* hits = nullptr,
+                           std::size_t* aabb = nullptr) {
         RaySupport sup;
         sup.planes = ray_planes[i].data();
         sup.tested = tested;
+        sup.hits = hits;
+        sup.aabb_pass = aabb;
         if (opt.ray_index) {
             for (std::size_t ax = 0; ax < 3; ++ax) sup.index[ax] = &ray_index[i][ax];
         }
@@ -1008,11 +1015,24 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // 撤去でピークが 8,242 → 1,438 MB。**出力はバイト一致、時間は不変。**
             Wnd v{};
             winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
-                          ray_support(i2, &st.ray_tri_tests));
+                          ray_support(i2, &st.ray_tri_tests, &st.ray_tri_hits, &st.ray_tri_aabb));
             ++st.raycasts;
             ++st.regions;
             w_front[i2] = v.w_other + v.c_front;
             w_back[i2] = v.w_other + v.c_back;
+        }
+
+        // **巻き数の分布を数えます**（`SPEC-phase5.md` §2.9 の第四段階）。
+        // **捨てる領域も含めて数えます。** 訂正が効いたかの証拠なので、
+        // 出力に残ったものだけでは足りません。
+        {
+            bool neg = false, ge2 = false;
+            for (std::size_t i2 = 0; i2 < n_src; ++i2) {
+                if (w_front[i2] < 0 || w_back[i2] < 0) neg = true;
+                if (w_front[i2] >= 2 || w_back[i2] >= 2) ge2 = true;
+            }
+            if (neg) ++st.regions_negative_w;
+            if (ge2) ++st.regions_w_ge2;
         }
 
         const bool in_front = out.indicator.eval(w_front);
