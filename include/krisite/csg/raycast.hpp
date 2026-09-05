@@ -153,6 +153,21 @@ struct RaySupport {
     /// **その三角形自身の投影 AABB はもっと小さい**ことがあります。
     /// **この差が、安い前判定で落とせる分です**（`DESIGN-phase5-hotspots.md` §11）。
     std::size_t* aabb_pass = nullptr;
+    /// **★ D-2 → D-1 の前判定を有効にする**（`DESIGN-phase5-hotspots.md` §11）。
+    ///
+    /// **索引はセルの単位でしか絞れません。** 三角形が段 $l$ の 4 セルを占めても、
+    /// **その三角形自身の投影 AABB はもっと小さい**ことがあります。
+    /// **実測でレイあたりの候補 210〜734 のうち、寄与するのは 2.5〜2.8 だけ**でした。
+    ///
+    ///   **D-2**  レイの前方にあるか（`along` の最大座標。**比較 1 回**）
+    ///   **D-1**  投影した AABB に判定点が入るか（**比較 2.3〜2.7 回**、早期打ち切り）
+    ///
+    /// **どちらも厳密な絞り込みです。** 落とすのは「必ず寄与しないもの」だけ。
+    ///
+    /// > **★ 境界は【残す】側です。** 判定点が AABB の面にちょうど載る場合、
+    /// > あるいは三角形の `along` 最大座標にちょうど一致する場合は、落としません。
+    /// > **落とすと格子線の上の交点を見逃します**（`SPEC-phase1.md` §9.3 と同じ形）。
+    bool prefilter = false;
     /// **安い前判定が実際に走った回数**（早期打ち切りあり。計測用）。
     /// **費用は「回数 × 単価」で出るので、時間のばらつきに依りません。**
     std::size_t* cheap_tests = nullptr;
@@ -218,6 +233,39 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
         const geom::PlaneD pl =
             (sup.planes != nullptr) ? sup.planes[j] : geom::plane_from_triangle(a, b, c);
         if (geom::is_degenerate(pl)) return;
+
+        // ---- ★ D-2 → D-1 の前判定（`prefilter` が真のときだけ）--------------------
+        //
+        // **順序は D-2 が先です。** 1 回の比較で 42〜45% を落としてから、
+        // D-1 の 2.3〜2.7 回を残りに掛けるほうが安い（`BENCH.md` の実測）。
+        if (sup.prefilter) {
+            // **D-2**: 三角形が丸ごとレイの手前にあるなら、前方では交わりません。
+            // **境界は残します**（`>` であって `>=` ではない）。
+            std::int64_t amax = static_cast<std::int64_t>(detail::comp(a, along));
+            {
+                const std::int64_t b1 = static_cast<std::int64_t>(detail::comp(b, along));
+                const std::int64_t c1 = static_cast<std::int64_t>(detail::comp(c, along));
+                if (b1 > amax) amax = b1;
+                if (c1 > amax) amax = c1;
+            }
+            if (geom::cmp_axis_int(p, amax, along) > 0) return;
+            // **D-1**: 投影した AABB の外なら交わりません。**境界は残します。**
+            const geom::Axis uu = detail::proj_u(along), vv = detail::proj_v(along);
+            std::int64_t ulo = static_cast<std::int64_t>(detail::comp(a, uu)), uhi = ulo;
+            std::int64_t vlo = static_cast<std::int64_t>(detail::comp(a, vv)), vhi = vlo;
+            for (const geom::IPoint* qq : {&b, &c}) {
+                const std::int64_t cu = static_cast<std::int64_t>(detail::comp(*qq, uu));
+                const std::int64_t cv = static_cast<std::int64_t>(detail::comp(*qq, vv));
+                if (cu < ulo) ulo = cu;
+                if (cu > uhi) uhi = cu;
+                if (cv < vlo) vlo = cv;
+                if (cv > vhi) vhi = cv;
+            }
+            if (geom::cmp_axis_int(p, ulo, uu) < 0) return;
+            if (geom::cmp_axis_int(p, uhi, uu) > 0) return;
+            if (geom::cmp_axis_int(p, vlo, vv) < 0) return;
+            if (geom::cmp_axis_int(p, vhi, vv) > 0) return;
+        }
 
         if (sup.fwd_only != nullptr) {
             // **D-2 単独**（D-1 を掛けない）

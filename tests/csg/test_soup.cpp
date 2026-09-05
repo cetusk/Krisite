@@ -498,6 +498,72 @@ void test_exact_assign() {
     KRI_CHECK_MSG(leaves_cmp > 0, "10-a: 葉ごとの照合が 1 葉も回っていない。**空回りです**");
 }
 
+/// **D（分類のレイキャストの前判定）**（`DESIGN-phase5-hotspots.md` §11）。
+///
+/// **見るのは 3 つです。**
+///
+///   1. 旗の ON / OFF で出力がバイト単位で一致すること（**厳密な絞り込み**なので）
+///   2. **寄与した三角形の数が 1 個も変わらないこと**（絞り込みが厳密であることの直接の検査）
+///   3. ★ 機構が実際に発火したこと
+///
+/// **2 は A-3 の「挿入 T 頂点」、10-a の「断片数」と同じ形です。3 度目。**
+///
+/// **★ 境界の扱いが要点です。** 判定点が投影 AABB の面にちょうど載る場合、
+/// あるいは三角形の `along` 最大座標にちょうど一致する場合は**落としません。**
+/// **軸平行なコーパスは、この境界をよく踏みます。**
+void test_ray_prefilter() {
+    std::printf("  D: 分類のレイキャストの前判定\n");
+    std::size_t n = 0, fired = 0;
+    double cand_on = 0, cand_off = 0;
+    for (const kritest::Case& c : kritest::corpus()) {
+        const TriMesh a = c.make_a(), b = c.make_b();
+        for (unsigned d = 0; d <= kMaxDepth; ++d) {
+            for (csg::BoolOp op : {csg::BoolOp::Union, csg::BoolOp::Intersection,
+                                   csg::BoolOp::Difference}) {
+                csg::SoupMesh m[2];
+                std::size_t hits[2], tests[2];
+                for (int on = 1; on >= 0; --on) {
+                    csg::BoolOptions o = kritest::phase1_options(d);
+                    o.ray_prefilter = (on != 0);
+                    csg::BoolStats st;
+                    const csg::PolySoup s =
+                        csg::boolean(csg::from_mesh(a), csg::from_mesh(b), op, o, &st);
+                    m[on] = csg::to_mesh(s);
+                    hits[on] = st.ray_tri_hits;
+                    tests[on] = st.ray_tri_tests;
+                }
+                const std::string tag = std::string(c.id) + " 深度 " + std::to_string(d) +
+                                        " 演算 " + std::to_string(static_cast<int>(op));
+                ++n;
+                cand_on += static_cast<double>(tests[1]);
+                cand_off += static_cast<double>(tests[0]);
+                if (hits[1] > 0) ++fired;
+                // 1. バイト一致
+                KRI_CHECK_MSG(m[1].triangles == m[0].triangles,
+                              tag + ": D で三角形が変わった");
+                KRI_CHECK_MSG(m[1].vertices.size() == m[0].vertices.size(),
+                              tag + ": D で頂点数が変わった" +
+                                  kritest::pair_msg(m[1].vertices.size(), m[0].vertices.size()));
+                bool same = m[1].vertices.size() == m[0].vertices.size();
+                for (std::size_t i = 0; same && i < m[1].vertices.size(); ++i) {
+                    same = geom::cmp_h_lex(m[1].vertices[i], m[0].vertices[i]) == 0;
+                }
+                KRI_CHECK_MSG(same, tag + ": D で頂点の値が変わった");
+                // 2. ★ 寄与した三角形の数が 1 個も変わらない
+                KRI_CHECK_MSG(hits[1] == hits[0],
+                              tag + ": **D で寄与の数が変わった。絞り込みが漏れています**" +
+                                  kritest::pair_msg(hits[1], hits[0]));
+            }
+        }
+    }
+    std::printf("    %zu 件。**レイキャストが走ったのは %zu 件**（索引の候補 計 %.0f）\n",
+                n, fired, cand_on);
+    // 3. ★ 空回りの検査
+    KRI_CHECK_MSG(n > 0, "D: 比較が 1 件も回っていない。**空回りです**");
+    KRI_CHECK_MSG(fired > 0, "**D: レイキャストが 1 件も走っていない。空回りです**");
+    KRI_CHECK_MSG(cand_on > 0, "D: 索引の候補が 0。**空回りです**");
+}
+
 }  // namespace
 
 int main() {
@@ -509,6 +575,7 @@ int main() {
     test_local_bsp_vs_over_subdivision();
     test_cell_index();
     test_exact_assign();
+    test_ray_prefilter();
     std::printf("\n");
     return kritest::finish("csg/soup");
 }

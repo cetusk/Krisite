@@ -87,6 +87,22 @@ inline constexpr std::size_t kAxisOffset = b + 1;
 /// b = 21 で 70 ビット / 2 リム、b = 26 で 85 ビット / 2 リム。
 inline constexpr std::size_t kPlaneAabb = 3 * b + 7;
 
+/// **有理点の 1 軸を、整数の境界と比べる**（`DESIGN-phase5-hotspots.md` §11 の D-1 / D-2）。
+///
+/// $$\mathrm{sign}(x/w - c) = \mathrm{sign}(w)\cdot\mathrm{sign}(x - c\,w)$$
+///
+/// **`cmp_h` で代用できますが、高くつきます。** `cmp_h` は同次点どうしの比較なので
+/// **乗算 2 回・$13b{+}27$ ビット（5 リム）**です。**相手の $w$ が 1 だと分かっていれば
+/// 乗算 1 回で済みます**（実測で 2.34 分の 1。`BENCH.md`）。
+///
+///   x         kHomoXyz = 7b+14
+///   c         b+1（kAxisOffset。セル境界も渡せるように）
+///   c*w       (b+1) + (6b+12) = 7b+13
+///   x - c*w   max(7b+14, 7b+13) + 1 = **7b+15**
+///
+/// b = 21 で 162 ビット / **3 リム**、b = 26 で 197 ビット / 4 リム。
+inline constexpr std::size_t kAxisIntCmp = 7 * b + 15;
+
 /// 三角形とセルの箱の**厳密な**交差判定（分離軸定理）。
 /// `DESIGN-phase5-hotspots.md` §10。**まだ実装していません。導出だけ先に置きます。**
 ///
@@ -253,6 +269,7 @@ inline constexpr std::size_t kOrient2dH = limbs_for(bits::kOrient2dH);
 // Phase 2（SPEC-phase2.md §7）
 inline constexpr std::size_t kPlaneAabb = limbs_for(bits::kPlaneAabb);
 /// 分離軸定理（`DESIGN-phase5-hotspots.md` §10）。**未実装。導出のみ。**
+inline constexpr std::size_t kAxisIntCmp = limbs_for(bits::kAxisIntCmp);
 inline constexpr std::size_t kSatEdgeAxis = limbs_for(bits::kSatEdgeAxis);
 inline constexpr std::size_t kSatNormalAxis = limbs_for(bits::kSatNormalAxis);
 
@@ -276,6 +293,8 @@ static_assert(64 * limbs::kPlaneOrder >= bits::kPlaneOrder, "kPlaneOrder のリ�
 static_assert(64 * limbs::kInputVolume6 >= bits::kInputVolume6, "kInputVolume6 のリム数不足");
 static_assert(64 * limbs::kOrient2dH >= bits::kOrient2dH, "kOrient2dH のリム数不足");
 static_assert(64 * limbs::kPlaneAabb >= bits::kPlaneAabb, "kPlaneAabb のリム数不足");
+static_assert(64 * limbs::kAxisIntCmp >= bits::kAxisIntCmp, "kAxisIntCmp のリム数不足");
+static_assert(bits::kAxisIntCmp >= bits::kHomoXyz + 1, "kAxisIntCmp が x を収められない");
 // Phase 3: 辺平面と代表点（SPEC-phase3 §3.1 / §2.1）
 static_assert(bits::kEdgeNormal <= bits::kNormal, "辺平面の法線が支持平面の法線を超える");
 static_assert(bits::kEdgeOffset <= bits::kOffset, "辺平面のオフセットが kOffset を超える");

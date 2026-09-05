@@ -216,6 +216,35 @@ inline arith::fixed_int<limbs::kCmpH> cmp_h_value(const HPointD& h1, const HPoin
         arith::sub_widen(arith::mul(h2.w, x1), arith::mul(h1.w, x2)));
 }
 
+/// **有理点の 1 軸を、整数の境界と比べる**（`DESIGN-phase5-hotspots.md` §11）。
+///
+///     sign(x/w - c) = sign(w) * sign(x - c*w)
+///
+/// **`cmp_h(h, to_homogeneous(p), ax)` と同じ答えを返しますが、乗算が 1 回で済みます。**
+/// 相手の $w$ が 1 だと分かっているためです。ビット幅は 7b+15 → `widths.hpp` の
+/// `bits::kAxisIntCmp`（`cmp_h` は 13b+27）。
+///
+/// > **★ 境界を含みます。** $x/w = c$ のとき 0 を返します。
+/// > **呼び出し側が「境界の内」と「外」のどちらに入れるかを決めてください。**
+/// > 保守的な絞り込み（外なら必ず交わらない）に使うなら、**0 は「内」に入れること。**
+/// > 落とすと格子線の上の交点を見逃します（`SPEC-phase1.md` §9.3 と同じ形）。
+///
+/// **`c` はセル境界も渡せます**（`kAxisOffset` = b+1。`IPoint` の範囲を超える上端を含む）。
+inline arith::fixed_int<limbs::kAxisIntCmp> cmp_axis_int_value(const HPointD& h, std::int64_t c,
+                                                               Axis ax) noexcept {
+    constexpr std::size_t L = limbs::kAxisIntCmp;
+    static_assert(64 * L >= bits::kAxisIntCmp, "kAxisIntCmp のリム数が上界を下回っている");
+    const auto& x = detail::component(h, ax);
+    const auto cw = arith::mul(arith::from_i64<limbs::kAxisOffset>(c), h.w);
+    return arith::sub(arith::resize<L>(x), arith::resize<L>(cw));
+}
+
+/// 同上の符号。**`w` の符号を掛けます**（構成点の `w` は負になり得ます）。
+inline int cmp_axis_int(const HPointD& h, std::int64_t c, Axis ax) noexcept {
+    const int s = arith::sign(cmp_axis_int_value(h, c, ax));
+    return (arith::sign(h.w) >= 0) ? s : -s;
+}
+
 /// 同次点の軸別比較。x1/w1 と x2/w2 の大小を除算なしで判定する。
 ///
 /// SPEC §7.2:

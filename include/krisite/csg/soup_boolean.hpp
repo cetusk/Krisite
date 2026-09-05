@@ -298,10 +298,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         sup.planes = ray_planes[i].data();
         sup.tested = tested;
         sup.hits = hits;
-        sup.aabb_pass = aabb;
-        sup.fwd_pass = fwd;
-        sup.fwd_only = fwd1;
-        sup.cheap_tests = cheap;
+        sup.prefilter = opt.ray_prefilter;
+        // **計測は既定で切ります。** 旗を立てたときだけ数えます（費用が要るため）
+        if (opt.record_ray_filter) {
+            sup.aabb_pass = aabb;
+            sup.fwd_pass = fwd;
+            sup.fwd_only = fwd1;
+            sup.cheap_tests = cheap;
+        }
         if (opt.ray_index) {
             for (std::size_t ax = 0; ax < 3; ++ax) sup.index[ax] = &ray_index[i][ax];
         }

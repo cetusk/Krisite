@@ -282,8 +282,72 @@ int main(int argc, char** argv) {
                 mpq_canonicalize(w.r0);
                 KRI_CHECK(cmp_h(hv, hi, kAxes[i]) == sgn_of(mpq_cmp(w.q[i], w.r0)));
                 KRI_CHECK(cmp_h(hi, hv, kAxes[i]) == sgn_of(mpq_cmp(w.r0, w.q[i])));
+                // **`cmp_axis_int`**（`DESIGN-phase5-hotspots.md` §11 の D-1 / D-2）。
+                // **`cmp_h` と同じ答えを返すが、乗算が 1 回**。
+                // **正解器は有理数で、固定幅側の変形（sign(w) を掛ける）を使いません。**
+                KRI_CHECK(cmp_axis_int(hv, ic[i], kAxes[i]) == sgn_of(mpq_cmp(w.q[i], w.r0)));
+                // **境界の 1 つ隣**（整数なので、±1 で必ず符号が決まる場合を作れます）
+                mpq_set_si(w.r0, static_cast<long>(ic[i]) + 1, 1);
+                mpq_canonicalize(w.r0);
+                KRI_CHECK(cmp_axis_int(hv, ic[i] + 1, kAxes[i]) == sgn_of(mpq_cmp(w.q[i], w.r0)));
+                mpq_set_si(w.r0, static_cast<long>(ic[i]) - 1, 1);
+                mpq_canonicalize(w.r0);
+                KRI_CHECK(cmp_axis_int(hv, ic[i] - 1, kAxes[i]) == sgn_of(mpq_cmp(w.q[i], w.r0)));
             }
         }
+    }
+
+    // ---- ★ 境界ちょうどを【明示的に構成】する（`SPEC-phase1.md` §9.3 と同じ規律）----
+    //
+    // **乱択では x/w = c はほぼ出ません。** 構成しないと、境界の扱いが検査されません。
+    // **`cmp_axis_int` は保守的な絞り込み（D-1 / D-2）に使うので、
+    // 境界で 0 を返さなければ、格子線の上の交点を落とします。**
+    {
+        std::printf("     境界ちょうど（明示的に構成）\n");
+        Rng rb(20260905);
+        long exact = 0, on_plane = 0;
+        // (1) 整数点そのもの: w = 1 で x = c。**必ず 0**
+        for (int t = 0; t < 2000; ++t) {
+            const IPoint p = kritest::rand_point(rb);
+            const HPointD h = to_homogeneous(p);
+            const std::int64_t c[3] = {p.x, p.y, p.z};
+            for (int i = 0; i < 3; ++i) {
+                KRI_CHECK(cmp_axis_int(h, c[i], kAxes[i]) == 0);
+                KRI_CHECK(cmp_axis_int(h, c[i] + 1, kAxes[i]) < 0);
+                KRI_CHECK(cmp_axis_int(h, c[i] - 1, kAxes[i]) > 0);
+                ++exact;
+            }
+        }
+        // (2) **軸平行な平面を 1 枚使って交点を作る。** その軸で x/w = c がちょうど成立し、
+        //     しかも **w は 1 ではありません**（構成点の一般の形）。
+        for (int t = 0; t < 4000; ++t) {
+            const IPoint a1 = kritest::rand_point(rb), b1 = kritest::rand_point(rb),
+                         c1 = kritest::rand_point(rb), a2p = kritest::rand_point(rb),
+                         b2 = kritest::rand_point(rb), c2 = kritest::rand_point(rb);
+            const PlaneD p1 = plane_from_triangle(a1, b1, c1);
+            const PlaneD p2 = plane_from_triangle(a2p, b2, c2);
+            if (is_degenerate(p1) || is_degenerate(p2)) continue;
+            const int ax = static_cast<int>(rb.next() % 3);
+            const std::int64_t cc = static_cast<std::int64_t>(kritest::rand_point(rb).x);
+            const PlaneD pa = plane_axis_aligned(kAxes[ax], cc);
+            const HPointD h = intersect3(pa, p1, p2);
+            if (is_zero(h.w)) continue;  // 3 平面が 1 点で交わらない
+            // **この軸では x/w = cc がちょうど成立します**
+            KRI_CHECK(cmp_axis_int(h, cc, kAxes[ax]) == 0);
+            KRI_CHECK(cmp_axis_int(h, cc + 1, kAxes[ax]) < 0);
+            KRI_CHECK(cmp_axis_int(h, cc - 1, kAxes[ax]) > 0);
+            // **`cmp_h` と一致すること**（別経路の照合）
+            KRI_CHECK(cmp_axis_int(h, cc, kAxes[ax]) ==
+                      cmp_h(h, to_homogeneous(IPoint{
+                                    ax == 0 ? static_cast<std::int32_t>(cc) : 0,
+                                    ax == 1 ? static_cast<std::int32_t>(cc) : 0,
+                                    ax == 2 ? static_cast<std::int32_t>(cc) : 0}),
+                            kAxes[ax]));
+            ++on_plane;
+        }
+        std::printf("       整数点 %ld 件 / **構成点が軸平行平面に載る場合 %ld 件**\n",
+                    exact, on_plane);
+        KRI_CHECK_MSG(on_plane > 0, "境界ちょうどの構成が 1 件も作れていない。**空回りです**");
     }
 
     std::printf("       %ld 件（うち構成点あり %ld 件）\n", iters, constructed);
