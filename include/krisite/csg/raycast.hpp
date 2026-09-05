@@ -153,6 +153,16 @@ struct RaySupport {
     /// **その三角形自身の投影 AABB はもっと小さい**ことがあります。
     /// **この差が、安い前判定で落とせる分です**（`DESIGN-phase5-hotspots.md` §11）。
     std::size_t* aabb_pass = nullptr;
+    /// **安い前判定が実際に走った回数**（早期打ち切りあり。計測用）。
+    /// **費用は「回数 × 単価」で出るので、時間のばらつきに依りません。**
+    std::size_t* cheap_tests = nullptr;
+    /// **レイの前方にある候補の数**（D-1 を掛けない、D-2 単独の効き）。
+    std::size_t* fwd_only = nullptr;
+    /// **投影 AABB を通り、かつレイの前方にある候補の数**（計測用。任意）。
+    ///
+    /// **D-1 の【後で】D-2 が何を落とすかを順に数えます。**
+    /// 独立とは限らないので、順に適用した実測が要ります。
+    std::size_t* fwd_pass = nullptr;
     /// **段ごとの候補数**（計測用。任意。`kRayIndexMaxLevels` 個の配列）。
     ///
     /// **大きい三角形が粗い段に入っているか**を見ます
@@ -209,8 +219,20 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
             (sup.planes != nullptr) ? sup.planes[j] : geom::plane_from_triangle(a, b, c);
         if (geom::is_degenerate(pl)) return;
 
+        if (sup.fwd_only != nullptr) {
+            // **D-2 単独**（D-1 を掛けない）
+            std::int64_t amax = static_cast<std::int64_t>(detail::comp(a, along));
+            const std::int64_t ab2 = static_cast<std::int64_t>(detail::comp(b, along));
+            const std::int64_t ac2 = static_cast<std::int64_t>(detail::comp(c, along));
+            if (ab2 > amax) amax = ab2;
+            if (ac2 > amax) amax = ac2;
+            if (geom::side(geom::plane_axis_aligned(along, amax), p) <= 0) ++*sup.fwd_only;
+        }
         if (sup.aabb_pass != nullptr) {
             // **投影した AABB に判定点が入るか**（計測。実装では安い比較で書けます）
+            //
+            // **早期打ち切りありで、実際に走った比較の回数を数えます。**
+            // 費用は「回数 × 1 回の単価」で出るので、時間のばらつきに依りません。
             const geom::Axis uu = detail::proj_u(along), vv = detail::proj_v(along);
             std::int64_t ulo = detail::comp(a, uu), uhi = ulo;
             std::int64_t vlo = detail::comp(a, vv), vhi = vlo;
@@ -219,11 +241,32 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
                 ulo = std::min(ulo, cu); uhi = std::max(uhi, cu);
                 vlo = std::min(vlo, cv); vhi = std::max(vhi, cv);
             }
-            const bool in = geom::side(geom::plane_axis_aligned(uu, ulo), p) >= 0 &&
-                            geom::side(geom::plane_axis_aligned(uu, uhi), p) <= 0 &&
-                            geom::side(geom::plane_axis_aligned(vv, vlo), p) >= 0 &&
-                            geom::side(geom::plane_axis_aligned(vv, vhi), p) <= 0;
-            if (in) ++*sup.aabb_pass;
+            bool in = true;
+            {
+                const geom::Axis ax4[4] = {uu, uu, vv, vv};
+                const std::int64_t bd4[4] = {ulo, uhi, vlo, vhi};
+                const int want[4] = {+1, -1, +1, -1};
+                for (int k = 0; k < 4; ++k) {
+                    if (sup.cheap_tests != nullptr) ++*sup.cheap_tests;
+                    const int sg = geom::side(geom::plane_axis_aligned(ax4[k], bd4[k]), p);
+                    if (want[k] > 0 ? (sg < 0) : (sg > 0)) { in = false; break; }
+                }
+            }
+            if (in) {
+                ++*sup.aabb_pass;
+                // **D-2**: レイは `along` の正方向へ進むので、三角形の `along` 最大座標が
+                // 判定点より手前なら、前方では交わりません。**1 回の比較で決まります。**
+                if (sup.fwd_pass != nullptr) {
+                    std::int64_t amax = static_cast<std::int64_t>(detail::comp(a, along));
+                    const std::int64_t ab = static_cast<std::int64_t>(detail::comp(b, along));
+                    const std::int64_t ac = static_cast<std::int64_t>(detail::comp(c, along));
+                    if (ab > amax) amax = ab;
+                    if (ac > amax) amax = ac;
+                    if (geom::side(geom::plane_axis_aligned(along, amax), p) <= 0) {
+                        ++*sup.fwd_pass;
+                    }
+                }
+            }
         }
         bool on_face = false, strict = false;
         if (geom::side(pl, p) == 0) {

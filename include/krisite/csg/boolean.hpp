@@ -224,6 +224,12 @@ struct BoolStats {
     /// **投影 AABB の前判定を通った候補の数**（同上）。
     /// **`ray_tri_tests` との比が、安い前判定で落とせる分です。**
     std::size_t ray_tri_aabb = 0;
+    /// **投影 AABB を通り、かつレイの前方にある候補の数**（D-1 の後の D-2）。
+    std::size_t ray_tri_fwd = 0;
+    /// **D-2 単独**（D-1 を掛けない）。
+    std::size_t ray_tri_fwd_only = 0;
+    /// **安い前判定が走った回数**（早期打ち切りあり）。
+    std::size_t ray_cheap_tests = 0;
 
     /// §5.4 の局所 BSP（CP4）。**切断候補のうち何枚を実際に切ったか。**
     ///

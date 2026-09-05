@@ -150,6 +150,9 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.ray_tri_tests += b.ray_tri_tests;
     a.ray_tri_hits += b.ray_tri_hits;
     a.ray_tri_aabb += b.ray_tri_aabb;
+    a.ray_tri_fwd += b.ray_tri_fwd;
+    a.ray_tri_fwd_only += b.ray_tri_fwd_only;
+    a.ray_cheap_tests += b.ray_cheap_tests;
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
     a.leaf_input_max = std::max(a.leaf_input_max, b.leaf_input_max);
@@ -288,12 +291,17 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
     }
     auto ray_support = [&](std::size_t i, std::size_t* tested, std::size_t* hits = nullptr,
-                           std::size_t* aabb = nullptr) {
+                           std::size_t* aabb = nullptr, std::size_t* fwd = nullptr,
+                           std::size_t* fwd1 = nullptr,
+                           std::size_t* cheap = nullptr) {
         RaySupport sup;
         sup.planes = ray_planes[i].data();
         sup.tested = tested;
         sup.hits = hits;
         sup.aabb_pass = aabb;
+        sup.fwd_pass = fwd;
+        sup.fwd_only = fwd1;
+        sup.cheap_tests = cheap;
         if (opt.ray_index) {
             for (std::size_t ax = 0; ax < 3; ++ax) sup.index[ax] = &ray_index[i][ax];
         }
@@ -1015,7 +1023,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // 撤去でピークが 8,242 → 1,438 MB。**出力はバイト一致、時間は不変。**
             Wnd v{};
             winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
-                          ray_support(i2, &st.ray_tri_tests, &st.ray_tri_hits, &st.ray_tri_aabb));
+                          ray_support(i2, &st.ray_tri_tests, &st.ray_tri_hits, &st.ray_tri_aabb, &st.ray_tri_fwd,
+                                     &st.ray_tri_fwd_only, &st.ray_cheap_tests));
             ++st.raycasts;
             ++st.regions;
             w_front[i2] = v.w_other + v.c_front;
