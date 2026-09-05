@@ -112,6 +112,7 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.early_out_cells += b.early_out_cells;
     a.early_out_raycasts += b.early_out_raycasts;
     a.early_out_negative += b.early_out_negative;
+    a.assign_rejected_plane += b.assign_rejected_plane;
     a.split_plane_slots += b.split_plane_slots;
     a.split_planes_used += b.split_planes_used;
     a.bsp_cut_slots += b.bsp_cut_slots;
@@ -402,6 +403,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         bool active = false;
     };
     std::vector<LeafOut> leaf_out(leaves.size());
+    // **検査用の書き出し**（`BoolOptions::leaf_cull_out`）。葉ごとに 1 スロットなので競合しません
+    if (opt.leaf_cull_out != nullptr) {
+        opt.leaf_cull_out->assign(leaves.size(), BoolOptions::kNotReached);
+    }
 
     // **プールは持ち回します。** 渡されなければこの呼び出しの間だけ作ります
     // （生成コストは 8 スレッドで 0.2 ms。呼び出しが多い場面では `opt.pool` を渡すこと）
@@ -445,7 +450,27 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
         std::vector<std::size_t> here;
         for (std::size_t i = 0; i < polys.size(); ++i) {
-            if (octree::assign_to_cell(polys[i].aabb, cbox)) here.push_back(i);
+            if (!octree::assign_to_cell(polys[i].aabb, cbox)) continue;
+            // **10-a**（`DESIGN-phase5-hotspots.md` §10）。AABB を通ったものだけ、
+            // **支持平面がセルの閉領域を横切るか**を見ます。
+            //
+            // **平面は無限なので保守的です。** 平面が横切らなければ、その平面上にある
+            // 三角形も交わらないので、**クリップは必ず空になります。落ちる断片はありません。**
+            //
+            // **ここは「どのセルで処理するか」だけです。**
+            // 切断平面の候補（`all_split` の絞り込み）にも、存在判定（early-out）にも
+            // 触っていません。**役割が違います**（`BoolOptions::exact_assign` の注記）。
+            if (opt.exact_assign) {
+                const geom::PlaneD& pl = out.table.at(polys[i].frag.support);
+                // **退化した平面は絞りません。** 法線が 0 だと `plane_crosses_box` は
+                // `d == 0` のときしか真を返さず、絞り込みが保守的でなくなります。
+                if (!geom::is_degenerate(pl) &&
+                    !geom::plane_crosses_box(pl, cbox.lo, cbox.hi)) {
+                    ++st.assign_rejected_plane;
+                    continue;
+                }
+            }
+            here.push_back(i);
         }
         st.leaf_poly_sq += here.size() * here.size();
         st.ms_arr_gather += a_lap();
@@ -565,6 +590,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         const std::vector<PlaneId>& split_planes = opt.cull_planes ? culled : all_split;
         st.split_plane_slots += all_split.size();
         st.split_planes_used += split_planes.size();
+        if (opt.leaf_cull_out != nullptr) (*opt.leaf_cull_out)[li] = split_planes.size();
         st.max_planes_per_cell = std::max(st.max_planes_per_cell, split_planes.size());
 
         // ---- 局所 BSP の切断集合（`SPEC-phase3.md` §5.4）★ ----------------------

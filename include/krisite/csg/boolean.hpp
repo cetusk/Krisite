@@ -108,6 +108,10 @@ struct BoolStats {
     /// `split_plane_slots` は「セル × 分割平面」の総当たり数、
     /// `split_planes_used` は絞り込んだ後に実際に使った数です。
     /// **比が Phase 2 の断片数削減の直接的な指標になります**（§11）。
+    /// **10-a が落とした割り当ての数**（`BoolOptions::exact_assign`）。
+    /// **0 なら機構が空回りしています**（`CLAUDE.md`）。
+    std::size_t assign_rejected_plane = 0;
+
     std::size_t split_plane_slots = 0;
     std::size_t split_planes_used = 0;
     std::size_t max_planes_per_cell = 0;  ///< 1 セルで使った分割平面の最大数
@@ -351,6 +355,37 @@ struct BoolOptions {
     unsigned depth = 0;  ///< 最大深度
     /// §2.3 の分割平面の絞り込み。**無効側が Phase 1 の挙動**（§0.1 の正解器）
     bool cull_planes = true;
+    /// **割り当てを厳しくする**（`DESIGN-phase5-hotspots.md` §10 の 10-a）。
+    ///
+    /// **いまの割り当ては三角形の AABB とセルの重なりだけを見ています。**
+    /// 斜めの三角形の AABB は、セルが細かくなるほど過剰になります
+    /// （実測: 深度 8 で割り当ての 95.4% が実際には交わらない）。
+    ///
+    /// **真なら、支持平面がセルの閉領域を横切るかも見ます**（既存の `plane_crosses_box`）。
+    /// **平面は無限なので、これは保守的な絞り込みです。**
+    /// 平面が横切らなければ三角形も交わらないので、**落ちる断片はありません。**
+    ///
+    /// > **★ 触るのは「この多角形をどのセルで処理するか」だけです。**
+    /// > **「このセルを何で切るか」（切断平面の候補）も
+    /// > 「この曲面はこのセルに在るか」（early-out）も変えません。**
+    /// > `plane(T)` は無限に延びるので、T が届かないセルにも切断点を生みます。
+    /// > **それが Phase 1 の変異 3 です**（`predicates.hpp` の警告）。
+    /// > **同じ述語を、役割の違う問いに使っています。混同しないこと。**
+    ///
+    /// **偽にすると完全に外れます。** 正しさの検査は真偽の両方で同じ出力を要求します。
+    bool exact_assign = true;
+    /// **葉ごとの切断平面の数を書き出す**（検査用。`nullptr` なら何もしません）。
+    ///
+    /// **10-a が「切断平面の側」を変えていないことの直接の検査に使います**
+    /// （`DESIGN-phase5-hotspots.md` §10.10）。
+    ///
+    /// **葉の列挙（`build_leaves`）は 10-a で変わらない**ので、
+    /// **`leaves` の並びは旗の ON / OFF で同一**です。したがって**添字で比べられます。**
+    ///
+    /// 呼び出し側が `leaves.size()` を知らないので、中で `resize` します。
+    /// **到達しなかった葉は `kNotReached`**（`here` が空で早期に戻った葉）。
+    std::vector<std::size_t>* leaf_cull_out = nullptr;
+    static constexpr std::size_t kNotReached = static_cast<std::size_t>(-1);
     /// **レイキャストの 2 次元索引**（`SPEC-phase5.md` §6.3、CP1.5 の 2）。
     ///
     /// レイは軸平行なので、投影面のセルで候補を絞れます。**厳密な絞り込み**で、

@@ -412,6 +412,92 @@ void test_cell_index() {
                       kritest::pair_msg(fired, n));
 }
 
+/// **10-a（割り当てを支持平面で絞る）**（`DESIGN-phase5-hotspots.md` §10）。
+///
+/// **見るのは 4 つです。**
+///
+///   1. 旗の ON / OFF で出力がバイト単位で一致すること（**保守的な絞り込み**なので）
+///   2. **断片が 1 個も変わらないこと**（絞り込みが厳密であることの直接の検査）
+///   3. ★ **葉ごとの切断平面が 1 つも変わらないこと**（§10.10 の役割の区別）
+///   4. ★ 機構が実際に発火したこと
+///
+/// **3 が最も重要です。** 同じ `plane_crosses_box` を、役割の違う 2 つの問いに使っています。
+///
+///   このセルを何で切るか            **三角形が届かなくても要る**（変更しない）
+///   この多角形をどのセルで処理するか  届かないセルには要らない（10-a が変える）
+///
+/// **割り当てを厳しくしたときに、うっかり切断平面の側も絞るのが最も危険な形です。**
+/// **バイト一致では「切断平面が変わったが結果は同じだった」を見逃します。**
+///
+/// **合計では比べられません**（多角形が届かない葉は早期に戻るので、集計に到達する葉が減る）。
+/// **葉の列挙は 10-a で変えていないので `leaves` の並びは同一**で、**添字で比べられます。**
+void test_exact_assign() {
+    std::printf("  10-a: 割り当てを支持平面で絞る\n");
+    std::size_t n = 0, fired = 0, rejected_total = 0, leaves_cmp = 0;
+    for (const kritest::Case& c : kritest::corpus()) {
+        const TriMesh a = c.make_a(), b = c.make_b();
+        for (unsigned d = 0; d <= kMaxDepth; ++d) {
+            for (csg::BoolOp op : {csg::BoolOp::Union, csg::BoolOp::Intersection,
+                                   csg::BoolOp::Difference}) {
+                std::vector<std::size_t> cull[2];
+                csg::SoupMesh m[2];
+                std::size_t frag[2];
+                std::size_t rejected = 0;
+                for (int on = 1; on >= 0; --on) {
+                    csg::BoolOptions o = kritest::phase1_options(d);
+                    o.exact_assign = (on != 0);
+                    o.leaf_cull_out = &cull[on];
+                    csg::BoolStats st;
+                    const csg::PolySoup s =
+                        csg::boolean(csg::from_mesh(a), csg::from_mesh(b), op, o, &st);
+                    m[on] = csg::to_mesh(s);
+                    frag[on] = st.raw_fragments;
+                    if (on) rejected = st.assign_rejected_plane;
+                }
+                const std::string tag = std::string(c.id) + " 深度 " + std::to_string(d) +
+                                        " 演算 " + std::to_string(static_cast<int>(op));
+                ++n;
+                if (rejected > 0) ++fired;
+                rejected_total += rejected;
+                // 1. バイト一致
+                KRI_CHECK_MSG(m[1].triangles == m[0].triangles,
+                              tag + ": 10-a で三角形が変わった");
+                KRI_CHECK_MSG(m[1].vertices.size() == m[0].vertices.size(),
+                              tag + ": 10-a で頂点数が変わった" +
+                                  kritest::pair_msg(m[1].vertices.size(), m[0].vertices.size()));
+                bool same = m[1].vertices.size() == m[0].vertices.size();
+                for (std::size_t i = 0; same && i < m[1].vertices.size(); ++i) {
+                    same = geom::cmp_h_lex(m[1].vertices[i], m[0].vertices[i]) == 0;
+                }
+                KRI_CHECK_MSG(same, tag + ": 10-a で頂点の値が変わった");
+                // 2. 断片が 1 個も変わらない
+                KRI_CHECK_MSG(frag[1] == frag[0],
+                              tag + ": 10-a で断片数が変わった。**絞り込みが保守的でありません**" +
+                                  kritest::pair_msg(frag[1], frag[0]));
+                // 3. ★ 葉ごとの切断平面が変わらない
+                KRI_CHECK_MSG(cull[1].size() == cull[0].size(),
+                              tag + ": 10-a で葉の数が変わった。**葉の列挙を触っています**");
+                bool same_cull = cull[1].size() == cull[0].size();
+                for (std::size_t li = 0; same_cull && li < cull[1].size(); ++li) {
+                    if (cull[1][li] == csg::BoolOptions::kNotReached) continue;
+                    ++leaves_cmp;
+                    if (cull[1][li] != cull[0][li]) same_cull = false;
+                }
+                KRI_CHECK_MSG(same_cull,
+                              tag + ": **10-a が切断平面の側も絞っています**（§10.10 の役割の区別）");
+            }
+        }
+    }
+    std::printf("    %zu 件。**機構が発火したのは %zu 件**（落とした割り当て 計 %zu、"
+                "葉ごとの切断平面を %zu 葉で照合）\n", n, fired, rejected_total, leaves_cmp);
+    // 4. ★ 空回りの検査
+    KRI_CHECK_MSG(n > 0, "10-a: 比較が 1 件も回っていない。**空回りです**");
+    KRI_CHECK_MSG(fired > 0,
+                  "**10-a が 1 件も発火していない。** コーパスに斜めの三角形が無いか、"
+                  "機構が働いていません");
+    KRI_CHECK_MSG(leaves_cmp > 0, "10-a: 葉ごとの照合が 1 葉も回っていない。**空回りです**");
+}
+
 }  // namespace
 
 int main() {
@@ -422,6 +508,7 @@ int main() {
     test_classification_is_order_independent();
     test_local_bsp_vs_over_subdivision();
     test_cell_index();
+    test_exact_assign();
     std::printf("\n");
     return kritest::finish("csg/soup");
 }
