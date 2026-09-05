@@ -87,6 +87,44 @@ inline constexpr std::size_t kAxisOffset = b + 1;
 /// b = 21 で 70 ビット / 2 リム、b = 26 で 85 ビット / 2 リム。
 inline constexpr std::size_t kPlaneAabb = 3 * b + 7;
 
+/// 三角形とセルの箱の**厳密な**交差判定（分離軸定理）。
+/// `DESIGN-phase5-hotspots.md` §10。**まだ実装していません。導出だけ先に置きます。**
+///
+/// **いまの割り当ては三角形の AABB とセルの重なりだけを見ています。**
+/// **斜めの三角形の AABB は、セルが細かくなるほど過剰になります**
+/// （実測: 深度 8 で割り当ての 95.4%、深度 9 で 98.7% が実際には交わらない）。
+///
+/// **半分を避けるため、すべて 2 倍して整数のまま扱います。**
+///
+///   セル座標 lo, hi        b+1（上限 2^(b-1) が kCoordMax を超えるため。§3.2）
+///   中心 x2  c2 = lo + hi  b+2
+///   半径 x2  he = hi - lo  b+2
+///   頂点 x2  V = 2v - c2   b+3
+///   辺       E = V_i - V_j b+4
+///
+/// **(1) 辺 × 単位ベクトルの 9 軸。** 軸 A = E × e_k は成分が 2 本だけ非零で |A| <= 2^(b+4)。
+///
+///   p = A・V（2 項）        (b+4) + (b+3) + 1 = 2b+8
+///   r = Σ he|A|（3 項）     (b+2) + (b+4) + 2 = 2b+8
+///   → **2b+9**（符号を含む余裕）
+///
+/// b = 21 で 51 ビット / **1 リム**。b = 26 で 61 ビット / 1 リム。
+inline constexpr std::size_t kSatEdgeAxis = 2 * b + 9;
+
+/// **(2) 三角形の法線 1 軸。** N = E0 × E1 で |N| <= 2^(2b+9)。
+///
+///   p = N・V（3 項）        (2b+9) + (b+3) + 2 = 3b+14
+///   r = Σ he|N|（3 項）     (b+2) + (2b+9) + 2 = 3b+13
+///   → **3b+14**
+///
+/// b = 21 で 77 ビット / **2 リム**。b = 26 で 92 ビット / 2 リム。
+///
+/// > **★ ただし、この軸は既存の `plane_crosses_box`（kPlaneAabb = 3b+7）で代用できます。**
+/// > 三角形の支持平面は `PlaneTable` に intern 済みで、係数の幅は 2b+3 に正規化されています。
+/// > **法線を作り直すより幅が狭く、GMP 差分テストも既にあります**（`test_plane_box_gmp`）。
+/// > **この定数は「法線を自前で作る場合」の上界として置きます。**
+inline constexpr std::size_t kSatNormalAxis = 3 * b + 14;
+
 /// 三角形 1 枚ぶんの符号付き体積 x6 = det(a, b, c)。
 /// |det| <= 6*2^(3(b-1)) < 2^(3b) なので 3b+1。
 inline constexpr std::size_t kTetraVolume6 = 3 * b + 1;
@@ -214,6 +252,9 @@ inline constexpr std::size_t kOrient2dH = limbs_for(bits::kOrient2dH);
 
 // Phase 2（SPEC-phase2.md §7）
 inline constexpr std::size_t kPlaneAabb = limbs_for(bits::kPlaneAabb);
+/// 分離軸定理（`DESIGN-phase5-hotspots.md` §10）。**未実装。導出のみ。**
+inline constexpr std::size_t kSatEdgeAxis = limbs_for(bits::kSatEdgeAxis);
+inline constexpr std::size_t kSatNormalAxis = limbs_for(bits::kSatNormalAxis);
 
 // Phase 3（SPEC-phase3.md §3.1 / §2.1）
 inline constexpr std::size_t kEdgeNormal = limbs_for(bits::kEdgeNormal);
