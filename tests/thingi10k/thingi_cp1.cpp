@@ -529,7 +529,26 @@ int main(int argc, char** argv) {
                 base.c_str(), only.size());
         }
     }
+    // **★ 設定を全部出します**（`CLAUDE.md`「測定の出力に、設定と実際に測った対象を
+    // 必ず書いてください」）。**2026-09-06 に、NSI の扱いが出力に無かったために、
+    // 記録済みの 351 対（検査して宣言する = 1）に対して、続きを「宣言しない = 0」で
+    // 回してしまいました。** 記録が版ではなく【設定】で割れており、
+    // 出力の多角形数が 3.6 倍ずれて「案 1 の効果」に見えていました。
+    static const char* kNsiName[4] = {"宣言しない", "検査して通ったものだけ宣言する",
+                                      "宣言あり・なしの両方を回して突き合わせる",
+                                      "検査せずに宣言する"};
     std::printf("\n## ブール演算（対 %zu、スレッド %u）\n\n", order.size() / 2, nthreads);
+    std::printf("| 設定 | 値 |\n|---|---|\n");
+    std::printf("| 一覧 | `%s` |\n", list.c_str());
+    std::printf("| 記録先 | `%s` |\n", done_path.c_str());
+    std::printf("| 深度 | %u |\n", depth);
+    std::printf("| スレッド | %u |\n", nthreads);
+    std::printf("| b（座標ビット） | %d |\n", KRISITE_COORD_BITS);
+    std::printf("| **NSI の扱い** | **%d = %s** |\n", nsi_mode,
+                (nsi_mode >= 0 && nsi_mode < 4) ? kNsiName[nsi_mode] : "?");
+    std::printf("| 単一 source を割る閾値 P^2 | %zu |\n", o.single_src_sq);
+    std::printf("| 索引の ON/OFF 突き合わせ | %s |\n", verify_index ? "する" : "しない");
+    std::printf("| 済みの対 | %s |\n\n", redo ? "やり直す" : "飛ばす（再開）");
     const auto t0 = std::chrono::steady_clock::now();
     for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
         const std::size_t i = order[k], j = order[k + 1];
