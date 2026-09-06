@@ -350,6 +350,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     }
 
     st.ms_prepare = lap(t_stage);
+    if (opt.verbose_stages) {
+        std::fprintf(stderr, "      [段] 前処理 完了 %.2f s（葉 %zu / 断片 %zu）\n",
+                     st.ms_prepare / 1000, st.leaf_nonempty, st.raw_fragments);
+        std::fflush(stderr);
+    }
 
     // ---- 3. 葉の列挙（§3.1。固定深度は「常に最大深度」の特別な場合）----------
     const octree::SubdivisionPolicy policy{opt.depth, !opt.adaptive, opt.leaf_threshold};
@@ -375,6 +380,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     st.total_cells = leaves.size();
 
     st.ms_leaves = lap(t_stage);
+    if (opt.verbose_stages) {
+        std::fprintf(stderr, "      [段] 葉の列挙 完了 %.2f s（葉 %zu / 断片 %zu）\n",
+                     st.ms_leaves / 1000, st.leaf_nonempty, st.raw_fragments);
+        std::fflush(stderr);
+    }
 
     // ---- 4. セルごとの arrangement（**並列**。`SPEC-phase4.md` §2）-------------
     //
@@ -864,6 +874,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     st.raw_fragments = frags.size();
 
     st.ms_arrange = lap(t_stage);
+    if (opt.verbose_stages) {
+        std::fprintf(stderr, "      [段] arrange 完了 %.2f s（葉 %zu / 断片 %zu）\n",
+                     st.ms_arrange / 1000, st.leaf_nonempty, st.raw_fragments);
+        std::fflush(stderr);
+    }
 
     // ---- 5. 縫合（重複の仕分けに要る）----------------------------------------
     //
@@ -953,6 +968,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     }
 
     st.ms_stitch = lap(t_stage);
+    if (opt.verbose_stages) {
+        std::fprintf(stderr, "      [段] 縫合 完了 %.2f s（葉 %zu / 断片 %zu）\n",
+                     st.ms_stitch / 1000, st.leaf_nonempty, st.raw_fragments);
+        std::fflush(stderr);
+    }
 
     // ---- 7. 分類（WNV。`SPEC-phase3.md` §5.1 / §14 の CP3 の変更 1）--------------
     //
