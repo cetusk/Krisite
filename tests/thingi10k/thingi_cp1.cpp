@@ -162,8 +162,18 @@ struct PairStruct {
     // 記録していないだけでした。**
     std::size_t edges_odd_degree = 0;
     std::size_t nonmanifold_unexplained = 0;
-    /// 3 演算すべてで成立したか（**論理積**。1 つでも崩れたら除外できません）
+    /// 3 演算すべてで成立したか（**論理積**。1 つでも崩れたら除外できません）。
+    ///
+    /// **★ 空の出力を論理積に入れないこと**（2026-09-06 に踏みました）。
+    /// `check_topology` は**空のメッシュで早期に返し、`oriented` も `no_degenerate` も
+    /// 偽のまま**です。そのまま論理積を取ると、
+    /// **「向きが崩れた」と「出力が空だった」が区別できません。**
+    /// 実際 500 対のうち 116 対（23.2%）が 0 でしたが、**その全部が
+    /// 「∩ が空」などの正常な事象**でした（離れた 2 立体の共通部分など）。
+    /// **偽が 2 つの意味を持つ真偽値を作らないこと。**
     int all_oriented = 1, all_no_degenerate = 1;
+    /// **空の出力を出した演算の数**（0〜3）。上の論理積から外した分をここで数えます
+    int empty_ops = 0;
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -220,8 +230,12 @@ struct PairStruct {
         // **除外の判定に要る 4 項目**（§9.3.1）
         edges_odd_degree += r.edges_odd_degree;
         nonmanifold_unexplained += r.nonmanifold_vertices_unexplained;
-        all_oriented &= r.oriented ? 1 : 0;
-        all_no_degenerate &= r.no_degenerate ? 1 : 0;
+        if (r.empty) {
+            ++empty_ops;  // **空は論理積に入れない**（上の注記）
+        } else {
+            all_oriented &= r.oriented ? 1 : 0;
+            all_no_degenerate &= r.no_degenerate ? 1 : 0;
+        }
         {
             const kritest::Exclusion ex = kritest::exclusion_when_split(t.split.unresolved, r);
             std::string why;
@@ -243,7 +257,11 @@ struct PairStruct {
           << excluded_ops
           // Phase 5 の 3 機構（2026-09-05 追加）
           << ' ' << cell_index_groups << ' ' << assign_rejected << ' ' << ray_kept << ' '
-          << regions_negative_w << ' ' << regions_w_ge2;
+          << regions_negative_w << ' '
+          << regions_w_ge2
+          // **空の出力の数**（2026-09-06 追加。列を足したので `cp1_results.txt` の
+          // 既存 500 行にはありません。**CP2 以降の記録に入ります**）
+          << ' ' << empty_ops;
     }
 };
 
