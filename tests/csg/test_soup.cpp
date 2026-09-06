@@ -25,6 +25,7 @@
 #include "krisite/mesh/topology.hpp"
 
 #include "corpus.hpp"
+#include "perf_corpus.hpp"
 #include "test_util.hpp"
 
 using namespace krisite;
@@ -563,6 +564,67 @@ void test_ray_prefilter() {
     KRI_CHECK_MSG(cand_on > 0, "D: 索引の候補が 0。**空回りです**");
 }
 
+/// **案 1（単一 source の葉を割る）が空回りしていないこと**（`IMPL-phase5.md` §81）。
+///
+/// **コーパスではなくテスト専用の入力を使います。** コーパスは退化を狙って作って
+/// あるので三角形が少なく、$P_\ell > 128$ の葉が出ません。**機会が足りなければ
+/// 機会を作る入力を足す**（`CLAUDE.md`）に従い、細かく切った球を 2 つ置きます。
+/// **退化を狙う入力とは性格が違う**ので、コーパスには入れません。
+void test_single_src_split() {
+    std::printf("  案 1: 単一 source の葉を割る規則\n");
+    struct Setup {
+        const char* id;
+        std::int64_t sep;  ///< 中心の間隔。半径 300000 なので 500000 なら交わらない
+    };
+    std::size_t checked = 0, fired_total = 0;
+    for (const Setup& su : {Setup{"離れた 2 球", 500000}, Setup{"交わる 2 球", 150000}}) {
+        const TriMesh a = kriperf::sphere(300000, 24, 48, -su.sep, 0, 0);
+        const TriMesh b = kriperf::sphere(300000, 24, 48, su.sep, 0, 0);
+        for (unsigned d = 4; d <= 5; ++d) {
+            struct Run {
+                mesh::TopologyReport topo;
+                std::size_t fired, pmax, tris;
+            } r[2];
+            for (int on = 1; on >= 0; --on) {
+                csg::BoolOptions o;
+                o.depth = d;
+                o.adaptive = true;
+                o.threads = 1;
+                o.single_src_sq = on ? 16384u : octree::kNoSingleSplit;
+                csg::BoolStats st;
+                const csg::PolySoup u =
+                    csg::boolean(csg::from_mesh(a), csg::from_mesh(b), csg::BoolOp::Union, o, &st);
+                const csg::SoupMesh m = csg::to_mesh(u);
+                r[on].topo = mesh::check_topology(m.triangles);
+                r[on].fired = st.single_src_splits;
+                r[on].pmax = st.leaf_single_src_input_max;
+                r[on].tris = m.triangles.size();
+            }
+            const std::string tag = std::string(su.id) + " 深度 " + std::to_string(d);
+            ++checked;
+            fired_total += r[1].fired;
+            // 1. **規則が発火したこと**（0 なら空回り）
+            KRI_CHECK_MSG(r[1].fired > 0, tag + ": **案 1 が 1 度も発火していない。空回りです**");
+            // 2. **外せること**（性能のための機構は完全に外れること。`CLAUDE.md`）
+            KRI_CHECK_MSG(r[0].fired == 0, tag + ": kNoSingleSplit なのに発火した" +
+                                               kritest::pair_msg(r[0].fired, std::size_t(0)));
+            // 3. ★ **閾値が実際に $P_\ell$ を下げたこと**（発火しても効いていなければ意味がない）
+            KRI_CHECK_MSG(r[1].pmax < r[0].pmax, tag +
+                                                     ": **発火したのに最大 P_ℓ が下がっていない**" +
+                                                     kritest::pair_msg(r[1].pmax, r[0].pmax));
+            // 4. **位相が変わらないこと**（出力の三角形は変わるので byte 一致は使えません）
+            KRI_CHECK_MSG(
+                r[1].topo.components == r[0].topo.components && r[1].topo.chi == r[0].topo.chi,
+                tag + ": 案 1 で位相が変わった" +
+                    kritest::pair_msg(r[1].topo.components, r[0].topo.components));
+            KRI_CHECK_MSG(r[1].topo.edge_manifold && r[0].topo.edge_manifold,
+                          tag + ": 辺多様体でない出力が出た");
+        }
+    }
+    std::printf("    %zu 件。**発火 計 %zu 回**\n", checked, fired_total);
+    KRI_CHECK_MSG(checked > 0, "案 1: 比較が 1 件も回っていない。**空回りです**");
+}
+
 }  // namespace
 
 int main() {
@@ -575,6 +637,7 @@ int main() {
     test_cell_index();
     test_exact_assign();
     test_ray_prefilter();
+    test_single_src_split();
     std::printf("\n");
     return kritest::finish("csg/soup");
 }

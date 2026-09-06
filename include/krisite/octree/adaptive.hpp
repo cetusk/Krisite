@@ -144,6 +144,9 @@ inline bool assign_to_cell_open(const Aabb& tri, const CellBox& c) noexcept {
     return true;
 }
 
+/// `SubdivisionPolicy::single_src_sq` の「割らない」印。
+inline constexpr std::size_t kNoSingleSplit = static_cast<std::size_t>(-1);
+
 /// §3.1 の分割方針。**すべて実行時パラメータです。**
 struct SubdivisionPolicy {
     unsigned max_depth = 0;
@@ -151,6 +154,24 @@ struct SubdivisionPolicy {
     bool uniform = true;
     /// セルが含む三角形数がこれ以下なら分割しない。0 なら閾値では打ち切らない。
     std::size_t leaf_threshold = 0;
+    /// **★ 単一 source のセルを割る閾値**（`IMPL-phase5.md` §80。**$P_\ell^2$ で比べます**）。
+    ///
+    /// **`(na > 0 && nb > 0)` の AND だけだと、片方しか居ない領域は
+    /// どれだけ三角形が入っていても割られません。** そこで局所 BSP が
+    /// **保守的な全平面切断を $O(P_\ell^2)$ で走ります。**
+    ///
+    /// **実測**: 2 つの入力がどの葉も共有しない対（`934258x111599`）で、
+    /// 深度 6 なのに葉が 21 個しかできず、1 葉に 8,212 三角形が入りました。
+    /// **NSI を宣言できれば 0.4 秒、できないと 7,488 秒以上（18,700 倍）。**
+    ///
+    /// > **`SPEC-phase1.md` §3.1 の「片方しか無いセルを割っても交差は生まれず、
+    /// > 断片が増えるだけ」は、【割らない場合の費用】を勘定に入れていませんでした。**
+    /// > **交差が生まれないことと、仕事が増えないことは別です。**
+    /// > §3.1 を書いたのは Phase 1 で、**局所 BSP はまだありませんでした。**
+    ///
+    /// **費用が 2 乗で効くので、判定も 2 乗で書きます。**
+    /// $P_\ell^2 >$ この値なら割ります。**`kNoSingleSplit` なら従来どおり割りません。**
+    std::size_t single_src_sq = kNoSingleSplit;
 };
 
 /// §3.1 の判定で葉を列挙する。
@@ -161,7 +182,8 @@ struct SubdivisionPolicy {
 /// 返す葉は `Cell` の全順序で整列します。**出力の再現性のためです。**
 /// 固定深度モードでは `UniformGrid` の三重ループ（i, j, k）と同じ順序になります。
 template <class CountFn>
-inline std::vector<Cell> build_leaves(const SubdivisionPolicy& p, CountFn count) {
+inline std::vector<Cell> build_leaves(const SubdivisionPolicy& p, CountFn count,
+                                      std::size_t* single_src_splits = nullptr) {
     std::vector<Cell> leaves;
     std::vector<Cell> stack{Cell{0, 0, 0, 0}};
     while (!stack.empty()) {
@@ -174,10 +196,27 @@ inline std::vector<Cell> build_leaves(const SubdivisionPolicy& p, CountFn count)
                 split = true;  // 固定深度: 常に最大深度まで
             } else {
                 std::size_t na = 0, nb = 0;
-                count(c, &na, &nb);
-                // **両方を含むときだけ分割します**（§3.1）。片方しか無いセルを割っても
-                // 交差は生まれず、断片が増えるだけです
-                split = (na > 0 && nb > 0) && (na + nb > p.leaf_threshold);
+                bool bsp_skipped = false;
+                count(c, &na, &nb, &bsp_skipped);
+                const std::size_t n = na + nb;
+                if (na > 0 && nb > 0) {
+                    // **両方を含むときは分割します**（§3.1）
+                    split = (n > p.leaf_threshold);
+                } else {
+                    // **★ 片方しか居ないときも、多すぎれば割ります**（§3.1 の訂正。
+                    // `IMPL-phase5.md` §80）。**交差は生まれませんが、
+                    // 局所 BSP が $O(P_\ell^2)$ を払います。**
+                    //
+                    // **ただし局所 BSP が NSI で省かれる葉では割りません。**
+                    // 割る理由は $O(P_\ell^2)$ を減らすことだけなので、
+                    // その費用が最初から無いなら、割っても格子の切断が増えるだけです
+                    // （実測: NSI を宣言した対で 0.40 → 0.70 秒。`IMPL-phase5.md` §81）。
+                    split = (n > 0) && !bsp_skipped && (p.single_src_sq != kNoSingleSplit) &&
+                            (n * n > p.single_src_sq);
+                    // **この規則が実際に発火した回数**。0 なら機構が空回りしています
+                    // （`CLAUDE.md`「足した機構が発火したことを、テスト自身に確かめさせる」）
+                    if (split && single_src_splits != nullptr) ++*single_src_splits;
+                }
             }
         }
         if (!split) {
