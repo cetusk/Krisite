@@ -113,6 +113,10 @@ struct ToMeshStats {
 };
 
 struct ToMeshOptions {
+    /// **radial sort で次数 4 の辺を分ける**（`SPEC-phase2.md` §5.1.2.1）。
+    ///
+    /// **偽にすると完全に外れ、連結成分だけの従来の挙動に戻ります**（比較の基準側）。
+    bool radial_sort = true;
     /// **スレッド数**（`SPEC-phase4.md` §3）。0 か 1 なら逐次。
     ///
     /// 出口は**段ごと + バリア**で並列化します。中核（再帰タスク木）とは
@@ -319,8 +323,33 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         // **頂点ごとに独立**（§3）。ID の割り当ては逐次なので決定的です
         mesh::SplitOptions sopt;
         sopt.reverse_fan = opt.reverse_fan;
-        out.triangles = mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split,
-                                             nullptr, nullptr, &pool, sopt);
+        // **radial sort に要る幾何を渡します**（`SPEC-phase2.md` §5.1.2.1）。
+        //
+        // **外向き法線をここで揃えます** — `Fragment::flipped` は
+        // 「外向き法線が support の法線と逆か」なので、真なら反転します。
+        // **規約を 2 箇所に分けないため、`split_contacts` の側では触りません。**
+        std::vector<geom::PlaneD> tri_normal;
+        mesh::RadialGeom rg;
+        if (opt.radial_sort) {
+            tri_normal.resize(out.triangles.size());
+            for (std::size_t t = 0; t < out.triangles.size(); ++t) {
+                const Poly& q = s.polys[out.tri_poly[t]];
+                geom::PlaneD pl = s.table.at(q.frag.support);
+                if (q.frag.flipped) {
+                    pl.a = arith::neg(pl.a);
+                    pl.b = arith::neg(pl.b);
+                    pl.c = arith::neg(pl.c);
+                    pl.d = arith::neg(pl.d);
+                }
+                tri_normal[t] = pl;
+            }
+            rg.vertices = &out.vertices;
+            rg.normal = &tri_normal;
+        }
+        sopt.radial_sort = opt.radial_sort;
+        out.triangles =
+            mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split, nullptr,
+                                 nullptr, &pool, sopt, opt.radial_sort ? &rg : nullptr);
         // **分裂で複製された頂点は、元の頂点と同じ位置・同じ 3 つ組**です。
         // **添えた情報も一緒に複製しないと、長さが合わなくなります**
         for (std::uint32_t o : origin) {

@@ -142,6 +142,10 @@ struct Totals {
     std::size_t interior_corner = 0;  ///< 代表点の段 1
     std::size_t split_vertices = 0;
     std::size_t unresolved = 0;
+    // ---- radial sort（`SPEC-phase2.md` §5.1.2.1）----
+    std::size_t radial_attempted = 0;  ///< 連結成分では分けられなかった辺
+    std::size_t radial_resolved = 0;   ///< そのうち角度順で分けられた辺
+    std::size_t unresolved_off = 0;    ///< **radial sort を外したときの `unresolved`**
 };
 
 Totals g;
@@ -246,6 +250,17 @@ void run_config(const kritest::Case& c, const TriMesh& a, const TriMesh& b, Bool
     g.interior_corner += st.interior.corner_offset;
     g.split_vertices += t_on.split.split_vertices;
     g.unresolved += t_on.split.unresolved;
+    g.radial_attempted += t_on.split.radial_attempted;
+    g.radial_resolved += t_on.split.radial_resolved;
+    // **radial sort を外した基準側**（§5.1.2.1 の配置に到達していることの番人）。
+    // **機構を足したら、それを外す経路も用意する** — 外した側で到達を数えます。
+    {
+        ToMeshOptions no_radial = on;
+        no_radial.radial_sort = false;
+        ToMeshStats t_nr{};
+        (void)to_mesh(r, no_radial, &t_nr);
+        g.unresolved_off += t_nr.split.unresolved;
+    }
     ++g.configs;
     (void)c;
 }
@@ -332,9 +347,17 @@ void check_not_vacuous() {
     // **件数は記録**で、判定は上の `exclusion_when_split` + 適用条件が行います。
     //
     // **空回り防止**: ケース 24 を入れたので、到達 0 なら検査が効いていません
-    KRI_CHECK_MSG(g.unresolved > 0,
+    // **★ radial sort を入れたので、この配置は解けるようになりました**（§5.1.2.1）。
+    // **番人は「到達したか」を、外した側（`unresolved_off`）で数えます。**
+    // **入れた側で 0 になることが、機構が効いていることの検査です。**
+    KRI_CHECK_MSG(g.unresolved_off > 0,
                   "**§5.1.2.1 の配置に一度も到達していません。** ケース 24 が"
                   "コーパスから消えたか、対応付けの判定が変わっています");
+    KRI_CHECK_MSG(g.radial_attempted > 0, "**radial sort が 1 度も呼ばれていません。空回りです**");
+    KRI_CHECK_MSG(g.radial_resolved > 0, "**radial sort が 1 本も解けていません**");
+    KRI_CHECK_MSG(g.unresolved == 0,
+                  "**radial sort を入れたのに解けていない辺が残っています。**"
+                  "コーパスに新しい形が入ったか、実装に穴があります");
 
     std::printf("    構成 %zu（順序非依存 %zu / early-out 比較 %zu / n 項 %zu）\n", g.configs,
                 g.order_checks, g.early_out_checks, g.nary_configs);
@@ -342,6 +365,8 @@ void check_not_vacuous() {
                 g.bsp_cuts_used, g.bsp_cuts_skipped, g.early_out_cells, g.cache_hits);
     std::printf("    代表点: 段 0 %zu / 段 1 %zu、分裂した頂点 %zu\n", g.interior_axis,
                 g.interior_corner, g.split_vertices);
+    std::printf("    radial sort: 到達 %zu（外した側 %zu）/ 試行 %zu / 解決 %zu\n",
+                g.unresolved_off, g.unresolved_off, g.radial_attempted, g.radial_resolved);
     std::printf("    相互作用: BSP×適応 %zu、BSP×early-out %zu、WNV×分裂 %zu（葉に差 %zu）\n",
                 g.bsp_x_adaptive, g.bsp_x_early_out, g.wnv_x_split, g.uneven_leaves);
 }

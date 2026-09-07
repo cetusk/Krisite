@@ -43,6 +43,7 @@
 #include <utility>
 #include <vector>
 
+#include "krisite/geom/predicates.hpp"
 #include "krisite/mesh/topology.hpp"
 #include "krisite/mesh/tri_mesh.hpp"
 #include "krisite/par/thread_pool.hpp"
@@ -54,6 +55,16 @@ namespace krisite::mesh {
 /// $\Delta\chi = \Delta V - \Delta E$ は $\Delta F = 0$ からの恒等式なので、
 /// **そのまま書いても検査になりません。** 分裂の**前に**診断から予測します。
 struct SplitStats {
+    // ---- radial sort（§5.1.2.1）----
+    /// **連結成分では分けられず、radial sort に回した辺**
+    std::size_t radial_attempted = 0;
+    /// **radial sort が組を作れた辺**（`unresolved` に数えません）
+    std::size_t radial_resolved = 0;
+    /// radial sort でも決まらなかった辺の内訳
+    std::size_t radial_all_coplanar = 0;     ///< 全部の平面が平行（方向が作れない）
+    std::size_t radial_same_angle = 0;       ///< 同じ角度の半平面が 2 枚以上
+    std::size_t radial_not_alternating = 0;  ///< 向きが交互になっていない
+
     // ---- 診断から立てた予測 ----
     std::size_t predicted_delta_v = 0;  ///< Σ(扇の数 − 1)
     std::size_t predicted_delta_e = 0;  ///< Σ(辺の次数/2 − 1)。次数 4 の辺は 1 本増える
@@ -132,7 +143,172 @@ private:
 /// **構造体で渡します。** 位置引数に `bool` を足すと、ポインタが暗黙に `bool` へ
 /// 変換されて**取り違えがコンパイルを通ります**（`CLAUDE.md`「位置引数が多く型が
 /// 同じ小関数は、規律ではなく設計で守ってください」）。
+/// **radial sort に要る幾何**（`SPEC-phase2.md` §5.1.2.1）。
+///
+/// `split_contacts` はもともと**三角形の索引だけ**を受け取ります（幾何を持ちません）。
+/// **だから連結成分でしか組を作れませんでした。** 辺まわりの角度で分けるには
+/// 頂点と面の法線が要ります。
+///
+/// **`normal` は外向き法線です**（`Fragment::flipped` を適用済み）。
+/// 呼び出し側で向きを揃えてください。**ここで揃え直すと規約が 2 箇所に分かれます。**
+struct RadialGeom {
+    const std::vector<geom::HPointD>* vertices = nullptr;
+    /// 三角形ごとの**外向き**支持平面。`tris` と同じ長さ
+    const std::vector<geom::PlaneD>* normal = nullptr;
+    bool valid(std::size_t n) const {
+        return vertices != nullptr && normal != nullptr && normal->size() == n;
+    }
+};
+
+namespace detail {
+
+/// **辺 (u,v) のまわりで、接する面を角度順に並べて 2 枚ずつの組にする**
+/// （`SPEC-phase2.md` §5.1.2.1）。
+///
+/// **理屈**（`IMPL-phase5.md` §93）:
+///
+///   1. 辺の方向 $\mathbf{d}$ を、接する 2 枚の平面の法線の外積で作る
+///      （**辺を含む平面なので、法線は辺の方向と直交します**）
+///   2. $\mathbf{d}$ を頂点の順序に合わせて正準化する（`radial_align`）
+///   3. 面 $i$ の半平面の向きは $\mathbf{m}_i \propto \tau_i (N_i \times \mathbf{d})$。
+///      $\tau_i$ は**その三角形が辺を $u\to v$ に辿るか**で決まる**組合せ的な量**です
+///   4. $\mathbf{m}_i$ を $\mathbf{d}$ まわりの角度で並べる
+///   5. **$\mathbf{d}$ の向きに反時計回りで、面 $i$ の直後の扇形が立体の内側なのは
+///      $\tau_i = -1$ のとき**です。その扇形を挟む 2 枚を組にします
+///
+/// **正しい出力では $\tau$ が交互に並びます。** 並ばなければ組にできないので、
+/// **偽を返して従来どおり分裂させません**（§5.1.2.2）。
+///
+/// **比較は $\det(N_i,\mathbf{d},N_j)$ と $N_i\cdot N_j$ の符号だけ**で行います
+/// （`geom::radial_det` / `geom::radial_dot`。簡約の導出は `widths.hpp`）。
+template <class TriList>
+inline bool radial_pair(const TriList& tris, const RadialGeom& g, VertexId u, VertexId v,
+                        const std::vector<std::size_t>& inc,
+                        std::vector<std::vector<std::size_t>>* out, SplitStats* st) {
+    const std::size_t n = inc.size();
+    if (n < 4 || (n % 2) != 0) return false;
+    const auto& N = *g.normal;
+
+    // ---- 1. 方向 d（平行でない 2 枚を探す）----
+    geom::PlaneD pa{}, pb{};
+    arith::vec3<geom::limbs::kRadialDir> d{};
+    bool have = false;
+    for (std::size_t i = 0; i < n && !have; ++i) {
+        for (std::size_t j = i + 1; j < n && !have; ++j) {
+            const auto c = geom::radial_dir(N[inc[i]], N[inc[j]]);
+            if (arith::is_zero(c.x) && arith::is_zero(c.y) && arith::is_zero(c.z)) continue;
+            d = c;
+            have = true;
+        }
+    }
+    if (!have) {
+        ++st->radial_all_coplanar;
+        return false;
+    }
+    // ---- 2. 頂点の順序に合わせて正準化 ----
+    const auto& V = *g.vertices;
+    if (geom::radial_align(d, V[u], V[v]) < 0) {
+        d.x = arith::neg(d.x);
+        d.y = arith::neg(d.y);
+        d.z = arith::neg(d.z);
+    }
+
+    // ---- 3. τ（組合せ的）----
+    std::vector<int> tau(n, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& t = tris[inc[i]];
+        int s = 0;
+        for (int k = 0; k < 3; ++k) {
+            if (t[static_cast<std::size_t>(k)] == u &&
+                t[static_cast<std::size_t>((k + 1) % 3)] == v) {
+                s = 1;
+            } else if (t[static_cast<std::size_t>(k)] == v &&
+                       t[static_cast<std::size_t>((k + 1) % 3)] == u) {
+                s = -1;
+            }
+        }
+        if (s == 0) return false;  // 辺を含まない三角形が混ざっている（あり得ない）
+        tau[i] = s;
+    }
+
+    // ---- 4. 角度順に並べる ----
+    //
+    // **基準は最初の面**。角度の類を 0..3 に分け、同じ類の中では外積の符号で比べます。
+    //
+    //   0  基準と同じ向き（角度 0）
+    //   1  上半分（0 < 角度 < π）
+    //   2  基準と逆向き（角度 π）
+    //   3  下半分（π < 角度 < 2π）
+    const auto det_m = [&](std::size_t i, std::size_t j) {
+        // sign(det(d, m_i, m_j)) = -ε_i ε_j sign(det(N_i, d, N_j))
+        return -tau[i] * tau[j] * geom::radial_det(N[inc[i]], d, N[inc[j]]);
+    };
+    const auto dot_m = [&](std::size_t i, std::size_t j) {
+        // sign(m_i・m_j) = ε_i ε_j sign(N_i・N_j)
+        return tau[i] * tau[j] * geom::radial_dot(N[inc[i]], N[inc[j]]);
+    };
+    std::vector<int> cls(n, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        const int s = det_m(0, i);
+        if (s > 0) {
+            cls[i] = 1;
+        } else if (s < 0) {
+            cls[i] = 3;
+        } else {
+            cls[i] = (dot_m(0, i) > 0) ? 0 : 2;
+        }
+    }
+    std::vector<std::size_t> ord(n);
+    for (std::size_t i = 0; i < n; ++i) ord[i] = i;
+    bool tie = false;
+    std::sort(ord.begin(), ord.end(), [&](std::size_t a, std::size_t b) {
+        if (cls[a] != cls[b]) return cls[a] < cls[b];
+        const int s = det_m(a, b);
+        if (s == 0) {
+            // **同じ角度の半平面が 2 枚**。radial sort でも決められません
+            if (a != b) tie = true;
+            return a < b;
+        }
+        return s > 0;
+    });
+    if (tie) {
+        ++st->radial_same_angle;
+        return false;
+    }
+
+    // ---- 5. τ が交互か確かめて組にする ----
+    for (std::size_t k = 0; k < n; ++k) {
+        if (tau[ord[k]] == tau[ord[(k + 1) % n]]) {
+            ++st->radial_not_alternating;
+            return false;
+        }
+    }
+    out->clear();
+    for (std::size_t k = 0; k < n; ++k) {
+        if (tau[ord[k]] != -1) continue;
+        out->push_back({inc[ord[k]], inc[ord[(k + 1) % n]]});
+    }
+    if (out->size() != n / 2) {
+        ++st->radial_not_alternating;
+        out->clear();
+        return false;
+    }
+    ++st->radial_resolved;
+    return true;
+}
+
+}  // namespace detail
+
 struct SplitOptions {
+    /// **radial sort で組を作る**（`SPEC-phase2.md` §5.1.2.1）。
+    ///
+    /// **偽にすると完全に外れ、連結成分だけの従来の挙動に戻ります**
+    /// （`CLAUDE.md`「性能のための機構は完全に外れる形にすること」と同じ規律を、
+    /// 正しさの機構にも適用します。**比較の基準側が要るため**）。
+    ///
+    /// **幾何（`RadialGeom`）が渡されていなければ、真でも何もしません。**
+    bool radial_sort = true;
+
     /// **扇の計算を頂点の逆順で回す**（`SPEC-phase4.md` §7.5。仕様担当の承認済み）。
     ///
     /// **番人をスケジューラから切り離すための旗**です。
@@ -157,13 +333,11 @@ struct SplitOptions {
 /// `owner` は **§9.3 の変異 9 のためだけ**に受け取ります。既定（`nullptr`）では使いません。
 /// **owner で分けてはいけません**（§5.1.2）。$A \setminus B$ のように結果が自分自身に
 /// 接触する配置で、組がシートをまたぎます。
-inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t vertex_count,
-                                       std::vector<std::uint32_t>* origin,
-                                       SplitStats* stats = nullptr,
-                                       const std::vector<int>* owner = nullptr,
-                                       const std::vector<char>* from_early_out = nullptr,
-                                       par::ThreadPool* pool = nullptr,
-                                       const SplitOptions& sopt = {}) {
+inline std::vector<Tri> split_contacts(
+    const std::vector<Tri>& tris, std::size_t vertex_count, std::vector<std::uint32_t>* origin,
+    SplitStats* stats = nullptr, const std::vector<int>* owner = nullptr,
+    const std::vector<char>* from_early_out = nullptr, par::ThreadPool* pool = nullptr,
+    const SplitOptions& sopt = {}, const RadialGeom* geom = nullptr) {
     using clk = std::chrono::steady_clock;
     const auto ms_since = [](clk::time_point a) {
         return std::chrono::duration<double, std::milli>(clk::now() - a).count();
@@ -228,6 +402,20 @@ inline std::vector<Tri> split_contacts(const std::vector<Tri>& tris, std::size_t
         bool ok = by_key.size() == kv.second.size() / 2;
         for (const auto& gk : by_key) {
             if (gk.second.size() != 2) ok = false;
+        }
+        if (!ok && geom != nullptr && sopt.radial_sort && geom->valid(tris.size())) {
+            // **★ 連結成分では分けられない配置**（§5.1.2.1）。
+            // **辺まわりの角度で分け直します**（`IMPL-phase5.md` §93）。
+            //
+            // **実データが要求してきた機構です** — CP1 で 1 対、CP2 で 12 対が
+            // ここに到達しています。**Phase 2 では「到達するか分からない」配置でした。**
+            ++st.radial_attempted;
+            std::vector<std::vector<std::size_t>> groups;
+            if (detail::radial_pair(tris, *geom, kv.first.first, kv.first.second, kv.second,
+                                    &groups, &st)) {
+                edge_groups[kv.first] = std::move(groups);
+                continue;
+            }
         }
         if (!ok) {
             // **§5.1.2.2: 分裂させずに次数 4 のまま残します**（案 A）。
