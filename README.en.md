@@ -18,8 +18,9 @@ point-cloud compression, meshing, and exact boolean operations.
 **Phase 0 (the arithmetic foundation), Phase 1 (minimal validation of output
 extraction), Phase 2 (adaptive subdivision and output semantics), Phase 3 (core
 redesign) and Phase 4 (parallelism) are complete.** The Phase 1 verdict was:
-continue. Work now heads toward
+continue. Work is now in
 **Phase 5 (full Thingi10K validation and performance targets)**.
+**CP1 — 500 real-data pairs — has completed: 499 succeeded, 1 failed.**
 [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single source of truth for where the
 project stands (Japanese).
 
@@ -287,7 +288,7 @@ build time rather than in prose.
 | **2** | **Adaptive subdivision, constructed-point reuse, output semantics** | **Complete (2026-08-28)** |
 | 3 | **Core redesign** ($n$-ary, WNV, local BSP, convex split; single-threaded) | Complete (2026-08-29) |
 | **4** | **Parallelism** (core + exit; **determinism required**) | **Complete (2026-08-29)** |
-| **5** | **Thingi10K full-corpus validation, performance targets** | **Next** |
+| **5** | **Thingi10K full-corpus validation, performance targets** | **In progress (CP1 complete → CP2)** |
 | 6+ | Point-cloud codec, GWN, meshing | Not started |
 
 **Phase 1 was the decision point, and the verdict was: continue** (decided
@@ -398,6 +399,158 @@ exit-only-parallel run makes the prediction fail if the two interfere.
 
 Details in [`docs/BENCH.md`](docs/BENCH.md); the reasoning in
 [`docs/IMPL-phase4.md`](docs/IMPL-phase4.md).
+
+### Real data (Phase 5, in progress)
+
+**What a synthetic corpus shows and what real data shows are different things.**
+1,000 models were drawn from Thingi10K under the same conditions as EMBER §5.1
+(solid, manifold, no self-intersection, 1,000–100,000 faces), paired up, and run
+through all three boolean operations.
+
+**Input acceptance** ($b = 21$, 1,000 models): **1,000 accepted, 0 rejected.**
+Quantisation removed 1,618 zero-area triangles across 86 models and **left
+$\partial S = 0$ intact in every case**. Zero rejections is the first evidence that
+the input constraints (PWN, integer coordinates) are not a practical obstacle.
+
+**CP1 (500 pairs) — complete** (2026-09-06):
+
+| | |
+|---|---|
+| succeeded / **failed** / halted | **499** / **1** / **0** |
+| total compute | **3.56 hours** (8 threads, depth 6) |
+| per pair (3 ops + all checks) | median **3.0 s** / p95 93.4 s / max 1,418 s |
+| largest pair reached | **196,282 triangles** |
+| **models that could declare NSI** | **930 / 1,000 (93.0%)** |
+
+All 500 pairs ran under one identical configuration. Every anomaly is concentrated
+in the single failing pair: **across 500 pairs there is not one deficient edge, not
+one edge of degree 5 or more, and not one unexplained non-manifold vertex.**
+
+> **These are not performance targets.** No performance target has been set for
+> Phase 5 yet (that is CP4's job). This is a record of what real data did.
+
+#### The indicator function was wrong: inside is $w > 0$, not $w \ne 0$
+
+**A self-intersecting closed surface creates regions of negative winding number**,
+and the old definition classified them as inside. On `78535` the output fell from
+725,650 triangles to **58,976** (12.3× fewer); on `110031` the excess edges went from
+94 to **0**. **70 of the 1,000 models (7.0%) self-intersect after quantisation**, so
+every failure rate measured before this correction contains the error.
+
+#### The one failure belongs to one model, not to the pair
+
+Seven hypotheses were **refuted by measurement**, not by argument: the input being
+non-manifold (its excess-edge count is 0), scale (a same-size pair succeeded while
+taking 4× longer), self-intersection as such (the controls self-intersect and
+succeed), the NSI declaration, octree cell boundaries (**depth 5/6/7 change the
+output by 2.5× while the defect does not move at all**), the known
+"same face emitted twice" shape (**0 of the 8 degree-4 edges have two incident
+triangles with equal vertex sets**), and contact splitting (**disabling it yields the
+same 8 edges and the same triangle indices**).
+
+**`135071` alone — self-unioned, without the other operand — reproduces the defect
+exactly.** The non-manifold part is a single simple polyline through 9 vertices, 8 of
+them constructed points and 1 an original input vertex.
+
+> The failing pair satisfied a *known* signature (no deficient edges, degree 4,
+> unresolved splits). **Looking at the actual triangles showed the signature meant
+> something different.** Matching a condition and matching its meaning are not the
+> same thing.
+
+#### "Self-intersecting" does not explain the failure
+
+The **70 models that self-intersect after quantisation** were selected **by property,
+not by listing identifiers**, and self-unioned: **69 succeeded, 1 failed**, in 0.94
+hours total. Self-intersection resolution genuinely runs — **50 of the 70 models
+produce regions of negative winding number** (median 18, max 3,742), and `135071`
+sits at 44, nowhere near the top.
+
+The **topology of the self-intersection curve** was measured too (no new predicate
+and no new bit-width derivation were required): **64 of 70 models have an open curve,
+and 63 of those succeed.** An open self-intersection curve is not the explanatory
+variable either.
+
+> **The predictions were written down before the run, together with what each
+> possible outcome would mean.** The spec side predicted further failures; the
+> implementation side predicted 2–8 models. **Both were wrong.** Because "exactly one
+> failure ⇒ look for something specific to `135071`" had been decided in advance, the
+> next step was fixed the moment the result came in — and "zero failures ⇒ suspect the
+> procedure" had already been ruled out by reproducing `135071` on its own first.
+
+#### Where the superlinearity actually lives
+
+The original measurement was $t \propto n^{1.86}$. Re-measured over 500 pairs, it
+splits into two relations — and the earlier figures, taken from a handful of pairs,
+have been withdrawn:
+
+| Relation | Exponent | Reading |
+|---|---:|---|
+| $n \to P$ (input triangles → output polygons) | **0.91** | **essentially linear — no superlinearity here** |
+| **$P \to t$** | **1.23** | **this is where it is** |
+| $n \to t$ | **1.19** | |
+
+**Operation counts localise it further** — these are exactly reproducible and do not
+depend on timing noise. Over a 10.9× increase in $n$, **per output polygon**:
+ray-versus-triangle tests grow **1.98×**, BSP cut candidates **1.50×**, and the
+number of regions **1.04× — it does not move.** What grows is how many triangles one
+ray has to examine, which is the natural $O(\sqrt{n})$ behaviour. **The place where a
+spatial index pays off is now identified by number, not by argument.**
+
+#### Eight improvements, and the line that separates them
+
+| # | Improvement | Effect | Output | How it is guarded |
+|---|---|---|---|---|
+| 1 | Remove classification memoisation | memory 8,242 → 1,438 MB | unchanged | **hash equality** |
+| 2 | Remove duplicated support-plane computation | 1.18× | unchanged | **hash equality** |
+| 3 | 2-D hierarchical grid for ray casting | **$P^{1.31} \to P^{1.03}$** | unchanged | **hash equality** |
+| 4 | **NSI** (declared absence of self-intersection) | **median 5.5× faster** | **changes** | topology + exact GMP volume |
+| 5 | **Key the T-junction index on (leaf, support plane)** | **142× fewer candidates** | unchanged | **hash equality** |
+| 6 | **Reject cell assignments whose support plane misses the box** | $\sum P_\ell^2$ **9–25× smaller** | unchanged | **hash equality** |
+| 7 | **Projected-AABB pre-test before ray casting** | classification **1.87–2.0×** | unchanged | **hash equality** |
+| 8 | **Split single-source leaves when $P_\ell^2$ is large** | **$\ge$ 168×** on the worst pair | **changes** | topology + exact GMP volume |
+
+**1–3 and 5–7 make the same decision faster, so a hash guards them. 4 and 8 change
+how the geometry is cut, so a hash cannot.** Confusing the two cost one wasted
+attempt: 4 was checked for hash equality and failed on the very first pair, which is
+exactly what a 6.93× reduction in $P$ should do.
+
+**5, 6 and 7 all came from the same question:** *what fraction of the candidates this
+stage returns does it actually use?* The answers were 1,050×, 21.7× and 85× waste
+respectively, and all three were fixed by putting a cheap exact pre-test in front.
+**The effects are measured in operation counts, and all three mechanisms are observed
+firing across the 500 real pairs** — a separate check makes sure none of them is idle.
+
+For 8, the threshold was **derived from measurement, not invented**: depth 6/7/8 ×
+$P \in \{64,\dots,2048\}$, 18 configurations, with $P = 128$ minimal at every depth
+and **the exact volume identical in all 18**. The first version made pairs that *can*
+declare NSI **1.75× slower**, because splitting a leaf whose local BSP is already
+skipped only adds grid cuts. The exclusion is therefore written as a property —
+*"skip when the local BSP is skipped"*, not *"skip when NSI was declared"*.
+
+#### Two broken instruments, recorded
+
+**When the instrument is wrong, normal looks abnormal.** `check_topology` returns
+early on an empty mesh and leaves `oriented` false, so **116 of 500 pairs (23.2%) read
+as "orientation broken" when all of them were simply an empty intersection.** And a
+continuation run was launched with a *different* NSI setting from the 351 pairs
+already recorded, which inflated the output 2.2× and was briefly misread as another
+mechanism's effect — **the evidence to catch it was already in the recorded columns**,
+and the driver now prints its full configuration at startup.
+
+#### CP2 is now executable
+
+**CP2 can never declare NSI** — its population is defined by having
+self-intersections. Measured on the same 30 pairs with only the NSI declaration
+changed, that costs **2.4×** (matching the 2.2–2.5× ratio in operation counts).
+
+| Pairs | Estimated time |
+|---:|---:|
+| **100** | **3.0 hours** |
+| 500 | 15.1 hours |
+| 2,200 | **66.2 hours** |
+
+**5.3× better than the previous 350-hour estimate.** The earlier verdict — *not a
+volume that can be run on the working machine* — no longer holds.
 
 ## References
 
