@@ -7575,3 +7575,92 @@ $$3.65 = \underbrace{2.4}_{\text{NSI を宣言できない}} \times \underbrace{
 
 > **`SPEC-phase2.md` §5.1.2.1 の申し送り（radial sort、新しい述語のビット幅導出が要る）が、
 > 実データで 13 対から要求されています。**
+
+---
+
+## §92 radial sort（1）— ビット幅の導出と GMP 差分テスト
+
+`SPEC-phase2.md` §5.1.2.1 の申し送りに着手しました。仕様検討側の指定した順序
+（**ビット幅 → GMP 差分テスト → 実装 → 検査**）に従います。**本節は最初の 2 段です。**
+
+### 92.1 ★★ 素朴に組むと 43b+91 ビット。**簡約で 8b+16 に落ちました**
+
+**素朴な形**（辺の方向を頂点の差で取る）:
+
+| 量 | 幅 |
+|---|---|
+| $V_v - V_u$（同次） | $13b+27$ |
+| $\mathbf{m}_i = N_i \times (V_v - V_u)$ | $15b+31$ |
+| $\det(\mathbf{d}, \mathbf{m}_i, \mathbf{m}_j)$ | **$43b+91$**（$b{=}21$ で **994 ビット / 16 リム**） |
+
+**2 つの恒等式で簡約します。**
+
+$$\det(\mathbf{d}, \mathbf{a}\times\mathbf{d}, \mathbf{b}\times\mathbf{d}) = -|\mathbf{d}|^2 \det(\mathbf{a}, \mathbf{d}, \mathbf{b})$$
+$$(\mathbf{a}\times\mathbf{d})\cdot(\mathbf{b}\times\mathbf{d}) = (\mathbf{a}\cdot\mathbf{b})|\mathbf{d}|^2 - (\mathbf{a}\cdot\mathbf{d})(\mathbf{b}\cdot\mathbf{d}) = (\mathbf{a}\cdot\mathbf{b})|\mathbf{d}|^2$$
+
+**2 つ目は $\mathbf{a}\cdot\mathbf{d} = \mathbf{b}\cdot\mathbf{d} = 0$ に依ります。**
+辺の両端は各支持平面の上にあるので（`side(plane, vertex) == 0`）、
+**辺の直線もその平面に含まれ、方向は法線と直交します。**
+
+$|\mathbf{d}|^2 > 0$ なので、**符号だけが要る比較では落とせます。**
+
+**残るのは法線と方向だけ**です。
+
+| 定数 | 幅 | $b{=}21$ | $b{=}26$ |
+|---|---|---|---|
+| `kRadialDir` = $\mathbf{d} = N_a\times N_b$ | $4b+7$ | 91 / **2 リム** | 111 / 2 リム |
+| **`kRadialDet`** = $\det(N_i,\mathbf{d},N_j)$ | $8b+16$ | 184 / **3 リム** | 224 / 4 リム |
+| `kRadialDot` = $N_i\cdot N_j$ | $4b+8$ | 92 / **2 リム** | 112 / 2 リム |
+| `kRadialAlign` = $\mathbf{d}\cdot(w_uV_v - w_vV_u)$ | $17b+36$ | 393 / 7 リム | 478 / 8 リム |
+
+**`kRadialAlign` だけ広いのですが、辺ごとに 1 回だけ**です（比較のほうは $8b+16$）。
+$\mathbf{d} = N_a\times N_b$ は平面の組の選び方で向きが変わるので、
+**頂点の順序に合わせて正準化する**ために要ります。
+
+**簡約が効いていることを `static_assert` で押さえました。**
+
+```cpp
+static_assert(bits::kRadialDet < 43 * bits::b + 91,
+              "**簡約が効いていません。** 素朴な形（43b+91）より狭いはずです");
+```
+
+### 92.2 GMP 差分テスト — **正解器は簡約前の式**
+
+`tests/geom/test_radial_gmp.cpp`。**542,012 検証で緑。**
+
+**正解器は被検体と別経路です。**
+
+| 対象 | 被検体 | **正解器** |
+|---|---|---|
+| $\mathbf{d}$ | $N_a\times N_b$ | **辺 $PQ$ と平行か**（`cross(d, Q-P) == 0`）。まったく別の式 |
+| det | 簡約後 $\det(N_i,\mathbf{d},N_j)$ | **半平面 $\mathbf{m} = \pm(N\times\mathbf{d})$ を実際に作り** $\det(\mathbf{d},\mathbf{m}_i,\mathbf{m}_j)$ を mpz で |
+| dot | 簡約後 $N_i\cdot N_j$ | 同上、$\mathbf{m}_i\cdot\mathbf{m}_j$ |
+| align | 固定幅の同次式 | **有理数（mpq）で実座標に直してから差を取る**（除算経路） |
+
+**恒等式そのものを検査していることになります。** 簡約が誤っていれば落ちます。
+
+### 92.3 退化ケースは明示的に構成しました
+
+**乱択では `det = 0` が 20 万件で 1 件も出ませんでした**
+（`CLAUDE.md`「乱択は共平面・共線・重複頂点をほぼ生成しません」の実例）。
+
+| 構成 | 件数 | 何を検査するか |
+|---|---:|---|
+| **同一平面・逆向きの法線**（第 1・第 2 点を入れ替え） | 4,000 | $\det = 0$、内積が負 |
+| **軸平行で直交する法線**（$xz$ 平面と $yz$ 平面） | 1 | 内積 $= 0$ かつ $\det \ne 0$ |
+| **構成点**（`intersect3` で線上に 2 点） | 6,000 | align を有理数の正解器と照合 |
+
+### 92.4 ビット幅の実測
+
+| 定数 | 実測 | 理論上界 |
+|---|---:|---:|
+| `kRadialDir` | 85 | 91 |
+| **`kRadialDet`** | **169** | **184** |
+| `kRadialDot` | 86 | 92 |
+| **`kRadialAlign`** | **354** | **393** |
+
+**★ 整数点（$w{=}1$）だけでは `kRadialAlign` の実測が 106 にしかなりませんでした。**
+**構成点を通して初めて 354 に上がります。** 幅の検査は、
+**その幅を実際に使う入力でなければ意味がありません。**
+
+**理論上界を超えた実測はありません。**

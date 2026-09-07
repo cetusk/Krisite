@@ -127,6 +127,66 @@ inline constexpr std::size_t kAxisIntCmp = 7 * b + 15;
 /// b = 21 で 51 ビット / **1 リム**。b = 26 で 61 ビット / 1 リム。
 inline constexpr std::size_t kSatEdgeAxis = 2 * b + 9;
 
+// ---- radial sort（辺まわりの二面角の厳密な順序付け）★ -------------------------
+//
+// `SPEC-phase2.md` §5.1.2.1 が Phase 3 / 4 への申し送りとした機構です。
+// **実データが要求してきました** — CP1 で 1 対、CP2 で 12 対が
+// 「連結成分では 4 枚を分けられない」配置に到達しています（`IMPL-phase5.md` §90 / §91）。
+//
+// **素朴に組むと 43b+91 ビット（b=21 で 994 ビット / 16 リム）になります。**
+// 辺の方向を頂点の差 $V_v - V_u$（13b+27）で取り、各面の半平面方向を
+// $N_i \times (V_v - V_u)$（15b+31）で取って det3 を計算する形です。
+//
+// **代数的に簡約すると 8b+16（b=21 で 184 ビット / 3 リム）に落ちます。**
+//
+//   恒等式 1  det(d, a×d, b×d) = -|d|^2 det(a, d, b)
+//   恒等式 2  (a×d)·(b×d) = (a·b)|d|^2 - (a·d)(b·d) = (a·b)|d|^2   ← a·d = b·d = 0
+//
+// **2 つ目は「辺を含む平面の法線は辺の方向と直交する」ことに依ります。**
+// 辺の両端は各支持平面の上にあるので（`side(plane, vertex) == 0`）、
+// **辺の直線もその平面に含まれ、方向は法線と直交します。**
+//
+// **どちらも乱数 200,000 件で検算済みです**（`IMPL-phase5.md` §92）。
+//
+// $|d|^2 > 0$ なので符号だけが要る比較では落とせます。**残るのは法線と方向だけです。**
+
+/// **辺の方向** $\mathbf{d} = N_a \times N_b$（辺を含む 2 枚の平面から）。
+///
+///   N            kNormal = 2b+3
+///   N_y N_z      (2b+3) + (2b+3) = 4b+6
+///   差            **4b+7**
+///
+/// b = 21 で 91 ビット / **2 リム**、b = 26 で 111 ビット / 2 リム。
+inline constexpr std::size_t kRadialDir = 4 * b + 7;
+
+/// **半平面の角度比較** $\det(N_i, \mathbf{d}, N_j)$（恒等式 1 による簡約後）。
+///
+///   小行列 d_y N_z    (4b+7) + (2b+3) = 6b+10 → 差で **6b+11**
+///   N_x × 小行列      (2b+3) + (6b+11) = 8b+14
+///   3 項の和          **8b+16**
+///
+/// b = 21 で 184 ビット / **3 リム**、b = 26 で 224 ビット / 4 リム。
+inline constexpr std::size_t kRadialDet = 8 * b + 16;
+
+/// **同じ半分の中での向き** $N_i \cdot N_j$（恒等式 2 による簡約後）。
+///
+///   N_x N_x      4b+6、3 項の和で **4b+8**
+///
+/// b = 21 で 92 ビット / **2 リム**、b = 26 で 112 ビット / 2 リム。
+inline constexpr std::size_t kRadialDot = 4 * b + 8;
+
+/// **辺の方向の向き合わせ** $\mathbf{d}\cdot(w_u V_v - w_v V_u)$。**辺ごとに 1 回だけです。**
+///
+/// $\mathbf{d} = N_a \times N_b$ は $(a,b)$ の選び方で向きが変わるので、
+/// **頂点の順序（索引の小さいほうを $u$）に合わせて正準化します。**
+///
+///   e = w_u V_v - w_v V_u   max(kHomoW + kHomoXyz) + 1 = (6b+12)+(7b+14)+1 = 13b+27
+///   d・e（3 項）             (4b+7) + (13b+27) + 2 = **17b+36**
+///
+/// b = 21 で 393 ビット / **7 リム**、b = 26 で 478 ビット / 8 リム。
+/// **辺ごとに 1 回なので、幅が広くても総費用は小さい**（比較は 8b+16 のほう）。
+inline constexpr std::size_t kRadialAlign = 17 * b + 36;
+
 /// **(2) 三角形の法線 1 軸。** N = E0 × E1 で |N| <= 2^(2b+9)。
 ///
 ///   p = N・V（3 項）        (2b+9) + (b+3) + 2 = 3b+14
@@ -280,6 +340,12 @@ inline constexpr std::size_t kAxisPointW = limbs_for(bits::kAxisPointW);
 inline constexpr std::size_t kAxisPointXyz = limbs_for(bits::kAxisPointXyz);
 inline constexpr std::size_t kNormalDot = limbs_for(bits::kNormalDot);
 
+// Phase 5: radial sort（`SPEC-phase2.md` §5.1.2.1 の申し送り）
+inline constexpr std::size_t kRadialDir = limbs_for(bits::kRadialDir);
+inline constexpr std::size_t kRadialDet = limbs_for(bits::kRadialDet);
+inline constexpr std::size_t kRadialDot = limbs_for(bits::kRadialDot);
+inline constexpr std::size_t kRadialAlign = limbs_for(bits::kRadialAlign);
+
 /// Phase 0 の述語が要求する最大リム数（SPEC §3.3 の表の最右列）。
 /// b = 21 → 5、b = 26 → 6。
 inline constexpr std::size_t kMaxPredicate = max_limbs(kSide, kCmpH);
@@ -295,6 +361,19 @@ static_assert(64 * limbs::kOrient2dH >= bits::kOrient2dH, "kOrient2dH のリム�
 static_assert(64 * limbs::kPlaneAabb >= bits::kPlaneAabb, "kPlaneAabb のリム数不足");
 static_assert(64 * limbs::kAxisIntCmp >= bits::kAxisIntCmp, "kAxisIntCmp のリム数不足");
 static_assert(bits::kAxisIntCmp >= bits::kHomoXyz + 1, "kAxisIntCmp が x を収められない");
+// Phase 5: radial sort。**素朴な形（43b+91）からの簡約が効いていることを型で押さえる**
+static_assert(64 * limbs::kRadialDir >= bits::kRadialDir, "kRadialDir のリム数不足");
+static_assert(64 * limbs::kRadialDet >= bits::kRadialDet, "kRadialDet のリム数不足");
+static_assert(64 * limbs::kRadialDot >= bits::kRadialDot, "kRadialDot のリム数不足");
+static_assert(64 * limbs::kRadialAlign >= bits::kRadialAlign, "kRadialAlign のリム数不足");
+static_assert(bits::kRadialDir >= 2 * bits::kNormal + 1, "kRadialDir が N×N を収められない");
+static_assert(bits::kRadialDet >= bits::kNormal + bits::kRadialDir + bits::kNormal + 2,
+              "kRadialDet が det3(N, d, N) を収められない");
+static_assert(bits::kRadialDot >= 2 * bits::kNormal + 2, "kRadialDot が N・N を収められない");
+static_assert(bits::kRadialAlign >= bits::kRadialDir + (bits::kHomoW + bits::kHomoXyz + 1) + 2,
+              "kRadialAlign が d・(w_u V_v - w_v V_u) を収められない");
+static_assert(bits::kRadialDet < 43 * bits::b + 91,
+              "**簡約が効いていません。** 素朴な形（43b+91）より狭いはずです");
 // Phase 3: 辺平面と代表点（SPEC-phase3 §3.1 / §2.1）
 static_assert(bits::kEdgeNormal <= bits::kNormal, "辺平面の法線が支持平面の法線を超える");
 static_assert(bits::kEdgeOffset <= bits::kOffset, "辺平面のオフセットが kOffset を超える");

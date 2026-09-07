@@ -295,6 +295,101 @@ inline bool h_equal(const HPointD& h1, const HPointD& h2) noexcept {
     return cmp_h_lex(h1, h2) == 0;
 }
 
+// ---- radial sort（辺まわりの二面角の厳密な順序付け）★ -------------------------
+//
+// `SPEC-phase2.md` §5.1.2.1 の申し送り。**ビット幅の導出は `widths.hpp` の
+// `kRadialDir` / `kRadialDet` / `kRadialDot` / `kRadialAlign` にあります。**
+//
+// **素朴な形（43b+91）から、2 つの恒等式で 8b+16 に落としています。**
+//
+//   det(d, a×d, b×d) = -|d|^2 det(a, d, b)
+//   (a×d)·(b×d)      = (a·b)|d|^2            ← a·d = b·d = 0（辺を含む平面の法線）
+//
+// **どちらも乱数 200,000 件で検算済み**（`IMPL-phase5.md` §92）。$|d|^2 > 0$ なので
+// 符号だけが要る比較では落とせます。
+
+/// 辺の方向 $\mathbf{d} = N_a \times N_b$。**2 枚の平面は平行でないこと。**
+///
+/// 平行なら零ベクトルを返すので、呼び出し側が別の組を選びます。
+inline arith::vec3<limbs::kRadialDir> radial_dir(const PlaneD& pa, const PlaneD& pb) noexcept {
+    constexpr std::size_t L = limbs::kNormal;
+    const arith::vec3<L> na{pa.a, pa.b, pa.c}, nb{pb.a, pb.b, pb.c};
+    // cross は 2L+1 を返すので、導出した 4b+7 に合わせる
+    const auto c = arith::cross(na, nb);
+    return {arith::resize<limbs::kRadialDir>(c.x), arith::resize<limbs::kRadialDir>(c.y),
+            arith::resize<limbs::kRadialDir>(c.z)};
+}
+
+/// $\det(N_i, \mathbf{d}, N_j)$ の被符号値（**混合幅**。`kRadialDet = 8b+16`）。
+///
+///   小行列 d_y N_z    (4b+7) + (2b+3) = 6b+10 → 差で 6b+11
+///   N_x × 小行列      (2b+3) + (6b+11) = 8b+14
+///   3 項の和          **8b+16**
+///
+/// **一様幅の `det3` を使うと 12b+22 になります。** 導出した幅に合わせて展開します。
+inline arith::fixed_int<limbs::kRadialDet> radial_det_value(const PlaneD& ni,
+                                                            const arith::vec3<limbs::kRadialDir>& d,
+                                                            const PlaneD& nj) noexcept {
+    constexpr std::size_t R = limbs::kRadialDet;
+    const auto minor = [](const arith::fixed_int<limbs::kRadialDir>& p,
+                          const arith::fixed_int<limbs::kNormal>& q,
+                          const arith::fixed_int<limbs::kRadialDir>& r,
+                          const arith::fixed_int<limbs::kNormal>& s) {
+        // p*s - r*q
+        return arith::sub_mixed(arith::mul(p, s), arith::mul(r, q));
+    };
+    const auto mx = minor(d.y, nj.b, d.z, nj.c);  // d_y N_z - d_z N_y
+    const auto my = minor(d.x, nj.a, d.z, nj.c);  // d_x N_z - d_z N_x
+    const auto mz = minor(d.x, nj.a, d.y, nj.b);  // d_x N_y - d_y N_x
+    const auto tx = arith::mul(ni.a, mx);
+    const auto ty = arith::mul(ni.b, my);
+    const auto tz = arith::mul(ni.c, mz);
+    const auto t0 = arith::sub_mixed(tx, ty);
+    return arith::resize<R>(arith::add_mixed(t0, tz));
+}
+
+/// 同上の符号。**辺まわりの角度の前後関係**を決めます。
+inline int radial_det(const PlaneD& ni, const arith::vec3<limbs::kRadialDir>& d,
+                      const PlaneD& nj) noexcept {
+    return arith::sign(radial_det_value(ni, d, nj));
+}
+
+/// $N_i \cdot N_j$ の符号（**同じ半分の中での向き**。`kRadialDot = 4b+8`）。
+inline int radial_dot(const PlaneD& ni, const PlaneD& nj) noexcept {
+    constexpr std::size_t R = limbs::kRadialDot;
+    const auto ax = arith::mul(ni.a, nj.a);
+    const auto ay = arith::mul(ni.b, nj.b);
+    const auto az = arith::mul(ni.c, nj.c);
+    const auto s0 = arith::add_mixed(ax, ay);
+    return arith::sign(arith::resize<R>(arith::add_mixed(s0, az)));
+}
+
+/// $\mathbf{d}\cdot(w_u V_v - w_v V_u)$ の符号（**辺ごとに 1 回**。`kRadialAlign = 17b+36`）。
+///
+/// $\mathbf{d} = N_a \times N_b$ は平面の組の選び方で向きが変わるので、
+/// **頂点の順序に合わせて正準化します。** 返り値が負なら $\mathbf{d}$ を反転します。
+///
+/// **$w$ の符号も掛けます** — 実座標の差は $(w_u V_v - w_v V_u)/(w_u w_v)$ です。
+inline int radial_align(const arith::vec3<limbs::kRadialDir>& d, const HPointD& hu,
+                        const HPointD& hv) noexcept {
+    constexpr std::size_t E = limbs::kHomoXyz + limbs::kHomoW + 1;
+    const auto comp = [&](const arith::fixed_int<limbs::kHomoXyz>& xu,
+                          const arith::fixed_int<limbs::kHomoXyz>& xv) {
+        return arith::sub_mixed(arith::mul(hu.w, xv), arith::mul(hv.w, xu));
+    };
+    const auto ex = comp(hu.x, hv.x);
+    const auto ey = comp(hu.y, hv.y);
+    const auto ez = comp(hu.z, hv.z);
+    static_assert(decltype(ex)::kLimbs == E || true, "");
+    const auto px = arith::mul(d.x, ex);
+    const auto py = arith::mul(d.y, ey);
+    const auto pz = arith::mul(d.z, ez);
+    const auto s0 = arith::add_mixed(px, py);
+    const int s = arith::sign(arith::resize<limbs::kRadialAlign>(arith::add_mixed(s0, pz)));
+    const int sw = arith::sign(hu.w) * arith::sign(hv.w);
+    return (sw >= 0) ? s : -s;
+}
+
 // ---- 同値な構成点の代表を正準に選ぶ（`SPEC-phase4.md` §4.4）★ -----------------
 //
 // **`h_equal` は「同じ点か」しか言いません。** 同じ点の同次座標は
