@@ -50,6 +50,10 @@ struct TJunctionStats {
     /// 起点を選べなかった多角形でだけ出ます
     std::size_t degenerate_kept = 0;
     std::size_t apex_fallback = 0;  ///< 起点を選べなかった多角形の数
+    /// **一般解**（§2.4.4 (2)）が作った三角形の数。**0 なら空回りです**
+    std::size_t general_used = 0;
+    /// 一般解が組めず従来の扇分割に落ちた多角形の数
+    std::size_t general_fallback = 0;
     std::size_t edges_scanned = 0;  ///< 走査した辺の数（候補数の分母）
     /// **保持された構成点が T 頂点として挿入された回数**（§13 の CP5）。
     ///
@@ -81,6 +85,8 @@ inline void merge_tjunction_stats(TJunctionStats& a, const TJunctionStats& b) {
     a.candidates += b.candidates;
     a.degenerate_kept += b.degenerate_kept;
     a.apex_fallback += b.apex_fallback;
+    a.general_used += b.general_used;
+    a.general_fallback += b.general_fallback;
     a.edges_scanned += b.edges_scanned;
     a.inserted_from_cache += b.inserted_from_cache;
     a.max_per_edge = std::max(a.max_per_edge, b.max_per_edge);
@@ -528,10 +534,119 @@ inline bool on_original_edge(const TPolygon& p, std::size_t k, std::uint32_t lin
 /// **退化の判定に幾何は要りません。** 起点は角なので、起点と共線になり得るのは
 /// 起点に接する 2 本の元の辺の上の頂点だけです。両方が同じ辺の上にあるかを見れば足ります。
 /// 新しい述語を足さずに済むのが要点です（§2.4.3「新しい述語は要りません」）。
+/// **一般解**（`SPEC-phase2.md` §2.4.4 (2) の「一般解」。2026-09-07 に承認・実装）。
+///
+/// > 元の角だけの多角形を先に三角形化し、T 頂点を持つ元の辺ごとに、
+/// > その辺を含む三角形の対頂点へ扇を張る。**退化は 1 枚も出ません。**
+///
+/// **実装の条件が満たされたので入れました。** 仕様は
+/// 「**残した枚数が実際に効いてから**判断してください」としており、
+/// **radial sort が解けない直接の原因になりました**（`IMPL-phase5.md` §94 / §95）。
+/// コーパスでは 20 枚でしたが、実データでは **1 演算あたり最大 59,465 枚（出力の 0.95%）**です。
+///
+/// **述語は使いません**（§2.4.4 (2) の禁止。幾何で判定すると $20b+43$ が要る）。
+/// **角が一般の位置にあること**（3 つが共線でないこと）だけを前提にします。
+/// これは `drop_collinear` が上流で保証します。
+///
+/// **向きは保たれます。** 元の三角形 $(a,b,o)$ の有向辺 $(a,b)$ を
+/// $(a,t_1,o), (t_1,t_2,o), \dots, (t_k,b,o)$ に置き換えるので、
+/// **各小三角形が同じ向きの部分辺を持ちます。**
+inline bool fan_triangulate_general(const TPolygon& p,
+                                    std::vector<std::array<std::uint32_t, 3>>& out) {
+    const std::size_t n = p.vertex.size();
+    if (p.corners < 3 || n < 3) return false;
+    // 角の頂点 ID と、多角形内での位置（元の添字順）
+    std::vector<std::uint32_t> corner(p.corners, 0);
+    std::vector<std::size_t> cpos(p.corners, 0);
+    std::vector<char> seen(p.corners, 0);
+    for (std::size_t i = 0; i < n; ++i) {
+        if (!p.is_corner[i]) continue;
+        const std::uint32_t o = p.orig[i];
+        if (o >= p.corners || seen[o]) return false;  // 想定外。従来の経路に任せる
+        corner[o] = p.vertex[i];
+        cpos[o] = i;
+        seen[o] = 1;
+    }
+    for (std::uint32_t o = 0; o < p.corners; ++o)
+        if (!seen[o]) return false;
+
+    // ---- 1. 角だけの扇分割 ----
+    std::vector<std::array<std::uint32_t, 3>> tri;
+    tri.reserve(n);
+    for (std::uint32_t i = 1; i + 1 < p.corners; ++i)
+        tri.push_back({corner[0], corner[i], corner[i + 1]});
+
+    // ---- 2. T 頂点を持つ元の辺ごとに、その辺を含む三角形を対頂点から扇に開く ----
+    std::vector<std::uint32_t> ts;
+    for (std::uint32_t j = 0; j < p.corners; ++j) {
+        ts.clear();
+        for (std::size_t k = 1; k < n; ++k) {
+            const std::size_t i = (cpos[j] + k) % n;
+            if (p.is_corner[i]) break;
+            if (p.orig[i] != j) return false;  // 並びが想定と違う。従来の経路に任せる
+            ts.push_back(p.vertex[i]);
+        }
+        if (ts.empty()) continue;
+        const std::uint32_t a = corner[j], b = corner[(j + 1) % p.corners];
+        // **有向辺 (a,b) を持つ三角形はちょうど 1 つ**（扇分割は円板なので境界辺は 1 度だけ）
+        std::size_t hit = tri.size();
+        int slot = -1;
+        for (std::size_t t = 0; t < tri.size() && hit == tri.size(); ++t)
+            for (int e = 0; e < 3; ++e)
+                if (tri[t][static_cast<std::size_t>(e)] == a &&
+                    tri[t][static_cast<std::size_t>((e + 1) % 3)] == b) {
+                    hit = t;
+                    slot = e;
+                    break;
+                }
+        if (hit == tri.size()) return false;  // 見つからない。従来の経路に任せる
+        const std::uint32_t o = tri[hit][static_cast<std::size_t>((slot + 2) % 3)];
+        // (a,t1,o), (t1,t2,o), ..., (tk,b,o)
+        std::vector<std::array<std::uint32_t, 3>> fan;
+        fan.reserve(ts.size() + 1);
+        std::uint32_t prev = a;
+        for (std::uint32_t t : ts) {
+            fan.push_back({prev, t, o});
+            prev = t;
+        }
+        fan.push_back({prev, b, o});
+        tri[hit] = fan.front();
+        tri.insert(tri.end(), fan.begin() + 1, fan.end());
+    }
+    // **枚数の検算**: 円板の扇分割は n-2 枚（$\chi = 1$）
+    if (tri.size() != n - 2) return false;
+    out.insert(out.end(), tri.begin(), tri.end());
+    return true;
+}
+
 inline void fan_triangulate(const TPolygon& p, std::vector<std::array<std::uint32_t, 3>>& out,
-                            TJunctionStats* stats = nullptr) {
+                            TJunctionStats* stats = nullptr, bool general = true) {
     const std::size_t n = p.vertex.size();
     if (n < 3) return;
+
+#if defined(KRISITE_MUTATION_DROP_DEGENERATE)
+    // **変異 13 は「従来の扇分割が退化を捨てる」という欠陥を注入するもの**です。
+    // **一般解は退化を 1 枚も作らないので、変異の対象が消えます。**
+    //
+    // **検出器を失わないよう、この変異では一般解を外して評価します**
+    // （`CLAUDE.md`「後段で埋める機構は、上流の誤りを覆い隠します。
+    // 導入するなら、どの検出器が失われ、どれが残るかを先に書き出してください」）。
+    //
+    // **失われた検出範囲**: 一般解が既定の経路では、変異 13 は到達しません。
+    // **残る検出範囲**: 旗を外した従来の経路（`test_tjunction.cpp` が直接検査）。
+    general = false;
+#endif
+    // **一般解を先に試します**（§2.4.4 (2) の「一般解」。退化を 1 枚も作りません）。
+    // **旗で完全に外せます** — 偽なら下の従来の扇分割に落ちます（比較の基準側）。
+    if (general) {
+        const std::size_t before = out.size();
+        if (fan_triangulate_general(p, out)) {
+            if (stats) stats->general_used += out.size() - before;
+            return;
+        }
+        out.resize(before);  // 途中まで書いていたら戻す
+        if (stats) ++stats->general_fallback;
+    }
 
     // 元の辺ごとに T 頂点が載っているか
     std::vector<char> edge_has_t(p.corners, 0);

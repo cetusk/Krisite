@@ -174,6 +174,20 @@ struct PairStruct {
     int all_oriented = 1, all_no_degenerate = 1;
     /// **空の出力を出した演算の数**（0〜3）。上の論理積から外した分をここで数えます
     int empty_ops = 0;
+    // ---- 三角形化が残した退化三角形（`SPEC-phase2.md` §2.4.4 (2)）----
+    //
+    // **★ Phase 2 が「残した枚数を §11 に記録すること」と要求していた項目です。**
+    // **Phase 5 の記録項目に引き継いでいませんでした**（`IMPL-phase5.md` §95）。
+    //
+    // コーパスでは 20 枚でしたが、**実データでは 1 演算あたり最大 59,465 枚
+    // （出力の 0.95%）**です。3 桁違います。
+    //
+    // **判定は組合せです**（幾何の述語を使うと $20b+43$ が要る。§2.4.4 (2) の禁止）。
+    std::size_t degenerate_kept = 0;
+    std::size_t apex_fallback = 0;  ///< 扇の起点を選べなかった多角形
+    /// **radial sort**（`SPEC-phase2.md` §5.1.2.1）の試行と解決
+    std::size_t radial_attempted = 0;
+    std::size_t radial_resolved = 0;
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -220,6 +234,10 @@ struct PairStruct {
         ray_kept += b.ray_tri_kept;
         regions_negative_w += b.regions_negative_w;
         regions_w_ge2 += b.regions_w_ge2;
+        degenerate_kept += t.t.degenerate_kept;
+        apex_fallback += t.t.apex_fallback;
+        radial_attempted += t.split.radial_attempted;
+        radial_resolved += t.split.radial_resolved;
         ms_arrange += b.ms_arrange;
         ms_classify += b.ms_classify;
         ms_stitch += b.ms_stitch;
@@ -261,7 +279,11 @@ struct PairStruct {
           << regions_w_ge2
           // **空の出力の数**（2026-09-06 追加。列を足したので `cp1_results.txt` の
           // 既存 500 行にはありません。**CP2 以降の記録に入ります**）
-          << ' ' << empty_ops;
+          << ' '
+          << empty_ops
+          // **仕様が要求していた記録**（`SPEC-phase2.md` §2.4.4 (2) / §5.1.2.1）
+          << ' ' << degenerate_kept << ' ' << apex_fallback << ' ' << radial_attempted << ' '
+          << radial_resolved;
     }
 };
 

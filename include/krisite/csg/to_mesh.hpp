@@ -136,6 +136,10 @@ struct ToMeshOptions {
     /// **スケジューラに依存しない番人**で、1 スレッドでも効きます。
     bool reverse_fan = false;
     bool resolve_t = true;  ///< §6.2 の T 頂点解決
+    /// **三角形化の一般解**（`SPEC-phase2.md` §2.4.4 (2)）。**退化三角形を 1 枚も作りません。**
+    ///
+    /// **偽にすると完全に外れ、従来の扇分割（退化を残す）に戻ります**（比較の基準側）。
+    bool general_triangulation = true;
     /// **T 字接合の索引をセルで区切る**（`DESIGN-phase5-hotspots.md` §6.3 の A-3）。
     ///
     /// 平面ごとに全頂点を走査する代わりに、**多角形が属する葉の【閉じた箱】に
@@ -293,14 +297,14 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
             }
             const TPolygon tp =
                 insert_t_vertices_with(s.table, out.vertices, *cand, edge, poly, &t);
-            fan_triangulate(tp, poly_tris[pi], &t);
+            fan_triangulate(tp, poly_tris[pi], &t, opt.general_triangulation);
         } else {
             TPolygon tp;
             tp.corners = static_cast<std::uint32_t>(poly.size());
             tp.vertex = poly;
             tp.is_corner.assign(poly.size(), 1);
             for (std::uint32_t i = 0; i < poly.size(); ++i) tp.orig.push_back(i);
-            fan_triangulate(tp, poly_tris[pi], &t);
+            fan_triangulate(tp, poly_tris[pi], &t, opt.general_triangulation);
         }
     });
     for (std::size_t pi = 0; pi < s.polys.size(); ++pi) {

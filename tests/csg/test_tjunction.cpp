@@ -11,6 +11,7 @@
 // （1 個ずつ挿入する）もここで効きます。
 #include <array>
 #include <cstdio>
+#include <map>
 #include <vector>
 
 #include "krisite/csg/tjunction.hpp"
@@ -156,7 +157,9 @@ void test_fan_avoids_degenerate() {
     const TPolygon p =
         insert_t_vertices(sq.s.table, sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
     std::vector<std::array<std::uint32_t, 3>> tris;
-    fan_triangulate(p, tris, &st);
+    // **★ 従来の扇分割（一般解を外した基準側）を検査します**（`IMPL-phase5.md` §96）。
+    // 一般解は起点を持たないので、起点の選択はこちらでしか検査できません。
+    fan_triangulate(p, tris, &st, /*general=*/false);
 
     // T 頂点は辺 0 だけに載るので、**元の角 2**（隣接辺は 1 と 2）が起点に選ばれる
     KRI_CHECK_MSG(tris.size() == p.vertex.size() - 2,
@@ -167,6 +170,15 @@ void test_fan_avoids_degenerate() {
     KRI_CHECK_MSG(st.apex_fallback == 0, "起点は選べるはず");
     for (const auto& t : tris) KRI_CHECK_MSG(t[0] == sq.poly[2], "起点が元の角 2 でない");
     for (const auto& t : tris) KRI_CHECK(t[0] != t[1] && t[1] != t[2] && t[0] != t[2]);
+
+    // **一般解の側**（§2.4.4 (2) の「一般解」）。**枚数は同じ、退化は 0、退避も 0**
+    TJunctionStats sg;
+    std::vector<std::array<std::uint32_t, 3>> tg;
+    fan_triangulate(p, tg, &sg, /*general=*/true);
+    KRI_CHECK_MSG(tg.size() == tris.size(), "一般解でも枚数は同じはず");
+    KRI_CHECK_MSG(sg.degenerate_kept == 0, "一般解で退化が出た");
+    KRI_CHECK_MSG(sg.general_fallback == 0, "一般解が組めず従来の扇に落ちた");
+    KRI_CHECK_MSG(sg.general_used == tg.size(), "一般解が作った枚数が合わない");
 }
 
 /// **起点を選べない多角形では残します。** 捨てると境界辺が消えて次数 1 の辺が出ます。
@@ -183,7 +195,9 @@ void test_fan_fallback_keeps_degenerate() {
     const TPolygon p =
         insert_t_vertices(sq.s.table, sq.s.verts, sq.s.index, sq.support, sq.edge, sq.poly, &st);
     std::vector<std::array<std::uint32_t, 3>> tris;
-    fan_triangulate(p, tris, &st);
+    // **★ 従来の扇分割（基準側）。一般解を入れると退化が 0 になるので、
+    // 「残す」という振る舞いはこちらでしか検査できません。**
+    fan_triangulate(p, tris, &st, /*general=*/false);
 
     KRI_CHECK_MSG(st.inserted == 4,
                   "4 辺に 1 個ずつ入るはず（実測 " + std::to_string(st.inserted) + "）");
@@ -193,6 +207,33 @@ void test_fan_fallback_keeps_degenerate() {
                   "退化を残しても扇は n-2 枚（実測 " + std::to_string(tris.size()) + " 枚）");
     KRI_CHECK_MSG(st.degenerate_kept == 2,
                   "残した退化は 2 枚のはず（実測 " + std::to_string(st.degenerate_kept) + "）");
+
+    // **★ 一般解ならこの多角形でも退化は 0 枚**（4 辺すべてに T 頂点がある最悪の形）
+    TJunctionStats sg;
+    std::vector<std::array<std::uint32_t, 3>> tg;
+    fan_triangulate(p, tg, &sg, /*general=*/true);
+    KRI_CHECK_MSG(tg.size() == p.vertex.size() - 2, "一般解でも n-2 枚");
+    KRI_CHECK_MSG(sg.degenerate_kept == 0,
+                  "**一般解で退化が残った**（実測 " + std::to_string(sg.degenerate_kept) + "）");
+    KRI_CHECK_MSG(sg.general_fallback == 0, "一般解が組めなかった");
+    // **境界辺がすべて残っていること**（捨てていないことの直接の検査）
+    std::map<std::pair<std::uint32_t, std::uint32_t>, int> deg;
+    for (const auto& t : tg)
+        for (int e = 0; e < 3; ++e) {
+            std::uint32_t x = t[static_cast<std::size_t>(e)],
+                          y = t[static_cast<std::size_t>((e + 1) % 3)];
+            if (x > y) std::swap(x, y);
+            ++deg[std::make_pair(x, y)];
+        }
+    std::size_t boundary = 0;
+    for (std::size_t i = 0; i < p.vertex.size(); ++i) {
+        std::uint32_t x = p.vertex[i], y = p.vertex[(i + 1) % p.vertex.size()];
+        if (x > y) std::swap(x, y);
+        const auto key = std::make_pair(x, y);
+        KRI_CHECK_MSG(deg[key] == 1, "**境界辺が消えている**（一般解が辺を落とした）");
+        ++boundary;
+    }
+    KRI_CHECK_MSG(boundary == p.vertex.size(), "境界辺の数が合わない");
 }
 
 /// **T 頂点が無ければ扇分割は Phase 1 と同一であること。** 負の対照の土台です。
