@@ -572,14 +572,19 @@ void test_ray_prefilter() {
 /// **退化を狙う入力とは性格が違う**ので、コーパスには入れません。
 void test_single_src_split() {
     std::printf("  案 1: 単一 source の葉を割る規則\n");
+    // **★ 座標は `kCoordMax` に対する比で書きます。** 絶対値で書くと、
+    // **$b$ が大きいときに球が座標範囲に対して小さくなり、八分木が分離できません**
+    // （b=26 の CI で発火せず落ちました。2026-09-07）。
+    // `CLAUDE.md`「実験で変える変数が、実験の設計そのものに影響していないか」と同じ形です。
+    constexpr std::int64_t kR = krisite::kCoordMax * 3 / 10;  ///< 球の半径
     struct Setup {
         const char* id;
-        std::int64_t sep;  ///< 中心の間隔。半径 300000 なので 500000 なら交わらない
+        std::int64_t sep;  ///< 中心の間隔。半径 kR なので 1.6·kR なら交わらない
     };
     std::size_t checked = 0, fired_total = 0;
-    for (const Setup& su : {Setup{"離れた 2 球", 500000}, Setup{"交わる 2 球", 150000}}) {
-        const TriMesh a = kriperf::sphere(300000, 24, 48, -su.sep, 0, 0);
-        const TriMesh b = kriperf::sphere(300000, 24, 48, su.sep, 0, 0);
+    for (const Setup& su : {Setup{"離れた 2 球", kR * 8 / 5}, Setup{"交わる 2 球", kR / 2}}) {
+        const TriMesh a = kriperf::sphere(kR, 24, 48, -su.sep, 0, 0);
+        const TriMesh b = kriperf::sphere(kR, 24, 48, su.sep, 0, 0);
         for (unsigned d = 4; d <= 5; ++d) {
             struct Run {
                 mesh::TopologyReport topo;

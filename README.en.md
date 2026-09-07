@@ -16,8 +16,8 @@
 `Krisite` is a header-only C++20 library for 3D data. The long-term goal is to unify
 point-cloud compression, meshing, and exact boolean operations.
 
-**No floating point and no tolerances.** Every decision is the sign of a fixed-width
-exact integer expression.
+**Side-of-plane, orientation and intersection decisions are made in fixed-width exact
+integer arithmetic** — no floating point, no tolerances.
 
 The project is currently in **Phase 5 (Thingi10K validation and performance
 targets)**. [`docs/ROADMAP.md`](docs/ROADMAP.md) is the single source of truth for
@@ -194,10 +194,21 @@ consulted, quoted, or ported.**
 | 2 | Adaptive subdivision, constructed-point reuse, output semantics | Complete (2026-08-28) |
 | 3 | Core redesign ($n$-ary, WNV, local BSP, convex split; single-threaded) | Complete (2026-08-29) |
 | 4 | Parallelism (core + exit; **determinism required**) | Complete (2026-08-29) |
-| **5** | **Thingi10K validation, performance targets** | **In progress** |
+| **5** | **Thingi10K validation, performance targets** | **In progress** (breakdown below) |
 | 6+ | Point-cloud codec, GWN, meshing | Not started |
 
-**CP1 — 500 real-data pairs — has completed: 499 succeeded, 1 failed.**
+### Phase 5 breakdown
+
+**Correctness first, performance second** — the order matters.
+
+| Stage | Scope | What it checks | Status |
+|---|---|---|---|
+| **CP1** | Solid, manifold, **non-self-intersecting** — 1,000 models → **500 pairs** | Correctness on real data; the common ground for comparison with EMBER and FARMA | **Complete** (499 succeeded, **1 failed**) |
+| **CP1.5** | — | **Removing the superlinearity**, a precondition for CP2/CP3 being runnable at all | **Complete** ($P \to t$ from 1.31 to 1.23; the CP2 estimate from 350 to 66 hours) |
+| **CP2** | Models that **do** self-intersect | Whether the operation itself resolves self-intersection into a clean output (self-union) | **Not started** (~3 hours for 100 pairs) |
+| **CP3** | No constraint on solidity, manifoldness or self-intersection | Whether the entry checks work on **non-PWN and degenerate models** | Not started |
+| **CP4 onwards** | — | **Setting and pursuing performance targets** | Not started (**no target has been set yet**) |
+
 Measurements are in [`docs/BENCH.md`](docs/BENCH.md); the reasoning behind each
 decision is in [`docs/IMPL-phase5.md`](docs/IMPL-phase5.md).
 
