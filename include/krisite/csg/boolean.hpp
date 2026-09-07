@@ -200,6 +200,9 @@ struct BoolStats {
     /// **NSI の宣言で局所 BSP を省いたセル**（`SPEC-phase3.md` §5.6）。
     /// **0 なら機構が空回りしています**（`CLAUDE.md`）。
     std::size_t bsp_cells_skipped_nsi = 0;
+    /// **単一 source の葉を割る規則（§3.1 の訂正）が発火した回数**。
+    /// **0 なら `single_src_sq` は空回りしています**（`IMPL-phase5.md` §81）
+    std::size_t single_src_splits = 0;
 
     /// **レイキャストが検査した三角形の総数**（`SPEC-phase5.md` の CP1.5）。
     ///
@@ -438,6 +441,12 @@ struct BoolOptions {
     ///
     /// **偽にすると完全に外れます。** 正しさの検査は真偽の両方で同じ出力を要求します。
     bool ray_prefilter = true;
+    /// **段の境界で進捗を出す**（既定 偽。診断用）。
+    ///
+    /// **対の中で「いまどの段にいるか」が見えないと、長時間かかったときに
+    /// 「進んでいるか」を判断できません**（`IMPL-phase5.md` §79）。
+    /// **段の時間は完了後にしか読めない**ので、走っている最中には使えません。
+    bool verbose_stages = false;
     /// **前判定の効きを計測する**（既定 偽。真にすると計数のぶん遅くなります）。
     bool record_ray_filter = false;
     /// **適応分割**（§3.1）。偽なら常に最大深度まで分割する固定深度モード。
@@ -452,6 +461,15 @@ struct BoolOptions {
 #endif
     /// 分割を打ち切る三角形数の閾値（§3.1）。0 なら閾値では打ち切らない
     std::size_t leaf_threshold = 0;
+    /// **単一 source のセルを割る閾値**（$P_\ell^2$ で比べる。`IMPL-phase5.md` §80）。
+    ///
+    /// **既定 $128^2 = 16384$ は実測から決めました**（`docs/BENCH.md`）。
+    /// `934258x111599` を深度 6 / 7 / 8 で、$P \in \{64,\dots,2048\}$ を振った結果、
+    /// **3 つの深度すべてで 128 が最小**でした（64 とは 1% 差で並び、256 以降は悪化）。
+    /// **体積は 18 設定すべてで厳密に一致**しています。
+    ///
+    /// `octree::kNoSingleSplit` にすると従来どおり割りません（§9 の比較用）。
+    std::size_t single_src_sq = 16384;
     /// **接触の分裂**（§5）。**既定で有効です**（§5.2）。
     ///
     /// 正則化ブールは一般に多様体出力を保証できません。辺だけ・頂点だけを共有する接触が
@@ -585,8 +603,10 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
 
     // §3.1 の分割判定で葉を列挙する。**固定深度は「常に最大深度まで分割する」特別な場合**
     const octree::SubdivisionPolicy policy{depth, !opt.adaptive, opt.leaf_threshold};
-    const std::vector<octree::Cell> leaves =
-        octree::build_leaves(policy, [&](const octree::Cell& c, std::size_t* na, std::size_t* nb) {
+    const std::vector<octree::Cell> leaves = octree::build_leaves(
+        policy, [&](const octree::Cell& c, std::size_t* na, std::size_t* nb, bool* bsp_skipped) {
+            // 二項経路には NSI による局所 BSP の省略がありません（soup 経路のみ）。
+            *bsp_skipped = false;
             const octree::CellBox cb = octree::box_of(c);
             *na = 0;
             *nb = 0;

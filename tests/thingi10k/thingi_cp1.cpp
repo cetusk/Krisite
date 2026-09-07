@@ -162,8 +162,18 @@ struct PairStruct {
     // 記録していないだけでした。**
     std::size_t edges_odd_degree = 0;
     std::size_t nonmanifold_unexplained = 0;
-    /// 3 演算すべてで成立したか（**論理積**。1 つでも崩れたら除外できません）
+    /// 3 演算すべてで成立したか（**論理積**。1 つでも崩れたら除外できません）。
+    ///
+    /// **★ 空の出力を論理積に入れないこと**（2026-09-06 に踏みました）。
+    /// `check_topology` は**空のメッシュで早期に返し、`oriented` も `no_degenerate` も
+    /// 偽のまま**です。そのまま論理積を取ると、
+    /// **「向きが崩れた」と「出力が空だった」が区別できません。**
+    /// 実際 500 対のうち 116 対（23.2%）が 0 でしたが、**その全部が
+    /// 「∩ が空」などの正常な事象**でした（離れた 2 立体の共通部分など）。
+    /// **偽が 2 つの意味を持つ真偽値を作らないこと。**
     int all_oriented = 1, all_no_degenerate = 1;
+    /// **空の出力を出した演算の数**（0〜3）。上の論理積から外した分をここで数えます
+    int empty_ops = 0;
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -220,8 +230,12 @@ struct PairStruct {
         // **除外の判定に要る 4 項目**（§9.3.1）
         edges_odd_degree += r.edges_odd_degree;
         nonmanifold_unexplained += r.nonmanifold_vertices_unexplained;
-        all_oriented &= r.oriented ? 1 : 0;
-        all_no_degenerate &= r.no_degenerate ? 1 : 0;
+        if (r.empty) {
+            ++empty_ops;  // **空は論理積に入れない**（上の注記）
+        } else {
+            all_oriented &= r.oriented ? 1 : 0;
+            all_no_degenerate &= r.no_degenerate ? 1 : 0;
+        }
         {
             const kritest::Exclusion ex = kritest::exclusion_when_split(t.split.unresolved, r);
             std::string why;
@@ -243,7 +257,11 @@ struct PairStruct {
           << excluded_ops
           // Phase 5 の 3 機構（2026-09-05 追加）
           << ' ' << cell_index_groups << ' ' << assign_rejected << ' ' << ray_kept << ' '
-          << regions_negative_w << ' ' << regions_w_ge2;
+          << regions_negative_w << ' '
+          << regions_w_ge2
+          // **空の出力の数**（2026-09-06 追加。列を足したので `cp1_results.txt` の
+          // 既存 500 行にはありません。**CP2 以降の記録に入ります**）
+          << ' ' << empty_ops;
     }
 };
 
@@ -283,12 +301,34 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     // **対ごとの構造を採ります**（`SPEC-phase5.md` §1.5.0）。3 演算ぶんを合算。
     csg::SoupMesh out3[3];
     int k3 = 0;
+    // **★ 段ごとの進捗を出します**（2026-09-05 追加）。
+    //
+    // **対の中で「いまどの段にいるか」を出していませんでした。**
+    // 1 対に 2 時間以上かかったとき、**「進んでいるか」を判断する材料がありませんでした**
+    // （プロセスの CPU 時間しか見えず、`gdb` もこの環境にありません）。
+    //
+    // **`CLAUDE.md`「測定は、要求されなければ実装されません」**に当たります。
+    //
+    // **費用はほぼゼロです**（対あたり 6 行）。**打ち切りの判断に直接効きます。**
+    const char* kOpName[3] = {"∪", "∩", "＼"};
+    const auto t_pair = std::chrono::steady_clock::now();
+    const auto lap = [&t_pair]() {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now() - t_pair).count();
+    };
     for (csg::BoolOp op :
          {csg::BoolOp::Union, csg::BoolOp::Intersection, csg::BoolOp::Difference}) {
         csg::BoolStats bs;
         csg::ToMeshStats ts;
+        std::printf("      [%6.1f s] %s 中核…\n", lap(), kOpName[k3]);
+        std::fflush(stdout);
         const csg::PolySoup soup = csg::boolean(A, B, op, o, &bs);
+        std::printf("      [%6.1f s] %s 中核 完了（多角形 %zu、断片 %zu）→ 出口…\n", lap(),
+                    kOpName[k3], soup.polys.size(), bs.raw_fragments);
+        std::fflush(stdout);
         out3[k3] = csg::to_mesh(soup, tm, &ts);
+        std::printf("      [%6.1f s] %s 出口 完了（三角形 %zu、頂点 %zu）\n", lap(), kOpName[k3],
+                    out3[k3].triangles.size(), out3[k3].vertices.size());
+        std::fflush(stdout);
         if (ps != nullptr) {
             ps->add(bs, ts, mesh::check_topology(out3[k3].triangles), soup.polys.size());
         }
@@ -507,7 +547,26 @@ int main(int argc, char** argv) {
                 base.c_str(), only.size());
         }
     }
+    // **★ 設定を全部出します**（`CLAUDE.md`「測定の出力に、設定と実際に測った対象を
+    // 必ず書いてください」）。**2026-09-06 に、NSI の扱いが出力に無かったために、
+    // 記録済みの 351 対（検査して宣言する = 1）に対して、続きを「宣言しない = 0」で
+    // 回してしまいました。** 記録が版ではなく【設定】で割れており、
+    // 出力の多角形数が 3.6 倍ずれて「案 1 の効果」に見えていました。
+    static const char* kNsiName[4] = {"宣言しない", "検査して通ったものだけ宣言する",
+                                      "宣言あり・なしの両方を回して突き合わせる",
+                                      "検査せずに宣言する"};
     std::printf("\n## ブール演算（対 %zu、スレッド %u）\n\n", order.size() / 2, nthreads);
+    std::printf("| 設定 | 値 |\n|---|---|\n");
+    std::printf("| 一覧 | `%s` |\n", list.c_str());
+    std::printf("| 記録先 | `%s` |\n", done_path.c_str());
+    std::printf("| 深度 | %u |\n", depth);
+    std::printf("| スレッド | %u |\n", nthreads);
+    std::printf("| b（座標ビット） | %d |\n", KRISITE_COORD_BITS);
+    std::printf("| **NSI の扱い** | **%d = %s** |\n", nsi_mode,
+                (nsi_mode >= 0 && nsi_mode < 4) ? kNsiName[nsi_mode] : "?");
+    std::printf("| 単一 source を割る閾値 P^2 | %zu |\n", o.single_src_sq);
+    std::printf("| 索引の ON/OFF 突き合わせ | %s |\n", verify_index ? "する" : "しない");
+    std::printf("| 済みの対 | %s |\n\n", redo ? "やり直す" : "飛ばす（再開）");
     const auto t0 = std::chrono::steady_clock::now();
     for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
         const std::size_t i = order[k], j = order[k + 1];
