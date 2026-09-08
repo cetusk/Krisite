@@ -224,6 +224,20 @@ struct BoolStats {
     /// 既定ビルドでは 0 のままです（計数のコストを本番に持ち込まないため）。
     std::uint64_t side_calls = 0;
     std::uint64_t intersect3_calls = 0;
+    /// **★ 段ごとの `side` の内訳**（`KRISITE_COUNT_PREDICATES` のときだけ非零）。
+    ///
+    /// > **スープ経路には述語の計数がありませんでした**（2026-09-08 に発覚）。
+    /// > **二項メッシュ経路（`boolean.hpp` の 1282 行）にしか無く、
+    /// > 実際に使う経路では常に 0 でした。**
+    /// > **`CLAUDE.md`「計装がどちらにあるかも確かめてください」の 2 度目です。**
+    ///
+    /// **`side_calls_arrange` は arrange（葉ごと）、
+    /// `side_calls_classify` は分類（領域ごと）の合計**です。
+    /// **代表点の構成（`interior.side_tests`）は後者の内側にあります。**
+    std::uint64_t side_calls_arrange = 0;
+    std::uint64_t side_calls_classify = 0;
+    std::uint64_t intersect3_arrange = 0;
+    std::uint64_t intersect3_classify = 0;
 
     /// §2.3 の絞り込み（SPEC-phase2）。
     ///

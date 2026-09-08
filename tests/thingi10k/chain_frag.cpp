@@ -28,11 +28,13 @@
 // | `..._axis_support` | **そのうち、支持平面が軸平行**（= セル境界面） |
 //
 // **最後の 2 つが機構の切り分けです。**
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "krisite/csg/boolean.hpp"
@@ -139,6 +141,61 @@ void print_rows() {
                     r.st.frag_edges_count, pc(r.st.eo_const_frags, r.st.frag_edges_count));
     }
 
+    // ---- ★ 代表点の構成（`SPEC-phase5.md` §5.10.9.3）--------------------------
+    //
+    // **EMBER §4.4 の fast-path は、代表点の構成として既に実装されています**
+    // （`interior.hpp` の主経路 = float ヒント + 軸平行直線）。
+    // **各段が何回試され、何回成功しているかを数えます。**
+    std::printf(
+        "\n| 段 | 代表点の構成 | **主経路の成功** | 主経路の失敗 | 予備の成功 | "
+        "予備の試行 | `side`（代表点） | `side`/構成 |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    for (const Row& r : g_rows) {
+        const csg::InteriorStats& it = r.st.interior;
+        const std::size_t tot = it.axis_line + it.corner_offset;
+        std::printf(
+            "| %s | %zu | **%zu（%.1f%%）** | %zu | %zu | %zu | %zu | %.1f |\n", r.name.c_str(),
+            tot, it.axis_line,
+            tot == 0 ? 0.0 : 100.0 * static_cast<double>(it.axis_line) / static_cast<double>(tot),
+            it.axis_failed, it.corner_offset, it.corner_tries, it.side_tests,
+            tot == 0 ? 0.0 : static_cast<double>(it.side_tests) / static_cast<double>(tot));
+    }
+
+    // **★ 主経路の失敗の内訳**（§20.2。「外れた」だけでは機構が決まりません）。
+    std::printf(
+        "\n| 段 | 主経路の失敗 | 範囲外 | **内部でない** | 退化 | 辺の平均 | "
+        "**範囲外の最大 $|c|/\\mathrm{max}$（‰）** |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|---:|\n");
+    for (const Row& r : g_rows) {
+        const csg::InteriorStats& it = r.st.interior;
+        std::printf("| %s | %zu | %zu | **%zu** | %zu | %.2f | **%zu** |\n", r.name.c_str(),
+                    it.axis_failed, it.axis_out_of_range, it.axis_outside, it.axis_degenerate,
+                    r.st.frag_edges_count == 0 ? 0.0
+                                               : static_cast<double>(r.st.frag_edges_total) /
+                                                     static_cast<double>(r.st.frag_edges_count),
+                    it.axis_range_max_permille);
+    }
+
+    // ---- ★ 段ごとの `side`（`KRISITE_COUNT_PREDICATES` のときだけ）------------
+    if (g_rows[0].st.side_calls_arrange + g_rows[0].st.side_calls_classify > 0) {
+        std::printf(
+            "\n| 段 | `side` arrange | `side` 分類 | うち代表点 | **代表点の割合（全体）** "
+            "| `intersect3` arrange | `intersect3` 分類 |\n");
+        std::printf("|---|---:|---:|---:|---:|---:|---:|\n");
+        for (const Row& r : g_rows) {
+            const std::uint64_t tot = r.st.side_calls_arrange + r.st.side_calls_classify;
+            std::printf("| %s | %llu | %llu | %zu | **%.2f%%** | %llu | %llu |\n", r.name.c_str(),
+                        static_cast<unsigned long long>(r.st.side_calls_arrange),
+                        static_cast<unsigned long long>(r.st.side_calls_classify),
+                        r.st.interior.side_tests,
+                        tot == 0 ? 0.0
+                                 : 100.0 * static_cast<double>(r.st.interior.side_tests) /
+                                       static_cast<double>(tot),
+                        static_cast<unsigned long long>(r.st.intersect3_arrange),
+                        static_cast<unsigned long long>(r.st.intersect3_classify));
+        }
+    }
+
     // ---- ★ 分類の費用（依頼 2 の材料）--------------------------------------
     //
     // **参照点の伝播で置き換えたいのは、この「領域ごとの大域レイキャスト」です。**
@@ -218,6 +275,28 @@ int main(int argc, char** argv) {
     std::printf("**入力**: `%s` %zu / `%s` %zu / `%s` %zu 三角形\n", ida.c_str(),
                 qa.mesh.triangles.size(), idb.c_str(), qb.mesh.triangles.size(), idd.c_str(),
                 qd.mesh.triangles.size());
+
+    // **★ 量子化後の座標範囲を出します**（`DESIGN` §20.2 の切り分け）。
+    // **`interior_point` の主経路は、重心が `(kCoordMin, kCoordMax)` の【開区間】に
+    // 無いと弾かれます。** 端に寄っていれば、そこが失敗の理由です。
+    {
+        const auto span = [](const mesh::TriMesh& m) {
+            std::int64_t lo = krisite::kCoordMax, hi = krisite::kCoordMin;
+            for (const geom::IPoint& v : m.vertices) {
+                const std::int64_t c[3] = {v.x, v.y, v.z};
+                for (int k = 0; k < 3; ++k) {
+                    lo = std::min(lo, c[k]);
+                    hi = std::max(hi, c[k]);
+                }
+            }
+            return std::pair<std::int64_t, std::int64_t>{lo, hi};
+        };
+        const auto sa = span(qa.mesh), sd = span(qd.mesh);
+        std::printf("\n**座標範囲**: `kCoordMax` = %lld / A = [%lld, %lld] / D = [%lld, %lld]\n",
+                    static_cast<long long>(krisite::kCoordMax), static_cast<long long>(sa.first),
+                    static_cast<long long>(sa.second), static_cast<long long>(sd.first),
+                    static_cast<long long>(sd.second));
+    }
 
     par::ThreadPool pool(nthreads);
     csg::BoolOptions o;

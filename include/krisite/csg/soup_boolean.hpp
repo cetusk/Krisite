@@ -38,6 +38,7 @@
 #include "krisite/csg/interior.hpp"
 #include "krisite/csg/polysoup.hpp"
 #include "krisite/csg/raycast.hpp"
+#include "krisite/geom/counters.hpp"
 #include "krisite/octree/adaptive.hpp"
 #include "krisite/par/thread_pool.hpp"
 
@@ -128,6 +129,18 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.interior.corner_offset += b.interior.corner_offset;
     a.interior.axis_failed += b.interior.axis_failed;
     a.interior.corner_tries += b.interior.corner_tries;
+    a.interior.side_tests += b.interior.side_tests;
+    a.interior.vertex_builds += b.interior.vertex_builds;
+    a.interior.candidates += b.interior.candidates;
+    a.interior.axis_out_of_range += b.interior.axis_out_of_range;
+    a.interior.axis_outside += b.interior.axis_outside;
+    a.interior.axis_degenerate += b.interior.axis_degenerate;
+    a.interior.axis_range_max_permille =
+        std::max(a.interior.axis_range_max_permille, b.interior.axis_range_max_permille);
+    a.side_calls_arrange += b.side_calls_arrange;
+    a.side_calls_classify += b.side_calls_classify;
+    a.intersect3_arrange += b.intersect3_arrange;
+    a.intersect3_classify += b.intersect3_classify;
     a.cache_hits += b.cache_hits;
     a.cache_misses += b.cache_misses;
     a.cache_entries += b.cache_entries;
@@ -501,6 +514,20 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         PointCache* const cache = opt.cache_points ? &tl_cache[tid] : nullptr;
 #endif
         const octree::CellBox cbox = octree::box_of(cell);
+        // **★ 述語の計数**（`KRISITE_COUNT_PREDICATES` のときだけ）。
+        // **`thread_local` なので、同じスレッドでの差分を取れば正確です。**
+#if defined(KRISITE_COUNT_PREDICATES)
+        const std::uint64_t pc_side0 = geom::counters::side_calls;
+        const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
+        struct PredGuard {
+            BoolStats& s;
+            std::uint64_t s0, i0;
+            ~PredGuard() {
+                s.side_calls_arrange += geom::counters::side_calls - s0;
+                s.intersect3_arrange += geom::counters::intersect3_calls - i0;
+            }
+        } pred_guard{st, pc_side0, pc_i30};
+#endif
         std::vector<Fragment> local;
         std::vector<std::uint32_t> local_src, local_tag;
         std::vector<octree::Aabb> local_box;
@@ -1264,6 +1291,18 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         PointCache* const cache = opt.cache_points ? &tl_cache2[0] : nullptr;
 #else
         PointCache* const cache = opt.cache_points ? &tl_cache2[tid] : nullptr;
+#endif
+#if defined(KRISITE_COUNT_PREDICATES)
+        const std::uint64_t pc_side0 = geom::counters::side_calls;
+        const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
+        struct PredGuard {
+            BoolStats& s;
+            std::uint64_t s0, i0;
+            ~PredGuard() {
+                s.side_calls_classify += geom::counters::side_calls - s0;
+                s.intersect3_classify += geom::counters::intersect3_calls - i0;
+            }
+        } pred_guard{st, pc_side0, pc_i30};
 #endif
         const auto& kv = *kvp;
         // 同じ領域に複数の断片が載っていても、出力するのは 1 枚です（§5.4.1）。

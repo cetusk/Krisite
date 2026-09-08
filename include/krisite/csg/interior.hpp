@@ -35,29 +35,74 @@ struct InteriorStats {
     std::size_t axis_line = 0;      ///< 主経路で決まった回数
     std::size_t corner_offset = 0;  ///< 予備経路で決まった回数
     std::size_t axis_failed = 0;    ///< 主経路が外れた回数
-    std::size_t corner_tries = 0;   ///< 予備経路で試した角 x 倍率の総数
+    /// **★ 主経路の失敗の内訳**（`DESIGN-phase5-hotspots.md` §20.2）。
+    ///
+    /// **「外れた」だけでは機構が決まりません**（`.claude/rules/deduction.md`）。
+    ///
+    ///   `axis_out_of_range` … 丸めた重心が座標範囲の外（`in_range` が偽）
+    ///   `axis_outside`      … 交点が断片の相対内部に無い（`strictly_inside` が偽）
+    ///   `axis_degenerate`   … 辺平面に内向きが無い（退化した断片）
+    std::size_t axis_out_of_range = 0;
+    std::size_t axis_outside = 0;
+    std::size_t axis_degenerate = 0;
+    /// **★ 範囲外で弾かれたときの $\max_i |c_i| / \mathrm{kCoordMax}$ の最大**（千分率）。
+    ///
+    /// **推測を止めて実際の値を見るための計器です**（§20.2）。
+    /// **1000 前後なら座標範囲の端、桁違いなら `approx` の計算が壊れています。**
+    std::size_t axis_range_max_permille = 0;
+    std::size_t corner_tries = 0;  ///< 予備経路で試した角 x 倍率の総数
+    /// **★ `side` の評価回数**（`SPEC-phase5.md` §5.10.9.3）。
+    ///
+    /// **代表点の構成が分類の費用のどれだけを占めるかを、演算回数で見るために要ります。**
+    /// **レイキャストの `ray_tri_tests` と並べて比べてください。**
+    std::size_t side_tests = 0;
+    /// **構成した頂点の数**（`fragment_vertex`。`intersect3` の回数の下限）。
+    std::size_t vertex_builds = 0;
+    /// **候補を試した回数**（主経路 1 + 予備経路の試行）。`strictly_inside` の呼び出し数。
+    std::size_t candidates = 0;
 };
 
 namespace detail {
 
 /// 固定幅整数の**近似値**（float ヒント専用。正しさには関与しません）。
 ///
-/// 符号反転を使わずに済ませます。最上位リムを符号付き、それ以外を符号なしとして
-/// 桁を積むだけなので、最小値（-2^(64N-1)）でも破綻しません。
+/// > **★ 初版は「符号反転を使わずに済ませます。最上位リムを符号付き、それ以外を
+/// > 符号なしとして桁を積むだけなので、最小値でも破綻しません」と書いていました。**
+/// > **誤りです。破綻するのは最小値ではなく【すべての負の値】でした**
+/// > （`DESIGN-phase5-hotspots.md` §20.3。2026-09-08 に発覚）。
+///
+/// **機構**: $-1$（$N=4$）は `limb = {~0, ~0, ~0, ~0}`。
+/// 最上位を `int64` にすると $-1$ ですが、次のリムは符号なしで
+/// $2^{64}-1$ です。**double の仮数は 53 ビットなので $2^{64}-1$ は $2^{64}$ に丸められ、**
+/// $-1 \cdot 2^{64} + 2^{64} = 0$ になります。**符号情報が消えます。**
+/// **残りのリムを積むと $2^{128}$ になります。**
+///
+/// **実測**: $-1$, $-2$, $-1000$, $-1048575$ のすべてで $3.40 \times 10^{38} = 2^{128}$。
+///
+/// **したがって符号を先に外します。** 正の値なら上位リムから積んでもキャンセルは
+/// 起きないので安全です。
 template <std::size_t N>
-inline double approx(const arith::fixed_int<N>& x) noexcept {
-    double r = static_cast<double>(static_cast<std::int64_t>(x.limb[N - 1]));
-    for (std::size_t i = N - 1; i-- > 0;) {
+inline double approx_abs(const arith::fixed_int<N>& x) noexcept {
+    double r = 0.0;
+    for (std::size_t i = N; i-- > 0;) {
         r = r * 18446744073709551616.0 + static_cast<double>(x.limb[i]);
     }
     return r;
 }
 
+template <std::size_t N>
+inline double approx(const arith::fixed_int<N>& x) noexcept {
+    if (arith::is_negative(x)) return -approx_abs(arith::neg(x));
+    return approx_abs(x);
+}
+
 /// 辺平面 `e` について、断片の**内側の符号**を返す（頂点のうち載っていないものの符号）。
 ///
 /// 凸多角形なので、辺の上に無い頂点はすべて同じ側にあります。
-inline int inward_sign(const PlaneTable& t, const std::vector<geom::HPointD>& vs, PlaneId e) {
+inline int inward_sign(const PlaneTable& t, const std::vector<geom::HPointD>& vs, PlaneId e,
+                       std::size_t* side_tests) {
     for (const geom::HPointD& v : vs) {
+        if (side_tests != nullptr) ++*side_tests;
         const int s = geom::side(t.at(e), v);
         if (s != 0) return s;
     }
@@ -76,16 +121,25 @@ inline geom::HPointD interior_point(const PlaneTable& t, const Fragment& f,
     const std::size_t n = vertex_count(f);
     KRISITE_CHECK(n >= 3, "interior_point: 頂点が 3 未満");
 
+    std::size_t* const sides = (st != nullptr) ? &st->side_tests : nullptr;
+    if (st != nullptr) st->vertex_builds += n;
+
     std::vector<geom::HPointD> vs(n);
     for (std::size_t i = 0; i < n; ++i) vs[i] = fragment_vertex(t, f, i, cache);
 
     std::vector<int> inward(n);
-    for (std::size_t k = 0; k < n; ++k) inward[k] = detail::inward_sign(t, vs, f.edge[k]);
+    for (std::size_t k = 0; k < n; ++k) inward[k] = detail::inward_sign(t, vs, f.edge[k], sides);
 
     // 候補が相対内部にあるか。**辺平面すべてに対して内側で、かつ載っていないこと。**
+    bool any_degenerate = false;
+    for (std::size_t k = 0; k < n; ++k) {
+        if (inward[k] == 0) any_degenerate = true;
+    }
     auto strictly_inside = [&](const geom::HPointD& x) {
+        if (st != nullptr) ++st->candidates;
         for (std::size_t k = 0; k < n; ++k) {
             if (inward[k] == 0) return false;  // 退化した断片
+            if (sides != nullptr) ++*sides;
             if (geom::side(t.at(f.edge[k]), x) != inward[k]) return false;
         }
         return true;
@@ -140,7 +194,25 @@ inline geom::HPointD interior_point(const PlaneTable& t, const Fragment& f,
                 return x;
             }
         }
-        if (st != nullptr) ++st->axis_failed;
+        if (st != nullptr) {
+            ++st->axis_failed;
+            if (!in_range) {
+                ++st->axis_out_of_range;
+                double mx = 0.0;
+                for (std::size_t i = 0; i < 3; ++i) {
+                    const double av = (cd[i] < 0.0) ? -cd[i] : cd[i];
+                    if (av > mx) mx = av;
+                }
+                const double pm = 1000.0 * mx / static_cast<double>(kCoordMax);
+                const std::size_t ipm =
+                    (pm > 1e15) ? static_cast<std::size_t>(1e15) : static_cast<std::size_t>(pm);
+                if (ipm > st->axis_range_max_permille) st->axis_range_max_permille = ipm;
+            } else if (any_degenerate) {
+                ++st->axis_degenerate;
+            } else {
+                ++st->axis_outside;
+            }
+        }
     }
 
     // ---- 予備経路: 角の 2 平面を内側へずらす（EMBER §4.4 の第 2 の方法）--------
