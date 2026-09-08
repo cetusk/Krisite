@@ -150,6 +150,13 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.side_w192_classify += b.side_w192_classify;
     a.side_wmore_classify += b.side_wmore_classify;
     a.side_wmax = std::max(a.side_wmax, b.side_wmax);
+    a.side_disp1 += b.side_disp1;
+    a.side_disp2 += b.side_disp2;
+    a.side_disp3 += b.side_disp3;
+    a.side_disp4 += b.side_disp4;
+    a.side_mul_now += b.side_mul_now;
+    a.side_mul_e2 += b.side_mul_e2;
+    a.side_disp_limbreads += b.side_disp_limbreads;
     a.cache_hits += b.cache_hits;
     a.cache_misses += b.cache_misses;
     a.cache_entries += b.cache_entries;
@@ -528,8 +535,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #if defined(KRISITE_COUNT_PREDICATES)
         const std::uint64_t pc_side0 = geom::counters::side_calls;
         const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
-        const std::uint64_t pc_w0[4] = {geom::counters::side_w64, geom::counters::side_w128,
-                                        geom::counters::side_w192, geom::counters::side_wmore};
+        const std::uint64_t pc_w0[11] = {
+            geom::counters::side_w64,           geom::counters::side_w128,
+            geom::counters::side_w192,          geom::counters::side_wmore,
+            geom::counters::side_disp1,         geom::counters::side_disp2,
+            geom::counters::side_disp3,         geom::counters::side_disp4,
+            geom::counters::side_mul_now,       geom::counters::side_mul_e2,
+            geom::counters::side_disp_limbreads};
         struct PredGuard {
             BoolStats& s;
             std::uint64_t s0, i0;
@@ -542,6 +554,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 s.side_w192_arrange += geom::counters::side_w192 - w0[2];
                 s.side_wmore_arrange += geom::counters::side_wmore - w0[3];
                 s.side_wmax = std::max(s.side_wmax, geom::counters::side_wmax);
+                s.side_disp1 += geom::counters::side_disp1 - w0[4];
+                s.side_disp2 += geom::counters::side_disp2 - w0[5];
+                s.side_disp3 += geom::counters::side_disp3 - w0[6];
+                s.side_disp4 += geom::counters::side_disp4 - w0[7];
+                s.side_mul_now += geom::counters::side_mul_now - w0[8];
+                s.side_mul_e2 += geom::counters::side_mul_e2 - w0[9];
+                s.side_disp_limbreads += geom::counters::side_disp_limbreads - w0[10];
             }
         } pred_guard{st, pc_side0, pc_i30, pc_w0};
 #endif
@@ -1312,8 +1331,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #if defined(KRISITE_COUNT_PREDICATES)
         const std::uint64_t pc_side0 = geom::counters::side_calls;
         const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
-        const std::uint64_t pc_w0[4] = {geom::counters::side_w64, geom::counters::side_w128,
-                                        geom::counters::side_w192, geom::counters::side_wmore};
+        const std::uint64_t pc_w0[11] = {
+            geom::counters::side_w64,           geom::counters::side_w128,
+            geom::counters::side_w192,          geom::counters::side_wmore,
+            geom::counters::side_disp1,         geom::counters::side_disp2,
+            geom::counters::side_disp3,         geom::counters::side_disp4,
+            geom::counters::side_mul_now,       geom::counters::side_mul_e2,
+            geom::counters::side_disp_limbreads};
         struct PredGuard {
             BoolStats& s;
             std::uint64_t s0, i0;
@@ -1326,6 +1350,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 s.side_w192_classify += geom::counters::side_w192 - w0[2];
                 s.side_wmore_classify += geom::counters::side_wmore - w0[3];
                 s.side_wmax = std::max(s.side_wmax, geom::counters::side_wmax);
+                s.side_disp1 += geom::counters::side_disp1 - w0[4];
+                s.side_disp2 += geom::counters::side_disp2 - w0[5];
+                s.side_disp3 += geom::counters::side_disp3 - w0[6];
+                s.side_disp4 += geom::counters::side_disp4 - w0[7];
+                s.side_mul_now += geom::counters::side_mul_now - w0[8];
+                s.side_mul_e2 += geom::counters::side_mul_e2 - w0[9];
+                s.side_disp_limbreads += geom::counters::side_disp_limbreads - w0[10];
             }
         } pred_guard{st, pc_side0, pc_i30, pc_w0};
 #endif

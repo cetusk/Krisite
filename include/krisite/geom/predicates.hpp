@@ -185,6 +185,54 @@ namespace detail {
 ///
 /// **計測専用のビルドでしか存在しません。**
 /// **`CONTRACTS.md` §11「計測の費用を本番に持ち込むこと」の禁止に従います。**
+/// **符号付き固定幅整数の【有効なビット幅】**（符号ビットを含む最小の幅）。
+///
+/// **二の補数なので、上位の「符号の伸び」を読み飛ばします。**
+/// 正なら 0、負なら `~0` のリムを飛ばし、最初に違うリムで幅を決めます。
+/// **`neg()` を呼ばないので、最小値でも破綻しません**
+/// （`interior.hpp` の `approx` が踏んだ形を避けます）。
+/// **`Count` が真のときだけ、読んだリムを数えます。**
+///
+/// > **★ 二重に数えないための引数です**（2026-09-08 に踏みました）。
+/// > **見積もり用の `record_side_mul_cost` と、判定そのものの `side_dispatch_limbs` が
+/// > どちらもこの関数を呼ぶので、両方で数えると【判定の費用が 2 倍に見えます】。**
+/// > **数えるのは判定の側だけです。**
+template <std::size_t N, bool Count = false>
+inline std::size_t signed_bit_width(const arith::fixed_int<N>& v) noexcept {
+    const std::uint64_t sign = arith::is_negative(v) ? ~std::uint64_t{0} : std::uint64_t{0};
+    for (std::size_t i = N; i-- > 0;) {
+#if defined(KRISITE_COUNT_PREDICATES)
+        if constexpr (Count) ++counters::side_disp_limbreads;
+#endif
+        if (v[i] == sign) continue;
+        // このリムの中で、符号ビットと違う最上位のビットまでが有効。
+        const std::uint64_t x = v[i] ^ sign;
+        return 64 * i + static_cast<std::size_t>(std::bit_width(x)) + 1;  // +1 は符号ビット
+    }
+    return 1;  // 0 または -1
+}
+
+/// **E2 の判定**: オペランドの幅から、被符号値に必要なリム数を決める。
+///
+/// **積の幅は「両辺の幅の和」以下、4 項の和は「最大 + 2」以下です。**
+/// **どちらも上界なので、選んだリム数で必ず足ります**（同値な置き換え）。
+inline std::size_t side_dispatch_limbs(const PlaneD& pl, const HPointD& v) noexcept {
+    constexpr bool C = true;  // **判定の側だけが費用を数えます**
+    const std::size_t wa =
+        signed_bit_width<limbs::kNormal, C>(pl.a) + signed_bit_width<limbs::kHomoXyz, C>(v.x);
+    const std::size_t wb =
+        signed_bit_width<limbs::kNormal, C>(pl.b) + signed_bit_width<limbs::kHomoXyz, C>(v.y);
+    const std::size_t wc =
+        signed_bit_width<limbs::kNormal, C>(pl.c) + signed_bit_width<limbs::kHomoXyz, C>(v.z);
+    const std::size_t wd =
+        signed_bit_width<limbs::kOffset, C>(pl.d) + signed_bit_width<limbs::kHomoW, C>(v.w);
+    std::size_t w = wa;
+    if (wb > w) w = wb;
+    if (wc > w) w = wc;
+    if (wd > w) w = wd;
+    return (w + 2 + 63) / 64;
+}
+
 template <std::size_t N>
 inline void record_side_width(const arith::fixed_int<N>& v) noexcept {
     const auto a = arith::is_negative(v) ? arith::neg(v) : v;
@@ -207,6 +255,46 @@ inline void record_side_width(const arith::fixed_int<N>& v) noexcept {
     if (w > counters::side_wmax) counters::side_wmax = w;
 }
 
+/// **実際に使っているリム数**（`signed_bit_width` から）。
+template <std::size_t N>
+inline std::size_t used_limbs(const arith::fixed_int<N>& v) noexcept {
+    return (signed_bit_width(v) + 63) / 64;
+}
+
+/// **見積もり用**: いまの費用と E2 の費用を、リム乗算の回数で数える。
+///
+/// **`arith::mul` は筆算なので費用は $N \times M$ に比例します**（`ops.hpp`）。
+/// **いま**は型のリム数、**E2** は実際に使っているリム数で積を取ります。
+inline void record_side_mul_cost(const PlaneD& pl, const HPointD& v) noexcept {
+    constexpr std::size_t Ln = limbs::kNormal, Ld = limbs::kOffset;
+    constexpr std::size_t Lx = limbs::kHomoXyz, Lw = limbs::kHomoW;
+    counters::side_mul_now += 3 * Ln * Lx + Ld * Lw;
+    const std::size_t ua = used_limbs(pl.a), ub = used_limbs(pl.b), uc = used_limbs(pl.c);
+    const std::size_t ud = used_limbs(pl.d);
+    const std::size_t ux = used_limbs(v.x), uy = used_limbs(v.y), uz = used_limbs(v.z);
+    const std::size_t uw = used_limbs(v.w);
+    counters::side_mul_e2 += ua * ux + ub * uy + uc * uz + ud * uw;
+}
+
+/// **E2 の判定が選ぶリム数を数える**（まだ分岐はしません。測るだけ）。
+inline void record_side_dispatch(const PlaneD& pl, const HPointD& v) noexcept {
+    switch (side_dispatch_limbs(pl, v)) {
+        case 0:
+        case 1:
+            ++counters::side_disp1;
+            break;
+        case 2:
+            ++counters::side_disp2;
+            break;
+        case 3:
+            ++counters::side_disp3;
+            break;
+        default:
+            ++counters::side_disp4;
+            break;
+    }
+}
+
 }  // namespace detail
 #endif
 
@@ -216,6 +304,8 @@ inline int side(const PlaneD& pl, const HPointD& v) noexcept {
     const auto val = side_value(pl, v);
 #if defined(KRISITE_COUNT_PREDICATES)
     detail::record_side_width(val);
+    detail::record_side_dispatch(pl, v);
+    detail::record_side_mul_cost(pl, v);
 #endif
     return arith::sign(v.w) * arith::sign(val);
 }

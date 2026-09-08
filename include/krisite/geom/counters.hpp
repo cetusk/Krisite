@@ -46,6 +46,35 @@ inline thread_local std::uint64_t side_wmore = 0;
 /// **観測した最大幅**（上界と並べるために要ります。張り付いていれば案 E は不成立）。
 inline thread_local std::uint64_t side_wmax = 0;
 
+// ---- ★ E2 の判定が【選ぶ】リム数（`SPEC-phase5.md` §5.10.10）--------------------
+//
+// **§21.4 は「被符号値の実際の幅」を測りました。それは E1（計算した後で見る）の値です。**
+// **E2 はオペランドの幅から積の上界をその場で決めるので、
+// 【判定が選ぶリム数】は必ずそれ以上になります。**
+//
+// **両方を並べないと、判定がどれだけ保守的かが分かりません。**
+inline thread_local std::uint64_t side_disp1 = 0;
+inline thread_local std::uint64_t side_disp2 = 0;
+inline thread_local std::uint64_t side_disp3 = 0;
+inline thread_local std::uint64_t side_disp4 = 0;
+
+// ---- ★ 見積もりのための「リム乗算の回数」------------------------------------
+//
+// **`arith::mul` は筆算なので、費用は `N × M`（リム乗算の回数）に比例します**
+// （`ops.hpp` の 137〜151 行）。**時間を測る前に、演算回数で見積もりを出すために数えます。**
+//
+//   `side_mul_now`  いまの費用（**型の**リム数の積の和）
+//   `side_mul_e2`   E2 の費用（**実際に使っている**リム数の積の和）
+//
+// **比が、乗算の仕事がどれだけ減るかの見積もりです。**
+inline thread_local std::uint64_t side_mul_now = 0;
+inline thread_local std::uint64_t side_mul_e2 = 0;
+/// **判定そのものの費用**（`used_limbs` が読んだリムの数）。
+///
+/// **`CLAUDE.md`「前判定は、置き換える仕事より安くなければ意味がありません」。**
+/// **削減する乗算の数と、この数を並べないと見積もりになりません。**
+inline thread_local std::uint64_t side_disp_limbreads = 0;
+
 inline void reset() noexcept {
     side_calls = 0;
     intersect3_calls = 0;
@@ -54,6 +83,13 @@ inline void reset() noexcept {
     side_w192 = 0;
     side_wmore = 0;
     side_wmax = 0;
+    side_disp1 = 0;
+    side_disp2 = 0;
+    side_disp3 = 0;
+    side_disp4 = 0;
+    side_mul_now = 0;
+    side_mul_e2 = 0;
+    side_disp_limbreads = 0;
 }
 
 }  // namespace counters

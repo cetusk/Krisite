@@ -249,6 +249,13 @@ struct BoolStats {
     std::uint64_t side_w192_classify = 0, side_wmore_classify = 0;
     /// **観測した最大幅**（上界 `bits::kSide` と並べるために要ります）。
     std::uint64_t side_wmax = 0;
+    /// **★ E2 の判定が選ぶリム数**（1 / 2 / 3 / 4）。段は分けず、全体で数えます。
+    /// **被符号値の実際の幅（上の 4 区分）と並べると、判定の保守性が分かります。**
+    std::uint64_t side_disp1 = 0, side_disp2 = 0, side_disp3 = 0, side_disp4 = 0;
+    /// **★ 見積もり用のリム乗算の回数**（いま / E2）。**比が乗算の削減の見積もりです。**
+    std::uint64_t side_mul_now = 0, side_mul_e2 = 0;
+    /// **判定が読んだリムの数**（前判定の費用）。
+    std::uint64_t side_disp_limbreads = 0;
 
     /// §2.3 の絞り込み（SPEC-phase2）。
     ///

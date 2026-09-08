@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <string>
 #include <utility>
 #include <vector>
@@ -79,16 +80,27 @@ struct Row {
     std::string name;
     std::size_t in_polys = 0;
     csg::BoolStats st;
+    /// **★ 見積もりの分母**（`SPEC-phase5.md` §5.10.10）。
+    ///
+    /// **`side` が中核に占める割合を出すには、中核の【CPU 時間】が要ります。**
+    /// **壁時計では、スレッド数で割られた値と `side` の CPU 時間を比べることになります。**
+    double wall_s = 0.0, cpu_s = 0.0;
 };
 
 std::vector<Row> g_rows;
+/// **並列効率を出すためのスレッド数**（`print_rows` から見えるように保持します）。
+unsigned g_threads = 1;
 
 void run_stage(const char* name, const csg::PolySoup& X, const csg::PolySoup& Y, csg::BoolOp op,
                const csg::BoolOptions& o, csg::PolySoup* out) {
     Row r;
     r.name = name;
     r.in_polys = X.polys.size() + Y.polys.size();
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::clock_t c0 = std::clock();
     const csg::PolySoup s = csg::boolean(X, Y, op, o, &r.st);
+    r.cpu_s = static_cast<double>(std::clock() - c0) / CLOCKS_PER_SEC;
+    r.wall_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     g_rows.push_back(r);
     if (out != nullptr) *out = s;
 }
@@ -233,16 +245,75 @@ void print_rows() {
         }
     }
 
+    // ---- ★★ E2 の判定が【選ぶ】リム数（実際の幅と並べます）--------------------
+    if (g_rows[0].st.side_disp1 + g_rows[0].st.side_disp2 + g_rows[0].st.side_disp3 +
+            g_rows[0].st.side_disp4 >
+        0) {
+        std::printf("\n| 段 | 判定の対象 | **1 リム** | **2 リム** | **3 リム** | **4 リム** |\n");
+        std::printf("|---|---:|---:|---:|---:|---:|\n");
+        for (const Row& r : g_rows) {
+            const double t = static_cast<double>(r.st.side_disp1 + r.st.side_disp2 +
+                                                 r.st.side_disp3 + r.st.side_disp4);
+            std::printf("| %s | %.0f | **%.1f%%** | **%.1f%%** | **%.1f%%** | **%.1f%%** |\n",
+                        r.name.c_str(), t, t == 0 ? 0.0 : 100.0 * (double)r.st.side_disp1 / t,
+                        t == 0 ? 0.0 : 100.0 * (double)r.st.side_disp2 / t,
+                        t == 0 ? 0.0 : 100.0 * (double)r.st.side_disp3 / t,
+                        t == 0 ? 0.0 : 100.0 * (double)r.st.side_disp4 / t);
+        }
+    }
+
+    // ---- ★★ 見積もり: リム乗算の回数（時間を測る前に出します）------------------
+    if (g_rows[0].st.side_mul_now > 0) {
+        std::printf(
+            "\n| 段 | `side` | いまのリム乗算 | **E2 のリム乗算** | **比** | "
+            "**判定が読むリム** | /呼び出し |\n");
+        std::printf("|---|---:|---:|---:|---:|---:|---:|\n");
+        for (const Row& r : g_rows) {
+            const std::uint64_t calls =
+                r.st.side_disp1 + r.st.side_disp2 + r.st.side_disp3 + r.st.side_disp4;
+            std::printf("| %s | %llu | %llu | %llu | **%.2f 倍** | %llu | **%.1f** |\n",
+                        r.name.c_str(), static_cast<unsigned long long>(calls),
+                        static_cast<unsigned long long>(r.st.side_mul_now),
+                        static_cast<unsigned long long>(r.st.side_mul_e2),
+                        r.st.side_mul_e2 == 0 ? 0.0
+                                              : static_cast<double>(r.st.side_mul_now) /
+                                                    static_cast<double>(r.st.side_mul_e2),
+                        static_cast<unsigned long long>(r.st.side_disp_limbreads),
+                        calls == 0 ? 0.0
+                                   : static_cast<double>(r.st.side_disp_limbreads) /
+                                         static_cast<double>(calls));
+        }
+    }
+
+    // ---- ★★ 見積もりの分母: 中核の CPU 時間と、`side` が占める割合 --------------
+    //
+    // **`side` の単価は `BENCH.md` の 7.80 ns（b=21、4 リム）を使います。**
+    // **これは【別の測定】なので、由来は「推測」です**（`.claude/rules/provenance.md`）。
+    std::printf(
+        "\n| 段 | 壁時計 | **CPU 時間** | 並列効率 | `side` の CPU（7.80 ns/回） | "
+        "**中核に占める割合** |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|\n");
+    for (const Row& r : g_rows) {
+        const std::uint64_t calls =
+            r.st.side_disp1 + r.st.side_disp2 + r.st.side_disp3 + r.st.side_disp4;
+        const double side_s = static_cast<double>(calls) * 7.80e-9;
+        std::printf("| %s | %.3f s | **%.3f s** | %.2f | %.3f s | **%.1f%%** |\n", r.name.c_str(),
+                    r.wall_s, r.cpu_s,
+                    r.wall_s == 0.0 ? 0.0 : r.cpu_s / (r.wall_s * static_cast<double>(g_threads)),
+                    side_s, r.cpu_s == 0.0 ? 0.0 : 100.0 * side_s / r.cpu_s);
+    }
+
     // ---- ★ 分類の費用（依頼 2 の材料）--------------------------------------
     //
     // **参照点の伝播で置き換えたいのは、この「領域ごとの大域レイキャスト」です。**
     // **局所トレースの費用の上限は「葉の中の多角形数」なので、両方を並べます。**
     std::printf(
-        "\n| 段 | 領域（レイ） | 隅のレイ | 三角形検査 | /レイ | 葉あたり多角形 | 分類の割合 |\n");
-    std::printf("|---|---:|---:|---:|---:|---:|---:|\n");
+        "\n| 段 | 領域（レイ） | 隅のレイ | 三角形検査 | /レイ | 葉あたり多角形 | "
+        "**中核の秒** | 分類の割合 |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|---:|---:|\n");
     for (const Row& r : g_rows) {
         const double total = r.st.ms_prepare + r.st.ms_arrange + r.st.ms_stitch + r.st.ms_classify;
-        std::printf("| %s | %zu | %zu | %zu | %.1f | %.1f | %.1f%% |\n", r.name.c_str(),
+        std::printf("| %s | %zu | %zu | %zu | %.1f | %.1f | **%.3f** | %.1f%% |\n", r.name.c_str(),
                     r.st.raycasts, r.st.early_out_raycasts, r.st.ray_tri_tests,
                     r.st.raycasts == 0 ? 0.0
                                        : static_cast<double>(r.st.ray_tri_tests) /
@@ -250,7 +321,7 @@ void print_rows() {
                     r.st.leaf_nonempty == 0 ? 0.0
                                             : static_cast<double>(r.st.raw_fragments) /
                                                   static_cast<double>(r.st.leaf_nonempty),
-                    total == 0 ? 0.0 : 100.0 * r.st.ms_classify / total);
+                    total / 1000.0, total == 0 ? 0.0 : 100.0 * r.st.ms_classify / total);
     }
 
     // **★ 機構の候補を切り分けるための量**（§15.2）。
@@ -335,6 +406,7 @@ int main(int argc, char** argv) {
                     static_cast<long long>(sd.second));
     }
 
+    g_threads = nthreads;
     par::ThreadPool pool(nthreads);
     csg::BoolOptions o;
     o.depth = depth;
