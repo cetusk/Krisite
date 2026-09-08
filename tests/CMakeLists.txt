@@ -48,6 +48,10 @@ krisite_add_test(degenerate     geom/test_degenerate.cpp)
 krisite_add_test(plane_order    geom/test_plane_order.cpp)
 krisite_add_test(plane_box      geom/test_plane_box.cpp)
 krisite_add_test(topology      mesh/test_topology.cpp)
+# **分裂の検証（増分計算）が従来経路と一致すること**（`IMPL-v2.md` §2）。
+# **コーパスは「偽を返す側」を一度も踏まない**ので、機会を作る入力をここに置く。
+# コーパスではなくテスト専用（`SPEC-phase4.md` §7.3 と同じ形）
+krisite_add_test(split_verify  mesh/test_split_verify.cpp)
 krisite_add_test(uniform_grid  octree/test_uniform_grid.cpp)
 krisite_add_test(faces         csg/test_faces.cpp)
 krisite_add_test(fragment      csg/test_fragment.cpp)

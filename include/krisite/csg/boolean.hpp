@@ -1141,8 +1141,16 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         const std::vector<int>* owner_ptr = nullptr;
         (void)tri_owner;
 #endif
-        out.triangles = mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split,
-                                             owner_ptr, &tri_from_early);
+        // **二項経路は正解器なので、検算を常に有効にします**（§5.5）。
+        //
+        // **スープ経路（`to_mesh`）は既定で切ります** — 純粋な診断を本番の経路に
+        // 置かないため（`HANDOVER.md` §5.1）。**こちらはコーパスでしか使わないので、
+        // 費用より検出力を取ります。** `CLAUDE.md`「正解器は被検体と別経路で書く」。
+        mesh::SplitOptions sopt;
+        sopt.verify_delta = true;
+        out.triangles =
+            mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split, owner_ptr,
+                                 &tri_from_early, nullptr, sopt);
         for (std::uint32_t o : origin) out.vertices.push_back(out.vertices[o]);
     }
 

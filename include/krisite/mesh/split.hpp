@@ -90,6 +90,23 @@ struct SplitStats {
     /// **分裂しても多様体にならなかった配置の数**（§5.1.2.1）。
     /// **radial sort を実装する必要性の判断材料です。** 0 でなければ報告すること。
     std::size_t unresolved = 0;
+    /// **事後の検査（分裂の【後】に非多様体だった）で `unresolved` に加えた回数**。
+    ///
+    /// **`unresolved` は 2 箇所で加算されます** — 対応付けできなかった辺（`unsplit_edges`）と、
+    /// **この事後の検査**です。**分けて数えないと、機構が働いたかが分かりません**
+    /// （`SPEC-phase5.md` §1.5.0.1「解けなかった数だけでは、機構が働いたか分かりません」）。
+    ///
+    /// **`IMPL-phase5.md` §98 の残件は、こちらで数えられたものです。**
+    std::size_t unresolved_post = 0;
+    /// **増分計算が前提を検査して従来経路（`check_topology`）に落ちた回数**。
+    ///
+    /// 増分計算は「出力に退化三角形（同じ頂点を 2 度使う三角形）が無い」ことを
+    /// 前提にします（下記 `split_topology` の同値性の論証）。**前提は実行時に検査し、
+    /// 破れたらその場で正解器を呼びます。**
+    ///
+    /// **一般解（`SPEC-phase2.md` §2.4.4 (2)）が入っている限り 0 のはずです。**
+    /// 非零になったら、**上流で退化三角形が出ています。**
+    std::size_t verify_fallback = 0;
     /// **対応付けができず、分裂させずに残した辺の数**（`SPEC-phase2.md` §5.1.2.2）。
     ///
     /// **拒否でも失敗でもなく、契約に適合した出力です。** 次数 4 のまま残すので
@@ -190,7 +207,6 @@ inline bool radial_pair(const TriList& tris, const RadialGeom& g, VertexId u, Ve
     const auto& N = *g.normal;
 
     // ---- 1. 方向 d（平行でない 2 枚を探す）----
-    geom::PlaneD pa{}, pb{};
     arith::vec3<geom::limbs::kRadialDir> d{};
     bool have = false;
     for (std::size_t i = 0; i < n && !have; ++i) {
@@ -297,6 +313,176 @@ inline bool radial_pair(const TriList& tris, const RadialGeom& g, VertexId u, Ve
     return true;
 }
 
+/// **分裂の前後の位相のうち、検算に要るものだけ**（`split_topology` の戻り値）。
+struct SplitTopo {
+    bool edge_manifold = true;    ///< 出力のすべての無向辺がちょうど 2 面に接する
+    bool vertex_manifold = true;  ///< 出力のすべての頂点まわりが単一の扇
+    std::size_t v_before = 0;     ///< 分裂の前に参照されている頂点数
+    std::size_t v_after = 0;      ///< 分裂の後に参照されている頂点数
+    std::size_t e_before = 0;     ///< 分裂の前の無向辺数
+    std::size_t e_after = 0;      ///< 分裂の後の無向辺数
+    /// **前提（出力に退化三角形が無い）が破れた。** 呼び出し側は正解器に落とすこと
+    bool degenerate = false;
+};
+
+/// **分裂の前後の位相を、`check_topology` を呼ばずに求める**（同値な増分計算）。
+///
+/// **`check_topology` を 2 回呼ぶ従来の経路と同じ答えを返します。** 置き換えの根拠は
+/// 次の 4 点です（`IMPL-v2.md` §2）。
+///
+/// **第一に、`out` は `tris` の複製で、分裂した頂点の ID だけが書き換わります。**
+/// 新しい ID は既存 ID と衝突しないので（`next_id` は `vertex_count` から始まる）、
+/// **相異なる元の辺が 1 本に併合されることはありません。** したがって出力の辺は
+/// **元の辺ごとに分かれて**でき、元の辺 1 本の中で数え直せば足ります。
+///
+/// **第二に、分裂した頂点に接しない辺は、次数も向きも変わりません。**
+///
+/// **第三に、「すべての辺が次数 2 で、各辺を 2 枚が逆向きに辿る」なら、
+/// 各頂点のリンクは閉路の直和になり、閉路の本数はその頂点に接する三角形の
+/// 連結成分の数に等しくなります。** よって `vertex_manifold` は
+/// **「頂点ごとに成分が 1 個か」**と同値です。逆に向きが破れていれば、その頂点で
+/// リンクの出次数か入次数が 2 になるので、`check_topology` も
+/// `vertex_manifold = false` を返します。**片側だけが真になることはありません。**
+///
+/// **第四に、`check_topology` の `v` は「参照されている頂点 ID の個数」、
+/// `e` は「無向辺の本数」**なので、$\Delta V$ / $\Delta E$ も同じ枠組みで出せます。
+/// $F$ は不変なので $\Delta\chi = \Delta V - \Delta E$ です。
+///
+/// > **★ 第三の論証は「退化三角形が無い」ことを前提にします。** 同じ頂点を 2 度使う
+/// > 三角形があるとリンクの議論が崩れます。**前提は実行時に検査し**（`degenerate`）、
+/// > 破れたら呼び出し側が従来の経路に落ちます。**保守的に倒しているのではなく、
+/// > 同値性の前提が成り立たない場合だけ正解器を呼ぶ**という形です。
+/// > **一般解（`SPEC-phase2.md` §2.4.4 (2)）が入っている限り、ここは踏みません。**
+///
+/// **費用**: 新しい大域の `std::map` を作りません。`edge_tris` を 1 回走査し、
+/// 三角形の角（$3F$ 個）の素集合を 1 本作るだけです。
+template <class EdgeMap>
+inline SplitTopo split_topology(const std::vector<Tri>& tris, const std::vector<Tri>& out,
+                                const EdgeMap& edge_tris, std::size_t id_count) {
+    SplitTopo r;
+    if (tris.empty()) return r;
+
+    // ---- 0. 前提の検査: 出力に退化三角形が無いこと ----
+    for (const Tri& t : out) {
+        if (t[0] == t[1] || t[1] == t[2] || t[0] == t[2]) {
+            r.degenerate = true;
+            return r;
+        }
+    }
+
+    // ---- 1. 参照されている頂点の数（`check_topology` の `v` と同じ定義）----
+    {
+        std::vector<char> seen(id_count, 0);
+        for (const Tri& t : tris) {
+            for (int k = 0; k < 3; ++k) seen[t[static_cast<std::size_t>(k)]] = 1;
+        }
+        for (char c : seen) r.v_before += (c != 0) ? 1u : 0u;
+        std::fill(seen.begin(), seen.end(), 0);
+        for (const Tri& t : out) {
+            for (int k = 0; k < 3; ++k) seen[t[static_cast<std::size_t>(k)]] = 1;
+        }
+        for (char c : seen) r.v_after += (c != 0) ? 1u : 0u;
+    }
+    r.e_before = edge_tris.size();
+
+    // ---- 2. 出力側の辺を、元の辺ごとに数え直す ----
+    //
+    // **三角形の角の素集合**を同時に作ります。スロットは `3t + k`（`out[t][k]` の角）。
+    // 次数 2 の辺は、その両端で 2 枚の角を繋ぎます。
+    std::vector<std::uint32_t> parent(3 * out.size());
+    for (std::uint32_t i = 0; i < parent.size(); ++i) parent[i] = i;
+    const auto find = [&parent](std::uint32_t x) {
+        while (parent[x] != x) x = parent[x] = parent[parent[x]];
+        return x;
+    };
+    const auto unite = [&parent, &find](std::uint32_t a, std::uint32_t b) {
+        a = find(a);
+        b = find(b);
+        if (a != b) parent[a] = b;
+    };
+
+    /// 元の辺 1 本の中の、出力側の辺 1 本。
+    struct Grp {
+        VertexId u = 0, w = 0;         ///< 出力側の端点（`u < w` に正準化）
+        std::uint32_t slot_u = 0;      ///< 最初の出現の、`u` 側の角
+        std::uint32_t slot_w = 0;      ///< 同じ出現の、`w` 側の角
+        std::size_t n = 0;             ///< 接する面数
+        int fwd = 0, bwd = 0;          ///< `#(u,w)` と `#(w,u)`
+    };
+    std::vector<Grp> g;
+    for (const auto& kv : edge_tris) {
+        g.clear();
+        // **同じ三角形が 1 本の辺に 2 度現れるのは退化三角形のときだけ**で、
+        // それは手順 0 が弾いています。**角の添字は 1 つに決まります。**
+        for (std::size_t t : kv.second) {
+            int k = -1;
+            for (int c = 0; c < 3; ++c) {
+                if (detail::undirected(tris[t][static_cast<std::size_t>(c)],
+                                       tris[t][static_cast<std::size_t>((c + 1) % 3)]) ==
+                    kv.first) {
+                    k = c;
+                    break;
+                }
+            }
+            if (k < 0) continue;  // 起こりません（`edge_tris` はこの辺から作られている）
+            const auto ka = static_cast<std::size_t>(k);
+            const auto kb = static_cast<std::size_t>((k + 1) % 3);
+            const VertexId a = out[t][ka], b = out[t][kb];
+            const auto key = detail::undirected(a, b);
+            const auto slot_a = static_cast<std::uint32_t>(3 * t + ka);
+            const auto slot_b = static_cast<std::uint32_t>(3 * t + kb);
+            const std::uint32_t su = (a == key.first) ? slot_a : slot_b;
+            const std::uint32_t sw = (a == key.first) ? slot_b : slot_a;
+            std::size_t gi = g.size();
+            for (std::size_t i = 0; i < g.size(); ++i) {
+                if (g[i].u == key.first && g[i].w == key.second) {
+                    gi = i;
+                    break;
+                }
+            }
+            if (gi == g.size()) {
+                g.push_back(Grp{key.first, key.second, su, sw, 0, 0, 0});
+            } else {
+                unite(g[gi].slot_u, su);
+                unite(g[gi].slot_w, sw);
+            }
+            ++g[gi].n;
+            if (a < b) {
+                ++g[gi].fwd;
+            } else {
+                ++g[gi].bwd;
+            }
+        }
+        r.e_after += g.size();
+        for (const Grp& q : g) {
+            if (q.n != 2) r.edge_manifold = false;
+            // **向きが破れていれば、その頂点でリンクの出次数か入次数が 2 になります。**
+            // `check_topology` も `vertex_manifold = false` を返します（上記の第三）
+            if (q.fwd != q.bwd) r.vertex_manifold = false;
+        }
+    }
+
+    // ---- 3. 頂点まわりの成分が 1 個か（`vertex_manifold` と同値。上記の第三）----
+    if (r.edge_manifold && r.vertex_manifold) {
+        constexpr std::uint32_t kNone = 0xFFFFFFFFu;
+        std::vector<std::uint32_t> root_of(id_count, kNone);
+        for (std::size_t t = 0; t < out.size() && r.vertex_manifold; ++t) {
+            for (int k = 0; k < 3; ++k) {
+                const VertexId x = out[t][static_cast<std::size_t>(k)];
+                const std::uint32_t rt = find(static_cast<std::uint32_t>(3 * t) +
+                                              static_cast<std::uint32_t>(k));
+                if (root_of[x] == kNone) {
+                    root_of[x] = rt;
+                } else if (root_of[x] != rt) {
+                    r.vertex_manifold = false;
+                    break;
+                }
+            }
+        }
+    }
+    return r;
+}
+
 }  // namespace detail
 
 struct SplitOptions {
@@ -308,6 +494,30 @@ struct SplitOptions {
     ///
     /// **幾何（`RadialGeom`）が渡されていなければ、真でも何もしません。**
     bool radial_sort = true;
+    /// **分裂後の多様体性を検査する**（`unresolved` の事後の加算に要る）。
+    ///
+    /// **`check_topology` を 1 回呼びます。** 出力が大きいと高くつきます。
+    bool verify_manifold = true;
+    /// **§5.5 の予測との突き合わせ**（`actual_delta_*`）。**純粋な診断です。**
+    ///
+    /// **`verify_manifold` が偽なら、これも効きません**（同じ増分計算から出るため）。
+    ///
+    /// > **既定は偽です**（`HANDOVER.md` §5.1 の判断）。**計測の費用を本番の経路に
+    /// > 置かない**という原則の側です（`CLAUDE.md`）。
+    /// > **`SPEC-phase5.md` §3.2 は CP1〜CP3 で ON を要求している**ので、
+    /// > **実データの駆動プログラムは明示的に真にしてください。**
+    /// > 増分計算なので、真にしても費用はほとんど増えません。
+    bool verify_delta = false;
+    /// **検証に従来の経路（`check_topology` を 2 回）を使う**（**正解器**）。
+    ///
+    /// 既定の経路は `detail::split_topology`（同値な増分計算）です。
+    /// **この旗はそれを完全に外し、置き換える前の実装に戻します。**
+    ///
+    /// > **`CLAUDE.md`「機構を追加したら、それを外す経路も用意してください」。**
+    /// > そして**「正解器は被検体と別経路で書く」** — 従来経路は大域の `std::map` で
+    /// > 辺と頂点リンクを作る、まったく別の実装です。
+    /// > **両者が一致することを `test_split_semantics.cpp` が検査します。**
+    bool verify_naive = false;
 
     /// **扇の計算を頂点の逆順で回す**（`SPEC-phase4.md` §7.5。仕様担当の承認済み）。
     ///
@@ -672,17 +882,71 @@ inline std::vector<Tri> split_contacts(
     auto t_verify = clk::now();
 
     // ---- §5.5 の検算: 予測と実測を突き合わせる ----
-    const TopologyReport before = check_topology(tris);
-    const TopologyReport after = check_topology(out);
-    st.actual_delta_v = after.v - before.v;
-    st.actual_delta_e = after.e - before.e;
-    st.actual_delta_chi = after.chi - before.chi;
-    // **面は増えません**（§5.1.3）。境界の点集合は変わらず、組合せ的な表現だけが変わります
-    KRISITE_CHECK(after.f == before.f, "split_contacts: 面が増減した（§5.1.3 に反する）");
-    // **分裂しても多様体にならない配置は停止**（§5.1.2.1）。
-    // 推測して片方に寄せると §5.5.1 の C 不変性で検出はされますが、原因の特定に手間が
-    // かかります。**到達した配置を記録してください**（radial sort の必要性の判断材料）
-    if (!before.empty && !(after.edge_manifold && after.vertex_manifold)) ++st.unresolved;
+    //
+    // **★ この段は「仕事ではなく検査」なのに、既定で本番に乗っていました。**
+    // **実測で `split_contacts` の 71〜75%、出口全体の 43〜77% の大半を占めます**
+    // （`HANDOVER.md` §4.3。**`IMPL-phase5.md` §99 への参照は空振りでした** —
+    // その節は書かれていません。`IMPL-v2.md` §2 に測り直した数字があります）。`CLAUDE.md`「計測の機構にも外す経路を用意してください。
+    // **計測の費用を本番に持ち込まないこと**」の 2 度目の実例です。
+    //
+    // **3 段に分けました。**
+    //
+    //   (1) 面が増減しないこと      **O(1)**。`out` は `tris` から添字を書き換えるだけ
+    //   (2) 分裂後の多様体性        **`unresolved` に要る**
+    //   (3) 予測との突き合わせ      **純粋な診断**
+    //
+    // **(1) は常に、(2) は `verify_manifold`、(3) は `verify_delta` で制御します。**
+    //
+    // **★ (2)(3) の中身は同値な増分計算に置き換えました**（`detail::split_topology`）。
+    // **検査を弱めていません** — 従来の `check_topology` 2 回と同じ答えを返します。
+    // 論証はその関数の説明、比較の検査は `test_split_semantics.cpp`。
+    // **`verify_naive` で従来経路（正解器）に戻せます。**
+
+    // (1) **面は増えません**（§5.1.3）。境界の点集合は変わらず、組合せ的な表現だけが
+    // 変わります。**`out` は `tris` の複製から添字を書き換えるだけなので O(1) で見られます。**
+    KRISITE_CHECK(out.size() == tris.size(), "split_contacts: 面が増減した（§5.1.3 に反する）");
+
+    if (sopt.verify_manifold) {
+        bool ok_manifold = true;
+        bool have_delta = false;
+        std::size_t dv = 0, de = 0;
+        if (!sopt.verify_naive) {
+            const detail::SplitTopo tp = detail::split_topology(tris, out, edge_tris, next_id);
+            if (tp.degenerate) {
+                // **同値性の前提が破れました**（出力に退化三角形がある）。
+                // **その場だけ正解器を呼びます。** 一般解が入っている限り踏みません
+                ++st.verify_fallback;
+            } else {
+                ok_manifold = tp.edge_manifold && tp.vertex_manifold;
+                dv = tp.v_after - tp.v_before;
+                de = tp.e_after - tp.e_before;
+                have_delta = true;
+            }
+        }
+        if (!have_delta) {
+            const TopologyReport after = check_topology(out);
+            ok_manifold = after.edge_manifold && after.vertex_manifold;
+            if (sopt.verify_delta) {
+                const TopologyReport before = check_topology(tris);
+                dv = after.v - before.v;
+                de = after.e - before.e;
+            }
+        }
+        // (2) **分裂しても多様体にならない配置を記録**（§5.1.2.1）。
+        // 推測して片方に寄せると §5.5.1 の C 不変性で検出はされますが、原因の特定に
+        // 手間がかかります。**到達した配置を記録してください**
+        if (!tris.empty() && !ok_manifold) {
+            ++st.unresolved;
+            ++st.unresolved_post;
+        }
+        if (sopt.verify_delta) {
+            // (3) **純粋な診断**（§5.5 の予測との突き合わせ）。
+            // **$F$ は不変なので $\Delta\chi = \Delta V - \Delta E$ です**（§5.5 の恒等式）
+            st.actual_delta_v = dv;
+            st.actual_delta_e = de;
+            st.actual_delta_chi = static_cast<long long>(dv) - static_cast<long long>(de);
+        }
+    }
 
     st.ms_verify = ms_since(t_verify);
     if (origin != nullptr) *origin = std::move(new_origin);
