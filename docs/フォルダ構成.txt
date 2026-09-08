@@ -1,0 +1,130 @@
+Krisite — フォルダ構成（2026-09-07 更新。実装担当 v2）
+
+  旧版は docs/old/フォルダ構成.2026-09-07-引継ぎ時.txt に退避してあります。
+  下の「旧版との差分」に、何が変わったかを書きました。
+
+================================================================================
+ 追跡されているもの（132 ファイル）
+================================================================================
+
+Krisite/
+├── CMakeLists.txt          ビルド定義（オプションは CLAUDE.md「ビルドとコマンド」）
+├── LICENSE                 MIT
+├── README.md               日本語
+├── README_en.md            英語
+├── THIRD_PARTY_LICENSES.md 第三者コンポーネントの扱い（GMP / Manifold の条件）
+├── .clang-format / .gitignore
+├── .github/workflows/      CI（ci.yml。CLAUDE.md「プラットフォーム検証は CI が正」）
+├── assets/                 ロゴ 5 ファイル（BRAND.md 含む）
+│
+├── include/krisite/        30 ヘッダ / 9,977 行
+│   ├── (直下 2)      config.hpp, krisite.hpp                     66 行
+│   ├── arith/   (3)  固定幅整数（fixed_int / ops / intrinsics）   614 行
+│   ├── geom/    (5)  点・平面・述語・ビット幅・計数器           1,409 行
+│   ├── mesh/    (4)  三角メッシュ・位相検査・接触の分裂・自己交差 1,753 行
+│   ├── octree/  (2)  適応分割・一様格子                            388 行
+│   ├── par/     (2)  スレッドプール・parallel_for                  250 行
+│   └── csg/    (12)  ブール演算の本体（中核と出口）              5,497 行
+│
+├── tests/                  61 ファイル
+│   ├── (直下 9)      CMakeLists.txt / corpus / test_util /
+│   │                 gmp_oracle / int128_oracle / perf_corpus /
+│   │                 volume_fp / volume_gmp / corpus_expect
+│   ├── arith/   (3)
+│   ├── geom/    (8)
+│   ├── mesh/    (2)  test_topology.cpp, test_split_verify.cpp ★新規
+│   ├── octree/  (1)
+│   ├── csg/    (29)
+│   └── thingi10k/ (10) 実データの駆動 ★ CMake に登録されていません（下記）
+│
+├── docs/                   25 ファイル（下表）
+└── bench/                  6 ファイル
+
+================================================================================
+ docs/ の中身 — 役割で分けて読んでください
+================================================================================
+
+  読む順序は CLAUDE.md「作業を始める前に読むもの」と HANDOVER.md §0 が正です。
+
+【引き継ぎ・索引】
+  HANDOVER.md                実装担当の交代時に最初に読む。現在地・記録の読み方
+  CONTRACTS.md               Phase 0〜4 で確定した契約を 1 枚に（訂正済みの内容だけ）
+  ROADMAP.md                 現在地。フェーズの状態の唯一の情報源
+  フォルダ構成.txt           本ファイル
+
+【仕様（仕様検討担当が更新）】
+  SPEC-phase0.md 〜 SPEC-phase5.md    6 ファイル。仕様が正
+  STYLE.md                            規約の細部
+
+【実装記録（実装担当が更新）】
+  IMPL-phase0.md 〜 IMPL-phase5.md    前任者（1 人目）の記録
+  IMPL-v2.md                          ★ 2 人目の記録（2026-09-07〜）
+
+【検討ログ — 「どの手法を選ぶか」】
+  DECISION-core-contract.md      Phase 3 の契約を選んだときの検討。検討の手本
+  LOG-phase3-design.md           Phase 3 の議論の経緯と訂正
+  LOG-phase5-checkpoints.md      Phase 5 のチェックポイントの経緯
+  DESIGN-phase5-hotspots.md      Phase 5 の性能の検討ログ
+
+【測定】
+  BENCH.md                   測定値
+  PERF.md                    性能の分析と規律
+
+【追跡外（.gitignore）】
+  docs/old/                  旧版の退避先
+  docs/refs/                 ★ 論文 PDF（EMBER / OEBSP / FARMA）。Git には含めない
+  docs/OPSEC.md
+  docs/PERF.md               計算時間の見積もり手法
+
+★ .claude/rules/            思考の手続きについての規則（3 文書）
+                            CLAUDE.md の「読む順序」の 00 番。**追跡外**
+                            README.md / provenance.md / deduction.md
+
+================================================================================
+ 追跡外のもの
+================================================================================
+
+  build/ build-b26/ build-dbg/ build-mut/ build-rel/   ビルド 5 種
+  data/thingi10k/                                      実データ 1,200 模型（356 MB）
+                                                       + 記録・ログ 37 ファイル
+  docs/old/ docs/refs/ docs/OPSEC.md
+  tools/
+  CLAUDE.md  claude_sandbox.bat  .claude/
+
+  ※ .claude/settings.json だけは追跡されています（deny の設定は共有するため）。
+
+  ★ .claude/rules/ の場所に注意してください。
+    .gitignore と CLAUDE.md は `rules/` と書いていますが、実体は .claude/rules/ です。
+    リポジトリ直下だと思って探すと見つかりません（実際に踏みました）。
+
+================================================================================
+ ★ 注意 — 構成から読み取れない 2 点
+================================================================================
+
+(1) tests/thingi10k/ は CMake に登録されていません。
+
+    ctest にも CI にも入りません。手でコンパイルして回します。
+
+      zigcxx -std=c++20 -O2 -g -Iinclude -Itests \
+        -DKRISITE_COORD_BITS=21 tests/thingi10k/<名前>.cpp -o build/<名前> -lpthread
+
+    既知の穴です（IMPL-phase5.md）。実データの駆動が壊れても CI は緑のままです。
+
+(2) 同じ名前の実行ファイルを 2 つ作らないでください。
+
+    コーパスのテスト（tests/csg/test_cp1.cpp → build/tests/cp1）と、
+    実データの駆動（tests/thingi10k/thingi_cp1.cpp）は別物です。
+    後者を cp1 という名前にすると「コーパスのテストを回して
+    実データの結果だと思う」形が起きます（CLAUDE.md の恒久ルール）。
+
+================================================================================
+ 旧版との差分（2026-09-07）
+================================================================================
+
+  ・README.en.md は削除されました（README_en.md との重複。日本語版のリンクも修正済み）
+  ・docs が 19 → 25 ファイル
+      新規: HANDOVER.md / CONTRACTS.md / LOG-phase5-checkpoints.md /
+            IMPL-v2.md / フォルダ構成.txt
+  ・tests に mesh/test_split_verify.cpp と thingi10k/exit_stages.cpp を追加
+  ・include の行数 9,722 → 9,977
+  ・旧版は「docs 19 ファイル」「tests 59 ファイル」と書いていました
