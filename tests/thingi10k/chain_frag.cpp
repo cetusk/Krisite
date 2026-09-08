@@ -101,6 +101,44 @@ void print_rows() {
                         ? 0.0
                         : static_cast<double>(r.st.fragments) / static_cast<double>(r.in_polys));
     }
+    // ---- ★ 到達可能性解析の機会（`SPEC-phase5.md` §5.10.8.4）------------------
+    //
+    // **「捨てられる葉が 0 なら、案 A を実装する意味がありません。」**
+    // **葉の数だけでなく $\sum P_\ell$ と $\sum P_\ell^2$ を見ます**
+    // （局所 BSP が $O(P_\ell^2)$ なので、後者が本当の効きです）。
+    std::printf(
+        "\n| 段 | 葉（非空） | 確定あり | **定値** | $\\sum P$ 三角形 | $\\sum P^2$ 三角形 | "
+        "$\\sum P$ 多角形 | $\\sum P^2$ 多角形 |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    for (const Row& r : g_rows) {
+        const auto pc = [](std::size_t a, std::size_t b) {
+            return b == 0 ? 0.0 : 100.0 * static_cast<double>(a) / static_cast<double>(b);
+        };
+        std::printf(
+            "| %s | %zu | %zu | **%zu（%.1f%%）** | %.1f%% | **%.1f%%** | %.1f%% | "
+            "**%.1f%%** |\n",
+            r.name.c_str(), r.st.leaf_nonempty, r.st.eo_forced_leaves, r.st.eo_const_leaves,
+            pc(r.st.eo_const_leaves, r.st.leaf_nonempty),
+            pc(r.st.eo_const_input, r.st.leaf_input_total),
+            pc(r.st.eo_const_input_sq, r.st.leaf_input_sq),
+            pc(r.st.eo_const_polys, r.st.leaf_poly_total),
+            pc(r.st.eo_const_poly_sq, r.st.leaf_poly_sq));
+    }
+    // **★ 代理ではなく、実際に省ける仕事**（`CLAUDE.md`「数えている量が費用の代理か」）。
+    std::printf(
+        "\n| 段 | 定値の葉の `bsp_cut_slots` | 全体 | **割合** | 定値の葉の断片 | 全体 | "
+        "**割合** |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|---:|\n");
+    for (const Row& r : g_rows) {
+        const auto pc = [](std::size_t a, std::size_t b) {
+            return b == 0 ? 0.0 : 100.0 * static_cast<double>(a) / static_cast<double>(b);
+        };
+        std::printf("| %s | %zu | %zu | **%.1f%%** | %zu | %zu | **%.1f%%** |\n", r.name.c_str(),
+                    r.st.eo_const_bsp_slots, r.st.bsp_cut_slots,
+                    pc(r.st.eo_const_bsp_slots, r.st.bsp_cut_slots), r.st.eo_const_frags,
+                    r.st.frag_edges_count, pc(r.st.eo_const_frags, r.st.frag_edges_count));
+    }
+
     // ---- ★ 分類の費用（依頼 2 の材料）--------------------------------------
     //
     // **参照点の伝播で置き換えたいのは、この「領域ごとの大域レイキャスト」です。**

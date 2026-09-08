@@ -122,6 +122,73 @@ struct Indicator {
         }
         return v.back() != 0;
     }
+
+    /// **3 値論理での抽象評価**（`SPEC-phase5.md` §5.10.8。EMBER §4.5.2）。
+    ///
+    /// **`known[i]` が真の source は `w[i]` の値で確定、偽の source は「未確定」**として
+    /// Kleene の 3 値論理で評価します。
+    ///
+    /// | 戻り値 | 意味 |
+    /// |---|---|
+    /// | `kAbsFalse` | **未確定の source をどう動かしても偽** |
+    /// | `kAbsTrue` | **同、真** |
+    /// | `kAbsUnknown` | 未確定の source に依存する |
+    ///
+    /// > **なぜこれで葉を捨てられるか。**
+    /// > 出力されるのは `in_front != in_back` の領域だけです。
+    /// > $w_{front}$ と $w_{back}$ が違うのは、**断片に載っている面の source** の成分だけで、
+    /// > その source は必ずそのセルに三角形を持ちます（＝ `known` が偽）。
+    /// > **確定した成分だけで値が決まるなら、表裏は必ず一致します。**
+    ///
+    /// **健全側に倒れます。** `kAbsUnknown` なら従来どおり処理します。
+    static constexpr int kAbsFalse = 0;
+    static constexpr int kAbsTrue = 1;
+    static constexpr int kAbsUnknown = 2;
+
+    int eval_abstract(const std::vector<std::int32_t>& w, const std::vector<char>& known) const {
+        KRISITE_CHECK(!nodes.empty(), "Indicator: 空の式");
+        KRISITE_CHECK(known.size() == w.size(), "eval_abstract: known と w の長さが違う");
+        std::vector<char> v(nodes.size(), static_cast<char>(kAbsUnknown));
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            const Node& n = nodes[i];
+            switch (n.kind) {
+                case Kind::Source:
+                    KRISITE_CHECK(n.src < w.size(), "Indicator: source の添字が範囲外");
+                    if (known[n.src] == 0) {
+                        v[i] = static_cast<char>(kAbsUnknown);
+                    } else {
+                        const bool in = legacy_nonzero_inside ? (w[n.src] != 0) : (w[n.src] > 0);
+                        v[i] = static_cast<char>(in ? kAbsTrue : kAbsFalse);
+                    }
+                    break;
+                case Kind::Not:
+                    v[i] = (v[n.a] == kAbsUnknown)
+                               ? static_cast<char>(kAbsUnknown)
+                               : static_cast<char>(v[n.a] == kAbsTrue ? kAbsFalse : kAbsTrue);
+                    break;
+                case Kind::And:
+                    // **短絡が効きます。** 片方が偽なら、もう片方が未確定でも偽です
+                    if (v[n.a] == kAbsFalse || v[n.b] == kAbsFalse) {
+                        v[i] = static_cast<char>(kAbsFalse);
+                    } else if (v[n.a] == kAbsTrue && v[n.b] == kAbsTrue) {
+                        v[i] = static_cast<char>(kAbsTrue);
+                    } else {
+                        v[i] = static_cast<char>(kAbsUnknown);
+                    }
+                    break;
+                case Kind::Or:
+                    if (v[n.a] == kAbsTrue || v[n.b] == kAbsTrue) {
+                        v[i] = static_cast<char>(kAbsTrue);
+                    } else if (v[n.a] == kAbsFalse && v[n.b] == kAbsFalse) {
+                        v[i] = static_cast<char>(kAbsFalse);
+                    } else {
+                        v[i] = static_cast<char>(kAbsUnknown);
+                    }
+                    break;
+            }
+        }
+        return v.back();
+    }
 };
 
 /// 「source `i` の内側」だけを見る指示関数。

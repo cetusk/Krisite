@@ -135,6 +135,16 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.leaf_input_total += b.leaf_input_total;
     a.leaf_input_sq += b.leaf_input_sq;
     a.leaf_poly_sq += b.leaf_poly_sq;
+    a.leaf_poly_total += b.leaf_poly_total;
+    a.eo_forced_leaves += b.eo_forced_leaves;
+    a.eo_const_leaves += b.eo_const_leaves;
+    a.eo_const_input += b.eo_const_input;
+    a.eo_const_input_sq += b.eo_const_input_sq;
+    a.eo_const_polys += b.eo_const_polys;
+    a.eo_const_poly_sq += b.eo_const_poly_sq;
+    a.eo_const_bsp_slots += b.eo_const_bsp_slots;
+    a.eo_const_frags += b.eo_const_frags;
+    a.eo_dropped_leaves += b.eo_dropped_leaves;
     a.frag_edges_total += b.frag_edges_total;
     a.frag_edges_count += b.frag_edges_count;
     a.frag_edges_max = std::max(a.frag_edges_max, b.frag_edges_max);
@@ -529,6 +539,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             here.push_back(i);
         }
         st.leaf_poly_sq += here.size() * here.size();
+        st.leaf_poly_total += here.size();
         st.ms_arr_gather += a_lap();
         if (here.empty()) {
             ++st.empty_cells;
@@ -575,8 +586,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // **葉に入った三角形の数を記録します**（`SPEC-phase5.md` の CP1.5）。
         // **EMBER §4.5.3 が最適化しているのはこの量**（部分問題の多角形数）で、
         // $P$ でも深度でもありません。ここで持たないと比較になりません。
+        std::size_t in_leaf = 0;
         {
-            std::size_t in_leaf = 0, n_present = 0;
+            std::size_t n_present = 0;
             for (std::size_t i = 0; i < n_src; ++i) {
                 in_leaf += count[i];
                 if (count[i] > 0) {
@@ -630,6 +642,51 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
             if (any) ++st.early_out_cells;
         }
+
+        // ---- ★ 到達可能性解析の【測定】（`SPEC-phase5.md` §5.10.8）--------------
+        //
+        // **判定するだけで、まだ捨てていません。出力は 1 ビットも変わりません。**
+        //
+        // **指示関数が「このセルに居る source」に依存しないなら、
+        // その葉のどの断片も `in_front == in_back` になり、1 枚も出力されません。**
+        // **したがって葉ごと捨てられます**（EMBER §4.5.2 の規則）。
+        //
+        // **費用は葉あたり指示関数の節点数**（数十命令）で、葉の仕事に比べて無視できます。
+        bool eo_const_here = false;
+        {
+            bool any_known = false;
+            for (std::size_t i = 0; i < n_src; ++i) {
+                if (forced_known[i] != 0) any_known = true;
+            }
+            if (any_known) {
+                ++st.eo_forced_leaves;
+                const int abs_v = out.indicator.eval_abstract(forced, forced_known);
+                if (abs_v != Indicator::kAbsUnknown) {
+                    eo_const_here = true;
+                    ++st.eo_const_leaves;
+                    st.eo_const_input += in_leaf;
+                    st.eo_const_input_sq += in_leaf * in_leaf;
+                    st.eo_const_polys += here.size();
+                    st.eo_const_poly_sq += here.size() * here.size();
+                }
+            }
+        }
+        // **★ 定値なら、この葉は 1 枚も出力しません。葉ごと捨てます**（§5.10.8）。
+        //
+        // **論証**: 出力されるのは `in_front != in_back` の領域だけ。
+        // $w_{front}$ と $w_{back}$ が違うのは**断片に載っている面の source** の成分だけで、
+        // その source はこのセルに三角形を持つ（＝ `forced_known` が偽）。
+        // **確定した成分だけで指示関数の値が決まるなら、表裏は必ず一致します。**
+        if (eo_const_here && opt.early_out_reachability) {
+            ++st.eo_dropped_leaves;
+            ++st.empty_cells;
+            outl.empty_cell = true;
+            return;
+        }
+        // **★ 定値の葉で実際に使う仕事を測ります**（代理ではなく、省ける量そのもの）。
+        // **捨てる旗が立っていると、ここには来ません**（測定は旗を落として行います）。
+        const std::size_t eo_slots0 = st.bsp_cut_slots;
+        const std::size_t eo_frags0 = st.frag_edges_count;
 
         // セル面の平面（保持側つき）。**登録は並列区間の前で済ませています**
         const std::vector<CellPlane>& cps = cell_planes_of[li];
@@ -881,6 +938,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         outl.forced_known = forced_known;
         outl.active = !outl.frags.empty();
         if (outl.active) ++st.active_cells;
+        if (eo_const_here) {
+            st.eo_const_bsp_slots += st.bsp_cut_slots - eo_slots0;
+            st.eo_const_frags += st.frag_edges_count - eo_frags0;
+        }
     });
 
     // **葉の順に結合します**（§4.2 の正準な順序）。

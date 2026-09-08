@@ -95,6 +95,41 @@ struct BoolStats {
     /// **1 個も狭められていないなら空回りしています。**
     /// **「機構を足したら、それが空回りしていないことを別に検査する」**（`CLAUDE.md`）。
     std::size_t out_aabb_narrowed = 0;
+    // ---- ★ early-out の到達可能性解析（`SPEC-phase5.md` §5.10.8）の【測定】--------
+    //
+    // **判定するだけで、まだ捨てていません。** 出力は 1 ビットも変わりません。
+    // **「捨てられる葉が 0 なら、案 A を実装する意味がありません。」**
+    /// **確定した source が 1 つ以上ある葉の数**（＝ 機会の分母）。
+    std::size_t eo_forced_leaves = 0;
+    /// **★ 抽象評価が定値になった葉の数**（＝ 捨てられる葉。効果の上限）。
+    std::size_t eo_const_leaves = 0;
+    /// 同、その葉に届いた **source の三角形数**の和（$\sum P_\ell$）。
+    ///
+    /// **葉の数だけでは効きが分かりません。** 小さい葉ばかりなら効きません。
+    std::size_t eo_const_input = 0;
+    /// **★ 同、$\sum P_\ell^2$。** 局所 BSP が $O(P_\ell^2)$ なので**これが本当の効き**です。
+    std::size_t eo_const_input_sq = 0;
+    /// 同、その葉に**割り当てられた多角形数**の和と、その 2 乗和。
+    ///
+    /// **`leaf_input_*` は source の三角形、こちらは `polys`。両方が費用に効きます**
+    /// （切断集合は三角形から作り、切る対象は多角形）。
+    std::size_t eo_const_polys = 0;
+    std::size_t eo_const_poly_sq = 0;
+    /// **★ 定値の葉で実際に使われた仕事**（代理ではなく、省ける量そのもの）。
+    ///
+    /// > **`CLAUDE.md`「数えている量が、費用の代理になっているかを確かめてください」。**
+    /// > **$\sum P_\ell^2$ は三角形で数えるか多角形で数えるかで大きく食い違いました**
+    /// > **（実測 43.4% 対 0.9%）。そこで実際の演算回数を直接数えます。**
+    ///
+    /// `bsp_cut_slots`（局所 BSP の切断候補の走査）と、
+    /// `frag_edges_count`（作った断片の数）の、定値の葉での増分です。
+    /// **分母は同名の全体の計数です。**
+    std::size_t eo_const_bsp_slots = 0;
+    std::size_t eo_const_frags = 0;
+    /// **★ 実際に捨てた葉の数**（`early_out_reachability` が真のとき）。
+    ///
+    /// **番人**: **0 ならバイト一致の検査が何も言っていません**（`SPEC-phase5.md` §5.10.8.5）。
+    std::size_t eo_dropped_leaves = 0;
     std::size_t coplanar_same = 0;       ///< 共平面重複のうち向きが同じ対の数
     std::size_t coplanar_opposite = 0;   ///< 向きが逆の対の数
     std::size_t constructed_points = 0;  ///< 第1段が作った構成点の総数（§5.4 の分母）
@@ -221,6 +256,8 @@ struct BoolStats {
     /// **多角形**（葉に割り当てられた `polys`）。**どちらが効くかは測って決めます。**
     std::size_t leaf_input_sq = 0;
     std::size_t leaf_poly_sq = 0;
+    /// $\sum_\ell$（葉に割り当てられた多角形数）。**`leaf_poly_sq` の分母側**。
+    std::size_t leaf_poly_total = 0;
     // ---- 無次元群（`PERF.md` §1.8。**借りてよいのは無次元群が一致するときだけ**）----
     //
     // **$\sum_\ell P_\ell^2$ が同じでも「単位の中身」が違えば、
@@ -589,6 +626,17 @@ struct BoolOptions {
     /// **変異 17（存在判定を半開区間で見る）が観測可能になる配置が
     /// コーパスから消えました**（`DESIGN-phase5-hotspots.md` §17.5）。
     /// **唯一の検出器だったので、外す経路が無ければ網が縮みます。**
+    /// **★ 到達可能性による葉の除去**（`SPEC-phase5.md` §5.10.8。EMBER §4.5.2）。**既定は真。**
+    ///
+    /// **指示関数を 3 値論理で抽象評価し、
+    /// 「このセルに居る source」に依存しないなら葉ごと捨てます。**
+    ///
+    /// **その葉のどの断片も `in_front == in_back` になるので、出力は変わりません。**
+    /// **`early_out` が偽なら `forced` が無いので、この機構も自動的に無効になります。**
+    ///
+    /// > **偽にすると完全に外れます**（`CLAUDE.md`「正しさの検査では、
+    /// > 性能のための機構を無効化できること」）。**比較の正解器側です。**
+    bool early_out_reachability = true;
     bool tight_out_aabb = true;
     bool region_key_cuts = false;
     /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。
