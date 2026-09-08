@@ -142,6 +142,26 @@ struct Totals {
     std::size_t interior_corner = 0;  ///< 代表点の段 1
     std::size_t split_vertices = 0;
     std::size_t unresolved = 0;
+    // ---- radial sort（`SPEC-phase2.md` §5.1.2.1）----
+    std::size_t radial_attempted = 0;  ///< 連結成分では分けられなかった辺
+    std::size_t radial_resolved = 0;   ///< そのうち角度順で分けられた辺
+    std::size_t unresolved_off = 0;    ///< **radial sort を外したときの `unresolved`**
+    // ---- 検証の増分計算（`IMPL-v2.md` §2）----
+    /// **増分計算と従来経路（正解器）を突き合わせた構成の数。** 0 なら空回りです
+    std::size_t verify_agree = 0;
+    /// **事後の検査（分裂の【後】に非多様体）が発火した回数。**
+    /// **`unresolved` のうち、対応付け不能な辺ではないほう**（`SPEC-phase5.md` §1.5.0.1）
+    std::size_t unresolved_post = 0;
+    std::size_t unsplit_edges = 0;  ///< 対応付けできず、分裂させずに残した辺
+    // ---- T 解決の走査順（`SPEC-phase5.md` §5.11）----
+    std::size_t scan_per_edge_total = 0;  ///< 辺ごとに走査したときの走査回数
+    std::size_t scan_per_poly_total = 0;  ///< 多角形あたり 1 回にしたときの走査回数
+    std::size_t side_per_edge_total = 0;  ///< 同、`side` の評価回数
+    std::size_t side_per_poly_total = 0;
+    // ---- 候補の区間の絞り込み（案 (b2)。`DESIGN-phase5-hotspots.md` §13）----
+    std::size_t range_skipped = 0;        ///< 二分探索で飛ばした候補（**0 なら空回り**）
+    std::size_t side_unsorted_total = 0;  ///< 絞り込みなしの `side`
+    std::size_t side_sorted_total = 0;    ///< 絞り込みありの `side`
 };
 
 Totals g;
@@ -158,6 +178,9 @@ void run_config(const kritest::Case& c, const TriMesh& a, const TriMesh& b, Bool
     ToMeshOptions off, on;
     off.split_contacts = false;
     on.split_contacts = true;
+    // **§5.5 の検算は既定で切ってあります**（純粋な診断。`HANDOVER.md` §5.1）。
+    // **検査するテストは明示的に立ててください。**
+    on.verify_split_delta = true;
     ToMeshStats t_off{}, t_on{};
     const SoupMesh m_off = to_mesh(r, off, &t_off);
     const SoupMesh m_on = to_mesh(r, on, &t_on);
@@ -194,6 +217,97 @@ void run_config(const kritest::Case& c, const TriMesh& a, const TriMesh& b, Bool
     KRI_CHECK_MSG(t_on.split.predicted_delta_e == t_on.split.actual_delta_e,
                   tag + ": ΔE の予測と実測が違う" +
                       kritest::pair_msg(t_on.split.predicted_delta_e, t_on.split.actual_delta_e));
+
+    // ---- ★ 検証の増分計算が、従来経路（正解器）と一致すること ----------------
+    //
+    // **`detail::split_topology` は `check_topology` を 2 回呼ぶ従来の経路を
+    // 置き換えたものです**（`IMPL-v2.md` §2）。**検査を弱めていないことを、
+    // ここで直接確かめます。**
+    //
+    // **正解器は被検体と別経路です** — 従来経路は大域の `std::map` で辺と
+    // 頂点リンクを作る、まったく別の実装です（`CLAUDE.md`）。
+    //
+    // **`unresolved` は CP の失敗判定そのものなので**（`SPEC-phase5.md` §3.-1）、
+    // **一致しなければ、その差は失敗件数の差として実データに出ます。**
+    {
+        ToMeshOptions on_naive = on;
+        on_naive.verify_split_naive = true;
+        ToMeshStats t_naive{};
+        const SoupMesh m_naive = to_mesh(r, on_naive, &t_naive);
+        KRI_CHECK_MSG(t_naive.split.unresolved == t_on.split.unresolved,
+                      tag + ": unresolved が増分計算と従来経路で違う" +
+                          kritest::pair_msg(t_naive.split.unresolved, t_on.split.unresolved));
+        KRI_CHECK_MSG(
+            t_naive.split.actual_delta_v == t_on.split.actual_delta_v,
+            tag + ": ΔV が増分計算と従来経路で違う" +
+                kritest::pair_msg(t_naive.split.actual_delta_v, t_on.split.actual_delta_v));
+        KRI_CHECK_MSG(
+            t_naive.split.actual_delta_e == t_on.split.actual_delta_e,
+            tag + ": ΔE が増分計算と従来経路で違う" +
+                kritest::pair_msg(t_naive.split.actual_delta_e, t_on.split.actual_delta_e));
+        // **出力は 1 ビットも変わってはいけません**（検証は出力に触りません）
+        KRI_CHECK_MSG(m_naive.triangles == m_on.triangles,
+                      tag + ": 検証の経路を変えたら出力が変わった");
+        // **前提（退化三角形が無い）が破れていないこと。** 一般解が入っているので 0
+        KRI_CHECK_MSG(t_on.split.verify_fallback == 0,
+                      tag + ": 増分計算が前提の破れで正解器に落ちた（退化三角形がある）");
+        g.unresolved_post += t_on.split.unresolved_post;
+        g.unsplit_edges += t_on.split.unsplit_edges;
+        ++g.verify_agree;
+    }
+
+    // ---- ★ T 解決の走査順を変えても、出力がバイト一致すること ------------------
+    //
+    // **候補集合は (葉, 支持平面) 群で共有されるので、多角形の中で同じです。**
+    // **辺ごとに走査し直す必要がありません**（`SPEC-phase5.md` §5.11）。
+    //
+    // **判定は 1 つも変えていません。走査の順序だけです。**
+    // **だからバイト一致で守れます** — 絞り込みではないので、
+    // 「落ちる T 頂点がないこと」を別に示す必要がありません。
+    {
+        ToMeshOptions per_edge = on;
+        per_edge.scan_per_edge = true;
+        ToMeshStats t_pe{};
+        const SoupMesh m_pe = to_mesh(r, per_edge, &t_pe);
+        KRI_CHECK_MSG(m_pe.triangles == m_on.triangles,
+                      tag + ": **走査順を変えたら三角形が変わった**（判定は同じはず）");
+        KRI_CHECK_MSG(m_pe.vertices.size() == m_on.vertices.size(),
+                      tag + ": 走査順を変えたら頂点数が変わった");
+        KRI_CHECK_MSG(t_pe.t.inserted == t_on.t.inserted,
+                      tag + ": 走査順で挿入した T 頂点の数が変わった" +
+                          kritest::pair_msg(t_pe.t.inserted, t_on.t.inserted));
+        // **走査の回数は減っていなければなりません**（多角形あたり 1 回）。
+        // **等しいなら機構が空回りしています**（`CLAUDE.md`）
+        g.scan_per_edge_total += t_pe.t.cand_scans;
+        g.scan_per_poly_total += t_on.t.cand_scans;
+        g.side_per_edge_total += t_pe.t.side_tests;
+        g.side_per_poly_total += t_on.t.side_tests;
+    }
+
+    // ---- ★ 候補の区間の絞り込み（案 (b2)）が出力を変えないこと ----------------
+    //
+    // **厳密な絞り込みです**（`DESIGN-phase5-hotspots.md` §13）。
+    // **辺は多角形の境界上にあるので、辺の区間は多角形の区間に含まれます。**
+    // **だから多角形の X 区間の外にある候補は、どの辺の相対内部にも載りません。**
+    //
+    // **`CLAUDE.md`「前判定の効果は『◯◯の数が 1 個も変わらない』で守れます」。**
+    // **挿入した T 頂点の数が 1 個も変わらないことが、厳密であることの直接の検査です。**
+    {
+        ToMeshOptions unsorted = on;
+        unsorted.sort_candidates = false;
+        ToMeshStats t_us{};
+        const SoupMesh m_us = to_mesh(r, unsorted, &t_us);
+        KRI_CHECK_MSG(m_us.triangles == m_on.triangles,
+                      tag + ": **候補の絞り込みで三角形が変わった**（厳密なはず）");
+        KRI_CHECK_MSG(t_us.t.inserted == t_on.t.inserted,
+                      tag + ": **絞り込みで T 頂点の数が変わった**（1 個も変わってはいけない）" +
+                          kritest::pair_msg(t_us.t.inserted, t_on.t.inserted));
+        KRI_CHECK_MSG(t_us.t.degenerate_kept == t_on.t.degenerate_kept,
+                      tag + ": 絞り込みで残した退化三角形の枚数が変わった");
+        g.range_skipped += t_on.t.cand_skipped_by_range;
+        g.side_unsorted_total += t_us.t.side_tests;
+        g.side_sorted_total += t_on.t.side_tests;
+    }
 
     // ---- 二項正解器との一致（分裂 OFF どうし。§10.1）--------------------------
     BoolOptions bo = opt;
@@ -246,6 +360,17 @@ void run_config(const kritest::Case& c, const TriMesh& a, const TriMesh& b, Bool
     g.interior_corner += st.interior.corner_offset;
     g.split_vertices += t_on.split.split_vertices;
     g.unresolved += t_on.split.unresolved;
+    g.radial_attempted += t_on.split.radial_attempted;
+    g.radial_resolved += t_on.split.radial_resolved;
+    // **radial sort を外した基準側**（§5.1.2.1 の配置に到達していることの番人）。
+    // **機構を足したら、それを外す経路も用意する** — 外した側で到達を数えます。
+    {
+        ToMeshOptions no_radial = on;
+        no_radial.radial_sort = false;
+        ToMeshStats t_nr{};
+        (void)to_mesh(r, no_radial, &t_nr);
+        g.unresolved_off += t_nr.split.unresolved;
+    }
     ++g.configs;
     (void)c;
 }
@@ -332,9 +457,34 @@ void check_not_vacuous() {
     // **件数は記録**で、判定は上の `exclusion_when_split` + 適用条件が行います。
     //
     // **空回り防止**: ケース 24 を入れたので、到達 0 なら検査が効いていません
-    KRI_CHECK_MSG(g.unresolved > 0,
+    // **★ radial sort を入れたので、この配置は解けるようになりました**（§5.1.2.1）。
+    // **番人は「到達したか」を、外した側（`unresolved_off`）で数えます。**
+    // **入れた側で 0 になることが、機構が効いていることの検査です。**
+    KRI_CHECK_MSG(g.unresolved_off > 0,
                   "**§5.1.2.1 の配置に一度も到達していません。** ケース 24 が"
                   "コーパスから消えたか、対応付けの判定が変わっています");
+    KRI_CHECK_MSG(g.radial_attempted > 0, "**radial sort が 1 度も呼ばれていません。空回りです**");
+    KRI_CHECK_MSG(g.radial_resolved > 0, "**radial sort が 1 本も解けていません**");
+    KRI_CHECK_MSG(g.unresolved == 0,
+                  "**radial sort を入れたのに解けていない辺が残っています。**"
+                  "コーパスに新しい形が入ったか、実装に穴があります");
+    // **検証の増分計算の番人**（`IMPL-v2.md` §2）。
+    // **突き合わせを 1 度も回していなければ、一致は何も言っていません。**
+    KRI_CHECK_MSG(g.verify_agree > 0,
+                  "**検証の増分計算と従来経路の突き合わせを 1 度も回していません。空回りです**");
+    // **走査順の入れ替えが実際に走査を減らしていること**（空回りの番人）。
+    // **等しければ、多角形がすべて 1 辺しかないか、機構が効いていません。**
+    // **絞り込みが実際に候補を飛ばしていること**（空回りの番人）。
+    // **0 なら、整列が効いていないか旗が通っていません。**
+    KRI_CHECK_MSG(g.range_skipped > 0,
+                  "**候補の区間の絞り込みが 1 個も飛ばしていません。空回りです**");
+    KRI_CHECK_MSG(g.side_sorted_total < g.side_unsorted_total,
+                  "**絞り込みで `side` の評価が減っていません**" +
+                      kritest::pair_msg(g.side_sorted_total, g.side_unsorted_total));
+    KRI_CHECK_MSG(g.scan_per_poly_total < g.scan_per_edge_total,
+                  "**T 解決の走査回数が減っていません。** 多角形あたり 1 回の走査が"
+                  "効いていないか、旗が通っていません" +
+                      kritest::pair_msg(g.scan_per_poly_total, g.scan_per_edge_total));
 
     std::printf("    構成 %zu（順序非依存 %zu / early-out 比較 %zu / n 項 %zu）\n", g.configs,
                 g.order_checks, g.early_out_checks, g.nary_configs);
@@ -342,8 +492,34 @@ void check_not_vacuous() {
                 g.bsp_cuts_used, g.bsp_cuts_skipped, g.early_out_cells, g.cache_hits);
     std::printf("    代表点: 段 0 %zu / 段 1 %zu、分裂した頂点 %zu\n", g.interior_axis,
                 g.interior_corner, g.split_vertices);
+    std::printf("    radial sort: 到達 %zu（外した側 %zu）/ 試行 %zu / 解決 %zu\n",
+                g.unresolved_off, g.unresolved_off, g.radial_attempted, g.radial_resolved);
     std::printf("    相互作用: BSP×適応 %zu、BSP×early-out %zu、WNV×分裂 %zu（葉に差 %zu）\n",
                 g.bsp_x_adaptive, g.bsp_x_early_out, g.wnv_x_split, g.uneven_leaves);
+    // **`unresolved` の内訳**（`SPEC-phase5.md` §1.5.0.1。「解けなかった数」だけでは
+    // 機構が働いたか分かりません）。**事後の検査が 0 なら、その経路は未検査です**
+    std::printf(
+        "    検証の増分計算: 突き合わせ %zu 構成、事後の非多様体 %zu、"
+        "分裂させず残した辺 %zu\n",
+        g.verify_agree, g.unresolved_post, g.unsplit_edges);
+    // **走査順の効果は演算回数で出します**（`CLAUDE.md`「効果は演算回数で測る」）。
+    // **`side` はほとんど減りません** — 減るのは候補集合の走査だけです（§5.11）
+    std::printf("    候補の絞り込み: 飛ばした %zu、`side` %zu → %zu（**%.2f 倍**）\n",
+                g.range_skipped, g.side_unsorted_total, g.side_sorted_total,
+                g.side_sorted_total > 0
+                    ? static_cast<double>(g.side_unsorted_total) / g.side_sorted_total
+                    : 0.0);
+    std::printf(
+        "    T 解決の走査: 辺ごと %zu → 多角形あたり %zu（%.2f 倍）、"
+        "`side` %zu → %zu（%.3f 倍）\n",
+        g.scan_per_edge_total, g.scan_per_poly_total,
+        g.scan_per_poly_total > 0
+            ? static_cast<double>(g.scan_per_edge_total) / g.scan_per_poly_total
+            : 0.0,
+        g.side_per_edge_total, g.side_per_poly_total,
+        g.side_per_poly_total > 0
+            ? static_cast<double>(g.side_per_edge_total) / g.side_per_poly_total
+            : 0.0);
 }
 
 }  // namespace

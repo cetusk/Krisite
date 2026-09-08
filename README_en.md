@@ -29,7 +29,7 @@ where it stands (Japanese).
 |---|---|---|
 | `arith/` | Fixed-width exact integer arithmetic (no allocation, no exceptions, no global state) | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
 | `geom/` | Plane-based geometric predicates. **Widths live in the type**, so exceeding a bound is a compile error | [`SPEC-phase0.md`](docs/SPEC-phase0.md) |
-| `mesh/` `octree/` `csg/` | Exact booleans ($\cup$ / $\cap$ / $\setminus$, **$n$-ary**), topology checks, adaptive subdivision, local BSP, contact splitting, winding-vector classification, convex splitting at the entry | [`SPEC-phase1.md`](docs/SPEC-phase1.md) – [`SPEC-phase3.md`](docs/SPEC-phase3.md) |
+| `mesh/` `octree/` `csg/` | Exact booleans ($\cup$ / $\cap$ / $\setminus$, **$n$-ary**), topology checks, adaptive subdivision, local BSP, **contact splitting** (including radial ordering about an edge), winding-vector classification, **degeneracy-free triangulation**, convex splitting at the entry | [`SPEC-phase1.md`](docs/SPEC-phase1.md) – [`SPEC-phase3.md`](docs/SPEC-phase3.md) |
 | `par/` | Persistent thread pool. **Output is bit-identical regardless of thread count** | [`SPEC-phase4.md`](docs/SPEC-phase4.md) |
 
 ## Usage
@@ -203,14 +203,41 @@ consulted, quoted, or ported.**
 
 | Stage | Scope | What it checks | Status |
 |---|---|---|---|
-| **CP1** | Solid, manifold, **non-self-intersecting** — 1,000 models → **500 pairs** | Correctness on real data; the common ground for comparison with EMBER and FARMA | **Complete** (499 succeeded, **1 failed**) |
-| **CP1.5** | — | **Removing the superlinearity**, a precondition for CP2/CP3 being runnable at all | **Complete** ($P \to t$ from 1.31 to 1.23; the CP2 estimate from 350 to 66 hours) |
-| **CP2** | Models that **do** self-intersect | Whether the operation itself resolves self-intersection into a clean output (self-union) | **Not started** (~3 hours for 100 pairs) |
+| **CP1** | Solid, manifold, **non-self-intersecting** — 1,000 models → **500 pairs** | Correctness on real data; the common ground for comparison with EMBER and FARMA | **Complete** (499 succeeded, 1 failed). **The cause has since been resolved** (below) |
+| **CP1.5** | — | **Removing the superlinearity**, a precondition for CP2/CP3 being runnable at all | **Complete** ($P \to t$ from 1.31 to 1.23; the CP2 estimate from 350 to **100 hours**) |
+| **CP2** | Models that **do** self-intersect | Whether the operation itself resolves self-intersection into a clean output (self-union) | **84 pairs complete** (72 succeeded, 12 failed). **Same as above** |
 | **CP3** | No constraint on solidity, manifoldness or self-intersection | Whether the entry checks work on **non-PWN and degenerate models** | Not started |
 | **CP4 onwards** | — | **Setting and pursuing performance targets** | Not started (**no target has been set yet**) |
 
+### The 13 failures, and what happened next (2026-09-06)
+
+**The single CP1 failure and the twelve CP2 failures were all the same configuration.**
+**Two sheets of surface meet along one edge and are also joined elsewhere, so the four
+incident faces cannot be paired up two-and-two by connectivity alone.**
+
+**The Phase 2 spec had described this configuration and left it open,
+noting that it was unclear whether real data would ever reach it. It did.**
+
+**A general solution — ordering the incident faces radially about the edge —
+is now implemented.**
+
+| | |
+|---|---|
+| Operations that produced non-manifold output | 26 |
+| **Fully resolved** | **25 / 26** |
+| Edges where no pairing could be formed | **0 out of 1,301** |
+
+**The one remaining case is a different problem, at the vertex level.**
+**Each edge is paired correctly on its own, but several such pairings transitively
+merge the fans around a vertex, so the vertex cannot be duplicated.**
+
+> **CP1 and CP2 have not been re-run with this fix in place.**
+> **Performance work comes first; then a single re-run.**
+
+
 Measurements are in [`docs/BENCH.md`](docs/BENCH.md); the reasoning behind each
 decision is in [`docs/IMPL-phase5.md`](docs/IMPL-phase5.md).
+**A summary of where things stand is in [`docs/HANDOVER.md`](docs/HANDOVER.md).**
 
 ## References
 

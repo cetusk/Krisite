@@ -158,7 +158,10 @@ int main(int argc, char** argv) {
         csg::BoolStats st;
         const csg::PolySoup u = csg::boolean(a, b, csg::BoolOp::Union, o, &st);
         csg::ToMeshStats ts;
-        const csg::SoupMesh m = csg::to_mesh(u, {}, &ts);
+        // **§5.5 の検算は CP1〜CP3 では ON**（`SPEC-phase5.md` §3.2）
+        csg::ToMeshOptions tm;
+        tm.verify_split_delta = true;
+        const csg::SoupMesh m = csg::to_mesh(u, tm, &ts);
         const double sec =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         const mesh::TopologyReport r = mesh::check_topology(m.triangles);

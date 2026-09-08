@@ -62,3 +62,8 @@ claude_sandbox.bat
 
 # Thingi10K のデータセット（SPEC-phase5 §11。Git に含めない）
 /data/
+
+
+# 思考の手続きについての規則。ローカル保管
+# 実装側と仕様検討側の失敗を実例として大量に含むため、公開しない
+.claude/rules/

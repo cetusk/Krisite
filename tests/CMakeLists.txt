@@ -48,6 +48,10 @@ krisite_add_test(degenerate     geom/test_degenerate.cpp)
 krisite_add_test(plane_order    geom/test_plane_order.cpp)
 krisite_add_test(plane_box      geom/test_plane_box.cpp)
 krisite_add_test(topology      mesh/test_topology.cpp)
+# **分裂の検証（増分計算）が従来経路と一致すること**（`IMPL-v2.md` §2）。
+# **コーパスは「偽を返す側」を一度も踏まない**ので、機会を作る入力をここに置く。
+# コーパスではなくテスト専用（`SPEC-phase4.md` §7.3 と同じ形）
+krisite_add_test(split_verify  mesh/test_split_verify.cpp)
 krisite_add_test(uniform_grid  octree/test_uniform_grid.cpp)
 krisite_add_test(faces         csg/test_faces.cpp)
 krisite_add_test(fragment      csg/test_fragment.cpp)
@@ -152,6 +156,11 @@ if(KRISITE_GMP_FOUND)
     krisite_add_test(plane_box_gmp  geom/test_plane_box_gmp.cpp 200000)
     target_link_libraries(plane_box_gmp PRIVATE krisite_gmp)
 
+    # SPEC-phase2 §5.1.2.1 の radial sort。**正解器は簡約前の式を mpz でそのまま計算**し、
+    # 向き合わせは **有理数（mpq）で実座標に直す除算経路**で照合する
+    krisite_add_test(radial_gmp     geom/test_radial_gmp.cpp 200000)
+    target_link_libraries(radial_gmp PRIVATE krisite_gmp)
+
     # §10.3 体積の恒等式。出力の頂点は有理数なので GMP が要る
     krisite_add_test(volume_gmp     csg/test_volume_gmp.cpp)
     target_link_libraries(volume_gmp PRIVATE krisite_gmp)
@@ -161,6 +170,7 @@ if(KRISITE_GMP_FOUND)
     add_test(NAME predicates_gmp_quick COMMAND predicates_gmp 5000)
     add_test(NAME plane_order_gmp_quick COMMAND plane_order_gmp 3000)
     add_test(NAME plane_box_gmp_quick COMMAND plane_box_gmp 3000)
+    add_test(NAME radial_gmp_quick COMMAND radial_gmp 3000)
 endif()
 
 # ---- Manifold 正解器（Apache-2.0、テスト専用）--------------------------------

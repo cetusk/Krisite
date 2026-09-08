@@ -84,6 +84,11 @@ struct ToMeshStats {
     ///
     /// **バリアの数が並列効率の上限を決めます。** 各段の実行時間が偏ると、
     /// バリアで待つ時間が増えます。**まず内訳を測ってから並列化すること。**
+    /// **`to_mesh` の入り口から出口まで**（下の 5 段の和と比べるため）。
+    ///
+    /// > **内部で整合するはずの量を並べて出すと、自分で自分を検査します**
+    /// > （`CLAUDE.md`）。**5 段の和と一致しなければ、計時されていない段があります。**
+    double ms_total = 0;
     double ms_construct = 0;  ///< 構成点を作る（平面3つ組でメモ化）
     double ms_merge = 0;      ///< 値で併合する（整列 + 区分）
     double ms_index = 0;      ///< 平面ごとの頂点索引（T 解決の下ごしらえ）
@@ -113,6 +118,10 @@ struct ToMeshStats {
 };
 
 struct ToMeshOptions {
+    /// **radial sort で次数 4 の辺を分ける**（`SPEC-phase2.md` §5.1.2.1）。
+    ///
+    /// **偽にすると完全に外れ、連結成分だけの従来の挙動に戻ります**（比較の基準側）。
+    bool radial_sort = true;
     /// **スレッド数**（`SPEC-phase4.md` §3）。0 か 1 なら逐次。
     ///
     /// 出口は**段ごと + バリア**で並列化します。中核（再帰タスク木）とは
@@ -132,6 +141,25 @@ struct ToMeshOptions {
     /// **スケジューラに依存しない番人**で、1 スレッドでも効きます。
     bool reverse_fan = false;
     bool resolve_t = true;  ///< §6.2 の T 頂点解決
+    /// **三角形化の一般解**（`SPEC-phase2.md` §2.4.4 (2)）。**退化三角形を 1 枚も作りません。**
+    ///
+    /// **偽にすると完全に外れ、従来の扇分割（退化を残す）に戻ります**（比較の基準側）。
+    bool general_triangulation = true;
+    /// **分裂後の多様体性を検査する**（`SplitOptions::verify_manifold`）。
+    ///
+    /// **`unresolved` の事後の加算に要ります**（`SPEC-phase5.md` §3.-1 の失敗判定）。
+    /// **既定は真です。** 中身は同値な増分計算なので、費用は小さい。
+    bool verify_split_manifold = true;
+    /// **§5.5 の予測との突き合わせ**（`SplitOptions::verify_delta`）。**純粋な診断**。
+    ///
+    /// > **既定は偽です**（`HANDOVER.md` §5.1）。**`SPEC-phase5.md` §3.2 は
+    /// > CP1〜CP3 で ON を要求している**ので、**実データの駆動プログラムは
+    /// > 明示的に真にしてください。**
+    bool verify_split_delta = false;
+    /// **検証に従来の経路（`check_topology` を 2 回）を使う**（`SplitOptions::verify_naive`）。
+    ///
+    /// **正解器です。** 既定の増分計算と答えが一致することを検査するために残しています。
+    bool verify_split_naive = false;
     /// **T 字接合の索引をセルで区切る**（`DESIGN-phase5-hotspots.md` §6.3 の A-3）。
     ///
     /// 平面ごとに全頂点を走査する代わりに、**多角形が属する葉の【閉じた箱】に
@@ -143,6 +171,38 @@ struct ToMeshOptions {
     /// **効くのはスープ経路だけです。二項メッシュ経路は意図的に素朴なまま**で、
     /// この旗を見ません（正解器は被検体と別経路で書く）。
     bool cell_index = true;
+    /// **T 解決の照合で、候補集合を【辺ごとに】走査する**（`SPEC-phase5.md` §5.11）。
+    ///
+    /// **既定は偽で、多角形あたり 1 回だけ走査します。** 候補集合は
+    /// (葉, 支持平面) 群で共有されるので**多角形の中で同じ**だからです。
+    ///
+    /// **判定は 1 つも変わりません。走査の順序だけが違います。**
+    /// **真にすると従来の形に戻ります**（**比較の基準側**）。
+    /// **両方で出力がバイト一致することを検査してください。**
+    bool scan_per_edge = false;
+    /// **候補を X 軸で整列し、多角形の区間を二分探索で絞る**
+    /// （`DESIGN-phase5-hotspots.md` §13 の案 (b2)）。
+    ///
+    /// **厳密な絞り込みです。** 辺は多角形の境界上にあるので、
+    /// **多角形の X 区間の外にある候補は、どの辺の相対内部にも載りません。**
+    ///
+    /// **偽にすると完全に外れます**（整列もしません。**比較の基準側**）。
+    /// **出力はバイト単位で変わってはいけません。**
+    bool sort_candidates = true;
+    /// **案 (b)（多角形の箱で候補を落とす）の効果を数える**（`SPEC-phase5.md` §5.11）。
+    ///
+    /// **数えるだけで、実際には落としません。** 出力は 1 ビットも変わりません。
+    /// **既定は偽です** — 箱を作るのに `cmp_h` を多角形あたり $3(n-1)$ 回払うので、
+    /// **計測の費用が小さくありません**（`CLAUDE.md`「計測の費用を本番に持ち込まない」）。
+    bool count_box_reject = false;
+    /// **段の内訳を計時する**（`TJunctionStats::ms_insert_t` / `ms_fan_tri`）。
+    ///
+    /// **既定は偽です。** 多角形ごとに時計を 2 回読むので、
+    /// **計測の費用を本番の経路に持ち込みません**（`CLAUDE.md`「計測の機構にも
+    /// 外す経路を用意してください」）。**測るときだけ真にしてください。**
+    ///
+    /// > **採れるのは CPU 時間です。** 壁時計に直すには並列効率で割ること。
+    bool time_stages = false;
 };
 
 /// スープを三角メッシュにする（`SPEC-phase3.md` §6）。
@@ -150,7 +210,8 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
                         ToMeshStats* stats = nullptr) {
     ToMeshStats st;
     using Clock = std::chrono::steady_clock;
-    auto t_stage = Clock::now();
+    const auto t_enter = Clock::now();
+    auto t_stage = t_enter;
     const auto lap = [](Clock::time_point& t0) {
         const auto t1 = Clock::now();
         const double ms =
@@ -165,6 +226,9 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
     par::ThreadPool& pool = (opt.pool != nullptr) ? *opt.pool : local_pool;
     SoupMesh out;
     if (s.polys.empty()) {
+        st.ms_total = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+                          Clock::now() - t_enter)
+                          .count();
         if (stats != nullptr) *stats = st;
         return out;
     }
@@ -251,8 +315,9 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
             box.push_back(q.aabb);
             sup.push_back(q.frag.support);
         }
-        used_cell_index = cell_index.build(s.table, out.vertices, box, sup, &pool,
-                                           &st.cell_index_locate_tests, &st.cell_index_group_tests);
+        used_cell_index =
+            cell_index.build(s.table, out.vertices, box, sup, &pool, &st.cell_index_locate_tests,
+                             &st.cell_index_group_tests, opt.sort_candidates);
     }
     if (!used_cell_index) {
         std::vector<PlaneId> sup;
@@ -287,16 +352,27 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
                 const std::vector<std::uint32_t>* c = index.find(f.support);
                 cand = (c == nullptr) ? &kEmptyCand : c;
             }
-            const TPolygon tp =
-                insert_t_vertices_with(s.table, out.vertices, *cand, edge, poly, &t);
-            fan_triangulate(tp, poly_tris[pi], &t);
+            // **計時は旗で囲みます**（`ToMeshOptions::time_stages`）。
+            // **本番の経路に時計を持ち込みません。**
+            const auto t0 = opt.time_stages ? Clock::now() : Clock::time_point{};
+            const TPolygon tp = insert_t_vertices_with(
+                s.table, out.vertices, *cand, edge, poly, &t, nullptr, opt.scan_per_edge,
+                opt.count_box_reject, used_cell_index && cell_index.sorted());
+            const auto t1 = opt.time_stages ? Clock::now() : Clock::time_point{};
+            fan_triangulate(tp, poly_tris[pi], &t, opt.general_triangulation);
+            if (opt.time_stages) {
+                const auto t2 = Clock::now();
+                using ms = std::chrono::duration<double, std::milli>;
+                t.ms_insert_t += std::chrono::duration_cast<ms>(t1 - t0).count();
+                t.ms_fan_tri += std::chrono::duration_cast<ms>(t2 - t1).count();
+            }
         } else {
             TPolygon tp;
             tp.corners = static_cast<std::uint32_t>(poly.size());
             tp.vertex = poly;
             tp.is_corner.assign(poly.size(), 1);
             for (std::uint32_t i = 0; i < poly.size(); ++i) tp.orig.push_back(i);
-            fan_triangulate(tp, poly_tris[pi], &t);
+            fan_triangulate(tp, poly_tris[pi], &t, opt.general_triangulation);
         }
     });
     for (std::size_t pi = 0; pi < s.polys.size(); ++pi) {
@@ -319,8 +395,36 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         // **頂点ごとに独立**（§3）。ID の割り当ては逐次なので決定的です
         mesh::SplitOptions sopt;
         sopt.reverse_fan = opt.reverse_fan;
-        out.triangles = mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split,
-                                             nullptr, nullptr, &pool, sopt);
+        // **radial sort に要る幾何を渡します**（`SPEC-phase2.md` §5.1.2.1）。
+        //
+        // **外向き法線をここで揃えます** — `Fragment::flipped` は
+        // 「外向き法線が support の法線と逆か」なので、真なら反転します。
+        // **規約を 2 箇所に分けないため、`split_contacts` の側では触りません。**
+        std::vector<geom::PlaneD> tri_normal;
+        mesh::RadialGeom rg;
+        if (opt.radial_sort) {
+            tri_normal.resize(out.triangles.size());
+            for (std::size_t t = 0; t < out.triangles.size(); ++t) {
+                const Poly& q = s.polys[out.tri_poly[t]];
+                geom::PlaneD pl = s.table.at(q.frag.support);
+                if (q.frag.flipped) {
+                    pl.a = arith::neg(pl.a);
+                    pl.b = arith::neg(pl.b);
+                    pl.c = arith::neg(pl.c);
+                    pl.d = arith::neg(pl.d);
+                }
+                tri_normal[t] = pl;
+            }
+            rg.vertices = &out.vertices;
+            rg.normal = &tri_normal;
+        }
+        sopt.radial_sort = opt.radial_sort;
+        sopt.verify_manifold = opt.verify_split_manifold;
+        sopt.verify_delta = opt.verify_split_delta;
+        sopt.verify_naive = opt.verify_split_naive;
+        out.triangles =
+            mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split, nullptr,
+                                 nullptr, &pool, sopt, opt.radial_sort ? &rg : nullptr);
         // **分裂で複製された頂点は、元の頂点と同じ位置・同じ 3 つ組**です。
         // **添えた情報も一緒に複製しないと、長さが合わなくなります**
         for (std::uint32_t o : origin) {
@@ -331,6 +435,9 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
     }
 
     st.ms_split = lap(t_stage);
+    st.ms_total = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+                      Clock::now() - t_enter)
+                      .count();
     if (stats != nullptr) *stats = st;
     return out;
 }

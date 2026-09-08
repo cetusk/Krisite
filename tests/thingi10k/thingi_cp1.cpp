@@ -174,6 +174,48 @@ struct PairStruct {
     int all_oriented = 1, all_no_degenerate = 1;
     /// **空の出力を出した演算の数**（0〜3）。上の論理積から外した分をここで数えます
     int empty_ops = 0;
+    // ---- 三角形化が残した退化三角形（`SPEC-phase2.md` §2.4.4 (2)）----
+    //
+    // **★ Phase 2 が「残した枚数を §11 に記録すること」と要求していた項目です。**
+    // **Phase 5 の記録項目に引き継いでいませんでした**（`IMPL-phase5.md` §95）。
+    //
+    // コーパスでは 20 枚でしたが、**実データでは 1 演算あたり最大 59,465 枚
+    // （出力の 0.95%）**です。3 桁違います。
+    //
+    // **判定は組合せです**（幾何の述語を使うと $20b+43$ が要る。§2.4.4 (2) の禁止）。
+    std::size_t degenerate_kept = 0;
+    std::size_t apex_fallback = 0;  ///< 扇の起点を選べなかった多角形
+    /// **radial sort**（`SPEC-phase2.md` §5.1.2.1）の試行と解決
+    std::size_t radial_attempted = 0;
+    std::size_t radial_resolved = 0;
+    /// **★ 接触の分裂が発火した回数**（`SPEC-phase5.md` §1.5.0。2026-09-06 の要求）。
+    ///
+    /// **仕様が要求していたのに、記録項目に入っていませんでした**（`IMPL-v2.md` §3）。
+    /// 同じ改訂で足された `degenerate_kept` と radial は入っており、**これだけ落ちました。**
+    ///
+    /// > **`unresolved` は「解けなかった数」であって「解いた数」ではありません**
+    /// > （§1.5.0.1）。**分裂が空回りしていた可能性を、これがないと否定できません。**
+    std::size_t split_vertices = 0;
+    /// **`unresolved` のうち、事後の検査（分裂の【後】に非多様体）で数えたもの**。
+    ///
+    /// もう一方は「対応付けできなかった辺」です（`unsplit_edges`）。
+    /// **`IMPL-phase5.md` §98 の残件はこちらです。分けて数えないと区別できません。**
+    std::size_t unresolved_post = 0;
+    std::size_t unsplit_edges = 0;  ///< 対応付けできず、分裂させずに残した辺
+    // ---- ★ 出口の 5 段（`SPEC-phase5.md` §5.11.1 / §6）------------------------
+    //
+    // **§6 が「出口の内訳」を要求しているのに、記録項目に入っていませんでした。**
+    // **`ms_arrange` / `ms_classify` / `ms_stitch`（中核）だけがありました。**
+    double ms_construct = 0;  ///< 構成点
+    double ms_merge = 0;      ///< 値で併合
+    double ms_index = 0;      ///< 平面索引（候補の整列を含む）
+    double ms_tri = 0;        ///< T 解決 + 三角形化
+    double ms_split = 0;      ///< 接触の分裂
+    double ms_tomesh = 0;     ///< 出口の全体（5 段の和と一致するはず）
+    /// **中核（`boolean`）の全体**。`ms_arrange` などの和より大きい（前処理・葉の列挙を含む）
+    double ms_core = 0;
+    /// **入口（`from_mesh`）**。`fm_seconds` は検査込みなので、別に採る
+    double ms_inlet = 0;
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -220,6 +262,19 @@ struct PairStruct {
         ray_kept += b.ray_tri_kept;
         regions_negative_w += b.regions_negative_w;
         regions_w_ge2 += b.regions_w_ge2;
+        degenerate_kept += t.t.degenerate_kept;
+        apex_fallback += t.t.apex_fallback;
+        radial_attempted += t.split.radial_attempted;
+        radial_resolved += t.split.radial_resolved;
+        split_vertices += t.split.split_vertices;
+        unresolved_post += t.split.unresolved_post;
+        unsplit_edges += t.split.unsplit_edges;
+        ms_construct += t.ms_construct;
+        ms_merge += t.ms_merge;
+        ms_index += t.ms_index;
+        ms_tri += t.ms_tri;
+        ms_split += t.ms_split;
+        ms_tomesh += t.ms_total;
         ms_arrange += b.ms_arrange;
         ms_classify += b.ms_classify;
         ms_stitch += b.ms_stitch;
@@ -261,14 +316,25 @@ struct PairStruct {
           << regions_w_ge2
           // **空の出力の数**（2026-09-06 追加。列を足したので `cp1_results.txt` の
           // 既存 500 行にはありません。**CP2 以降の記録に入ります**）
-          << ' ' << empty_ops;
+          << ' '
+          << empty_ops
+          // **仕様が要求していた記録**（`SPEC-phase2.md` §2.4.4 (2) / §5.1.2.1）
+          << ' ' << degenerate_kept << ' ' << apex_fallback << ' ' << radial_attempted << ' '
+          << radial_resolved
+          // **§1.5.0 が要求していたのに入っていなかった項目**（2026-09-07 追加。`IMPL-v2.md` §3）
+          << ' ' << split_vertices << ' ' << unresolved_post << ' '
+          << unsplit_edges
+          // **出口の 5 段と、入口・中核・出口の合計**（2026-09-08 追加。§5.11.1）
+          << ' ' << (long long)ms_construct << ' ' << (long long)ms_merge << ' '
+          << (long long)ms_index << ' ' << (long long)ms_tri << ' ' << (long long)ms_split << ' '
+          << (long long)ms_tomesh << ' ' << (long long)ms_core << ' ' << (long long)ms_inlet;
     }
 };
 
 /// §3.1 の検査。**解析的期待値は使えない**ので恒等式と位相で見ます。
 bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOptions& o,
                par::ThreadPool* pool, std::string* why, unsigned long long* hash_out = nullptr,
-               PairStruct* ps = nullptr, int nsi_decl = 0) {
+               PairStruct* ps = nullptr, int nsi_decl = 0, bool verify_delta = true) {
     // **NSI は呼び出し側が宣言します**（`SPEC-phase3.md` §5.6、EMBER §4.5.1）。
     // ライブラリは検証しません。**宣言してよいかを確かめるのは呼び出し側の仕事**で、
     // `from_mesh` の `verify_nsi` がその補助です。
@@ -284,6 +350,11 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     fm.verify_nsi = (nsi_decl == 1);
     const auto tsi = std::chrono::steady_clock::now();
     csg::PolySoup A = csg::from_mesh(a, fm), B = csg::from_mesh(b, fm);
+    if (ps != nullptr) {
+        ps->ms_inlet =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tsi)
+                .count();
+    }
     if (ps != nullptr && nsi_decl == 1) {
         ps->fm_seconds =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - tsi).count();
@@ -298,6 +369,16 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     tm.split_contacts = true;
     tm.threads = pool->size();
     tm.pool = pool;
+    // **§5.5 の検算は CP1〜CP3 では ON**（`SPEC-phase5.md` §3.2）。
+    //
+    // **既定は偽です**（純粋な診断を本番の経路に置かないため。`HANDOVER.md` §5.1）。
+    // **実データの駆動プログラムは明示的に立てます。** 中身は同値な増分計算なので、
+    // 立てても費用はほとんど増えません（`IMPL-v2.md` §2）。
+    //
+    // > **★ ただし §4.3.2（EMBER と比較可能な数字）は「検算 OFF」を要求します。**
+    // > **測る目的が違うので、引数で切り替えます。**
+    // > **CP1〜CP3 では既定（真）のまま回してください。**
+    tm.verify_split_delta = verify_delta;
     // **対ごとの構造を採ります**（`SPEC-phase5.md` §1.5.0）。3 演算ぶんを合算。
     csg::SoupMesh out3[3];
     int k3 = 0;
@@ -321,7 +402,13 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
         csg::ToMeshStats ts;
         std::printf("      [%6.1f s] %s 中核…\n", lap(), kOpName[k3]);
         std::fflush(stdout);
+        const auto t_core = std::chrono::steady_clock::now();
         const csg::PolySoup soup = csg::boolean(A, B, op, o, &bs);
+        if (ps != nullptr) {
+            ps->ms_core +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_core)
+                    .count();
+        }
         std::printf("      [%6.1f s] %s 中核 完了（多角形 %zu、断片 %zu）→ 出口…\n", lap(),
                     kOpName[k3], soup.polys.size(), bs.raw_fragments);
         std::fflush(stdout);
@@ -412,6 +499,12 @@ int main(int argc, char** argv) {
     //   2 … 検査つきの宣言と、宣言なしの両方を回して突き合わせる
     //   3 … 検査せずに宣言する（旧 1。§20 の測定を再現するためだけに残す）
     const int nsi_mode = (argc > 7) ? std::atoi(argv[7]) : 0;
+    // **§5.5 の検算を切る**（`SPEC-phase5.md` §4.3.2 の「検算 OFF」）。
+    //
+    // > **既定は真です。CP1〜CP3 は §3.2 が ON を要求しています。**
+    // > **切るのは EMBER と比較可能な数字を採るときだけ**で、
+    // > **そのときは正しさの判定に使わないでください。**
+    const bool verify_delta = (argc > 8) ? (std::atoi(argv[8]) != 0) : true;
     // 宣言の内訳（(a) の空回り検査）。**「検査を入れた」と「検査が効いた」は別**なので、
     // **宣言できた数と落ちた数を必ず出します。**
     std::size_t nsi_declared = 0, nsi_rejected = 0;
@@ -566,7 +659,13 @@ int main(int argc, char** argv) {
                 (nsi_mode >= 0 && nsi_mode < 4) ? kNsiName[nsi_mode] : "?");
     std::printf("| 単一 source を割る閾値 P^2 | %zu |\n", o.single_src_sq);
     std::printf("| 索引の ON/OFF 突き合わせ | %s |\n", verify_index ? "する" : "しない");
-    std::printf("| 済みの対 | %s |\n\n", redo ? "やり直す" : "飛ばす（再開）");
+    std::printf("| 済みの対 | %s |\n", redo ? "やり直す" : "飛ばす（再開）");
+    // **★ 設定はすべて出します**（`HANDOVER.md` §6.2 の第三の条件）。
+    // **記録済みと違う設定で回して、差を機能の効果と読み違えた事例があります。**
+    std::printf("| **§5.5 の検算** | **%s**%s |\n", verify_delta ? "ON" : "**OFF**",
+                verify_delta ? "（`SPEC-phase5.md` §3.2）"
+                             : "（**§4.3.2 の EMBER 比較用。正しさの判定に使わないこと**）");
+    std::printf("\n");
     const auto t0 = std::chrono::steady_clock::now();
     for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
         const std::size_t i = order[k], j = order[k + 1];
@@ -591,7 +690,7 @@ int main(int argc, char** argv) {
         unsigned long long h = 0;
         PairStruct ps;
         const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
-                                  nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1));
+                                  nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1), verify_delta);
         if (ps.nsi_a >= 0) {
             (ps.nsi_a ? nsi_declared : nsi_rejected) += 1;
             (ps.nsi_b ? nsi_declared : nsi_rejected) += 1;
