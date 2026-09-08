@@ -89,11 +89,17 @@ struct BoolStats {
     /// > **番人が空回りしていました**（`DESIGN-phase5-hotspots.md` §9.4）。
     std::size_t merge_groups = 0;
     std::size_t duplicate_fragments = 0;  ///< 重複割り当てが生んだ重複断片（§5.4）
-    std::size_t coplanar_same = 0;        ///< 共平面重複のうち向きが同じ対の数
-    std::size_t coplanar_opposite = 0;    ///< 向きが逆の対の数
-    std::size_t constructed_points = 0;   ///< 第1段が作った構成点の総数（§5.4 の分母）
-    std::size_t merged_points = 0;        ///< 第2段の併合後の点数
-    std::size_t merged_by_value = 0;      ///< 第1段が取りこぼし第2段が併合した数（§5.4）
+    /// **★ 出力の外接箱が、セル箱より狭まった多角形の数**（`SPEC-phase5.md` §5.10.6）。
+    ///
+    /// **番人です。** 箱を「元の多角形の箱 $\cap$ セル箱」にする機構が、
+    /// **1 個も狭められていないなら空回りしています。**
+    /// **「機構を足したら、それが空回りしていないことを別に検査する」**（`CLAUDE.md`）。
+    std::size_t out_aabb_narrowed = 0;
+    std::size_t coplanar_same = 0;       ///< 共平面重複のうち向きが同じ対の数
+    std::size_t coplanar_opposite = 0;   ///< 向きが逆の対の数
+    std::size_t constructed_points = 0;  ///< 第1段が作った構成点の総数（§5.4 の分母）
+    std::size_t merged_points = 0;       ///< 第2段の併合後の点数
+    std::size_t merged_by_value = 0;     ///< 第1段が取りこぼし第2段が併合した数（§5.4）
     // ---- ★ 実験: 共平面重複の仕分けを、切断の符号列で行えるか --------------------
     //
     // **`RESEARCH-perf.md` §S3.5。`KRISITE_EXPERIMENT_REGION_HIST` で有効になります。**
@@ -572,6 +578,18 @@ struct BoolOptions {
     /// > 同じ群が 2 つの鍵に割れます**（実測 371 件）。
     ///
     /// **真にすると、従来の鍵との突き合わせも同時に走ります**（検査のため）。
+    /// **★ 出力の外接箱を「元の多角形の箱 $\cap$ セル箱」に狭めるか**
+    /// （`SPEC-phase5.md` §5.10.6）。**既定は真。**
+    ///
+    /// > **偽にすると従来どおりセル箱を入れます。**
+    /// > **`CLAUDE.md`「正しさの検査では、性能のための機構を無効化できること。
+    /// > 『実質的に無効』ではなく『完全に外れる』形にすること」。**
+    ///
+    /// **実際に要りました。** 箱を狭めると格子が変わり、
+    /// **変異 17（存在判定を半開区間で見る）が観測可能になる配置が
+    /// コーパスから消えました**（`DESIGN-phase5-hotspots.md` §17.5）。
+    /// **唯一の検出器だったので、外す経路が無ければ網が縮みます。**
+    bool tight_out_aabb = true;
     bool region_key_cuts = false;
     /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。
     ///

@@ -123,6 +123,7 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.regions_negative_w += b.regions_negative_w;
     a.regions_w_ge2 += b.regions_w_ge2;
     a.raycasts += b.raycasts;
+    a.out_aabb_narrowed += b.out_aabb_narrowed;
     a.interior.axis_line += b.interior.axis_line;
     a.interior.corner_offset += b.interior.corner_offset;
     a.interior.axis_failed += b.interior.axis_failed;
@@ -418,6 +419,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     std::vector<Fragment> frags;
     std::vector<octree::Cell> frag_cell;
     std::vector<std::uint32_t> frag_src, frag_tag;
+    /// **断片ごとの「元の多角形の外接箱」**（§5.10.6）。`frag_cell` と対で使います。
+    std::vector<octree::Aabb> frag_box;
     /// セルで「多角形が 1 枚も無かった source」の内外（-1 = 未確定）。§3.2 の early-out
     std::vector<std::vector<std::int32_t>> frag_forced;
     /// **その source の巻き数が確定しているか**（`frag_forced` と同じ形）。
@@ -445,6 +448,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     struct LeafOut {
         std::vector<Fragment> frags;
         std::vector<std::uint32_t> src, tag;
+        /// **★ 断片のもとになった多角形の外接箱**（`SPEC-phase5.md` §5.10.6）。
+        ///
+        /// **出力の `Poly::aabb` を「元の箱 ∩ セル箱」にするために持ちます。**
+        /// 断片 $\subseteq$ 元の多角形 $\cap$ セル なので、この交差は保守的です。
+        std::vector<octree::Aabb> box;
         std::vector<std::int32_t> forced;
         std::vector<char> forced_known;
         bool empty_cell = false;
@@ -485,6 +493,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         const octree::CellBox cbox = octree::box_of(cell);
         std::vector<Fragment> local;
         std::vector<std::uint32_t> local_src, local_tag;
+        std::vector<octree::Aabb> local_box;
 
         // **arrange を段に刻みます**（`PERF.md` §1.1）。葉の粒度なので計時は無視できます
         using aclk = std::chrono::steady_clock;
@@ -785,6 +794,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 local.push_back(std::move(p));
                 local_src.push_back(polys[idx].src);
                 local_tag.push_back(polys[idx].tag);
+                local_box.push_back(polys[idx].aabb);
             }
         }
 
@@ -805,6 +815,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // 2 つ目のグループ以降で添字が無効になります（実際に踏みました）。
             std::vector<Fragment> nl;
             std::vector<std::uint32_t> ns, nt;
+            std::vector<octree::Aabb> nb;
             for (const auto& g : by_sup) {
                 // 由来が 1 つだけなら、同じ多角形の断片どうしなので揃っています
                 bool multi = false;
@@ -820,6 +831,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                         nl.push_back(local[i]);
                         ns.push_back(local_src[i]);
                         nt.push_back(local_tag[i]);
+                        nb.push_back(local_box[i]);
                     }
                     continue;
                 }
@@ -849,12 +861,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                         nl.push_back(std::move(p));
                         ns.push_back(local_src[i]);
                         nt.push_back(local_tag[i]);
+                        nb.push_back(local_box[i]);
                     }
                 }
             }
             local.swap(nl);
             local_src.swap(ns);
             local_tag.swap(nt);
+            local_box.swap(nb);
         }
 
         st.ms_arr_coplanar += a_lap();
@@ -862,6 +876,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         outl.frags = std::move(local);
         outl.src = std::move(local_src);
         outl.tag = std::move(local_tag);
+        outl.box = std::move(local_box);
         outl.forced = forced;
         outl.forced_known = forced_known;
         outl.active = !outl.frags.empty();
@@ -883,6 +898,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             frag_cell.push_back(leaves[li]);
             frag_src.push_back(o.src[i]);
             frag_tag.push_back(o.tag[i]);
+            frag_box.push_back(o.box[i]);
             frag_forced.push_back(o.forced);
             frag_forced_known.push_back(o.forced_known);
         }
@@ -1296,11 +1312,31 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // **出力を作るときに捨てます。** 次の段は空から積み直します。
         q.frag.cutbits.clear();
         q.frag.ncuts = 0;
+        // **★ 外接箱は「元の多角形の箱 ∩ セル箱」です**（`SPEC-phase5.md` §5.10.6）。
+        //
+        // **以前はセル箱をそのまま入れていました。** それは保守的ですが緩すぎて、
+        // **連鎖の 2 段目で割り当てが膨らみ、適応分割の判定まで歪みます**
+        // （`DESIGN-phase5-hotspots.md` §15.4。固定深度でも非空の葉が 400 → 429）。
+        //
+        // **正しさ**: 断片は「元の多角形をセルでクリップしたもの」なので
+        // $\text{断片} \subseteq \text{元の多角形} \cap \text{セル}$、
+        // したがって断片の真の箱はこの交差に含まれます。**保守性は保たれます。**
+        //
+        // **費用**: 整数の比較 6 回。新しい述語も `geom` への追加も要りません。
         const octree::CellBox cb2 = octree::box_of(frag_cell[pick]);
+        const octree::Aabb& ob = frag_box[pick];
+        bool narrowed = false;
         for (int k = 0; k < 3; ++k) {
-            q.aabb.lo[k] = cb2.lo[k];
-            q.aabb.hi[k] = cb2.hi[k];
+            // **旗を落とすと完全に従来どおり**（セル箱）になります（`opt.tight_out_aabb`）。
+            q.aabb.lo[k] = opt.tight_out_aabb ? std::max(ob.lo[k], cb2.lo[k]) : cb2.lo[k];
+            q.aabb.hi[k] = opt.tight_out_aabb ? std::min(ob.hi[k], cb2.hi[k]) : cb2.hi[k];
+            if (q.aabb.lo[k] > cb2.lo[k] || q.aabb.hi[k] < cb2.hi[k]) narrowed = true;
         }
+        // **番人**（§5.10.6）。**1 個も狭まらないなら、この機構は空回りしています。**
+        if (narrowed) ++st.out_aabb_narrowed;
+        // **★ 葉の深度は別に持ちます**（`polysoup.hpp` の `Poly::cell_depth`）。
+        // **箱を狭めると、箱の辺の長さから深度を逆算できません**（A-3 が退避します）。
+        q.cell_depth = static_cast<std::uint8_t>(frag_cell[pick].depth);
         // **立体は in の側にあります。** 外向き法線は立体から外を向くので、
         // +N 側が in なら外向き法線は -N です（§5.2）。
         if (need_reverse) {

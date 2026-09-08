@@ -29,6 +29,7 @@
 //
 // **最後の 2 つが機構の切り分けです。**
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -41,10 +42,36 @@
 #include "krisite/par/thread_pool.hpp"
 
 #include "thingi10k/loader.hpp"
+#include "volume_fp.hpp"
 
 using namespace krisite;
 
 namespace {
+
+/// **出力の同一性を版をまたいで比べるためのハッシュ**（`SPEC-phase5.md` §5.10.6 の検査）。
+///
+/// **同一版の中の比較ではなく、コードを変える前後で比べるので、
+/// 値そのものを出力に書きます**（`CLAUDE.md`「版をまたいだ比較」）。
+unsigned long long hash_mesh(const csg::SoupMesh& m) {
+    unsigned long long h = 1469598103934665603ull;
+    const auto mix = [&h](unsigned long long v) {
+        h ^= v;
+        h *= 1099511628211ull;
+    };
+    mix(m.triangles.size());
+    mix(m.vertices.size());
+    for (const mesh::Tri& t : m.triangles) {
+        for (int k = 0; k < 3; ++k) mix(t[k]);
+    }
+    for (const geom::HPointD& v : m.vertices) {
+        // **同次座標の全リムを混ぜます**（値そのものを比べるため）
+        for (std::size_t i = 0; i < v.x.kLimbs; ++i) mix(v.x[i]);
+        for (std::size_t i = 0; i < v.y.kLimbs; ++i) mix(v.y[i]);
+        for (std::size_t i = 0; i < v.z.kLimbs; ++i) mix(v.z[i]);
+        for (std::size_t i = 0; i < v.w.kLimbs; ++i) mix(v.w[i]);
+    }
+    return h;
+}
 
 struct Row {
     std::string name;
@@ -96,12 +123,14 @@ void print_rows() {
 
     // **★ 機構の候補を切り分けるための量**（§15.2）。
     // **葉の数と深さが段で変わるなら、増分はセル境界の切断で説明できます。**
-    std::printf("\n| 段 | 葉（非空） | 深度 min/max | `bsp_cuts_used` | `active_cells` |\n");
-    std::printf("|---|---:|---:|---:|---:|\n");
+    std::printf(
+        "\n| 段 | 葉（非空） | 深度 min/max | `bsp_cuts_used` | `active_cells` | **箱が狭まった** "
+        "|\n");
+    std::printf("|---|---:|---:|---:|---:|---:|\n");
     for (const Row& r : g_rows) {
-        std::printf("| %s | %zu | %u / %u | %zu | %zu |\n", r.name.c_str(), r.st.leaf_nonempty,
-                    r.st.leaf_depth_min, r.st.leaf_depth_max, r.st.bsp_cuts_used,
-                    r.st.active_cells);
+        std::printf("| %s | %zu | %u / %u | %zu | %zu | %zu |\n", r.name.c_str(),
+                    r.st.leaf_nonempty, r.st.leaf_depth_min, r.st.leaf_depth_max,
+                    r.st.bsp_cuts_used, r.st.active_cells, r.st.out_aabb_narrowed);
     }
     std::printf(
         "\n| 段 | 群 | 食い違い | **セルまたぎ** | うち辺平面が同一 | うち支持平面が軸平行 |\n");
@@ -205,6 +234,22 @@ int main(int argc, char** argv) {
         std::printf("| `(A＼D)＼D` | %zu | %zu | %zu | %lld | %s |\n", m2.triangles.size(),
                     m2.vertices.size(), r2.components, static_cast<long long>(r2.chi),
                     r2.ok() ? "はい" : "**いいえ**");
+        std::printf("\n**★ ハッシュ**: `A＼D` = `%016llx` / `(A＼D)＼D` = `%016llx`\n",
+                    hash_mesh(m1), hash_mesh(m2));
+        // **★ バイト一致しないときに「意味論は同じ」を示す側**（`SPEC-phase5.md` §5.10.6）。
+        //
+        // **これは篩です。厳密な検査ではありません**（`volume_fp.hpp` の注記）。
+        // **格子 1 単位ぶんの欠損は丸めの床より下で、捕まりません。**
+        {
+            const double v1 = kritest::volume6_fp(m1), v2 = kritest::volume6_fp(m2);
+            const double scale = std::max(std::fabs(v1), 1.0);
+            const double err = std::fabs(v2 - v1) / scale;
+            std::printf(
+                "**体積（篩）**: `A＼D` = %.10e / `(A＼D)＼D` = %.10e / "
+                "相対差 **%.3e**（閾値 %.0e → %s）\n",
+                v1, v2, err, kritest::kIdentityTol,
+                err <= kritest::kIdentityTol ? "**通過**" : "**★ 超過（重大）**");
+        }
         const bool same_geom = (r1.components == r2.components) && (r1.chi == r2.chi);
         std::printf(
             "\n**判定**: 位相は %s。断片数は %s。\n", same_geom ? "**一致**" : "**不一致（重大）**",
