@@ -162,6 +162,13 @@ struct Totals {
     std::size_t range_skipped = 0;        ///< 二分探索で飛ばした候補（**0 なら空回り**）
     std::size_t side_unsorted_total = 0;  ///< 絞り込みなしの `side`
     std::size_t side_sorted_total = 0;    ///< 絞り込みありの `side`
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+    // ---- ★ 実験: 共平面重複の仕分けを切断の符号列で（`RESEARCH-perf.md` §S3.5）----
+    std::size_t rc_groups = 0;    ///< 突き合わせたグループ
+    std::size_t rc_multi = 0;     ///< **断片が 2 個以上のグループ**（重なりがある証拠）
+    std::size_t rc_mismatch = 0;  ///< **食い違ったグループ。0 でなければ失敗**
+    std::size_t rh_total = 0, rh_max = 0, rh_count = 0;  ///< 符号列の長さと、その分母
+#endif
 };
 
 Totals g;
@@ -173,6 +180,15 @@ void run_config(const kritest::Case& c, const TriMesh& a, const TriMesh& b, Bool
 
     BoolStats st{};
     const PolySoup r = boolean(sa, sb, op, opt, &st);
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+    // **出力は変えていません。** 2 つの鍵で仕分けを作り、中身が一致するかを見るだけです
+    g.rc_groups += st.region_cmp_groups;
+    g.rc_multi += st.region_cmp_multi;
+    g.rc_mismatch += st.region_cmp_mismatch;
+    g.rh_total += st.region_hist_total;
+    g.rh_max = std::max(g.rh_max, st.region_hist_max);
+    g.rh_count += st.region_hist_count;
+#endif
 
     // ---- 分裂 off / on -------------------------------------------------------
     ToMeshOptions off, on;
@@ -472,6 +488,25 @@ void check_not_vacuous() {
     // **突き合わせを 1 度も回していなければ、一致は何も言っていません。**
     KRI_CHECK_MSG(g.verify_agree > 0,
                   "**検証の増分計算と従来経路の突き合わせを 1 度も回していません。空回りです**");
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+    // ---- ★ 実験の判定と番人（`RESEARCH-perf.md` §S3.5）------------------------
+    //
+    // **食い違いが 0 でなければ、切断の符号列では仕分けられません。**
+    KRI_CHECK_MSG(g.rc_mismatch == 0,
+                  "**切断の符号列による仕分けが、頂点 ID による仕分けと食い違いました**" +
+                      kritest::pair_msg(g.rc_mismatch, 0));
+    // **番人**: **共平面重複が 1 件も無ければ、両方の鍵は自明に一致します。**
+    // **重なりのある入力で比較していることを、数で示します。**
+    KRI_CHECK_MSG(g.rc_multi > 0,
+                  "**断片が 2 個以上のグループが 1 つもありません。**"
+                  "共平面重複の無い入力だけで比較しており、一致は何も言っていません");
+    KRI_CHECK_MSG(g.rc_groups > 0, "**突き合わせを 1 度も回していません。空回りです**");
+    std::printf(
+        "    ★ 実験（切断の符号列）: 群 %zu / **重なりのある群 %zu** / "
+        "食い違い %zu、符号列の長さ **断片あたり** 平均 %.1f・最大 %zu\n",
+        g.rc_groups, g.rc_multi, g.rc_mismatch,
+        g.rh_count > 0 ? static_cast<double>(g.rh_total) / g.rh_count : 0.0, g.rh_max);
+#endif
     // **走査順の入れ替えが実際に走査を減らしていること**（空回りの番人）。
     // **等しければ、多角形がすべて 1 辺しかないか、機構が効いていません。**
     // **絞り込みが実際に候補を飛ばしていること**（空回りの番人）。

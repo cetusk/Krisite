@@ -87,12 +87,33 @@ struct BoolStats {
     /// > 実装されていませんでした。** スープ経路（実際に使う経路）では常に 0 で、
     /// > **番人が空回りしていました**（`DESIGN-phase5-hotspots.md` §9.4）。
     std::size_t merge_groups = 0;
-    std::size_t duplicate_fragments = 0;       ///< 重複割り当てが生んだ重複断片（§5.4）
-    std::size_t coplanar_same = 0;             ///< 共平面重複のうち向きが同じ対の数
-    std::size_t coplanar_opposite = 0;         ///< 向きが逆の対の数
-    std::size_t constructed_points = 0;        ///< 第1段が作った構成点の総数（§5.4 の分母）
-    std::size_t merged_points = 0;             ///< 第2段の併合後の点数
-    std::size_t merged_by_value = 0;           ///< 第1段が取りこぼし第2段が併合した数（§5.4）
+    std::size_t duplicate_fragments = 0;  ///< 重複割り当てが生んだ重複断片（§5.4）
+    std::size_t coplanar_same = 0;        ///< 共平面重複のうち向きが同じ対の数
+    std::size_t coplanar_opposite = 0;    ///< 向きが逆の対の数
+    std::size_t constructed_points = 0;   ///< 第1段が作った構成点の総数（§5.4 の分母）
+    std::size_t merged_points = 0;        ///< 第2段の併合後の点数
+    std::size_t merged_by_value = 0;      ///< 第1段が取りこぼし第2段が併合した数（§5.4）
+    // ---- ★ 実験: 共平面重複の仕分けを、切断の符号列で行えるか --------------------
+    //
+    // **`RESEARCH-perf.md` §S3.5。`KRISITE_EXPERIMENT_REGION_HIST` で有効になります。**
+    // **既定では 0 のままです**（実験の経路が存在しません）。
+    /// **突き合わせたグループの数**（頂点 ID による仕分けのグループ数）
+    std::size_t region_cmp_groups = 0;
+    /// **★ そのうち断片が 2 個以上のグループ**（= 共平面重複が実際にある証拠）。
+    ///
+    /// **0 なら、両方の鍵が自明に一致しています。番人としてこれを数えます。**
+    std::size_t region_cmp_multi = 0;
+    /// **★ 2 つの鍵で仕分けが食い違ったグループの数。0 でなければ実験は失敗です。**
+    ///
+    /// **グループの【数】ではなく【中身】（断片の添字集合）を比べます。**
+    /// 数が同じでも、違う断片が同じグループに入っている可能性があります。
+    std::size_t region_cmp_mismatch = 0;
+    /// **切断の履歴の長さ**（符号列の費用。断片あたりの平均を出すための分子）
+    std::size_t region_hist_total = 0;
+    std::size_t region_hist_max = 0;
+    /// **符号列を数えた断片の数**（`region_hist_total` の分母）。
+    /// **群の数で割ってはいけません** — 群と断片は 1 対 1 ではありません
+    std::size_t region_hist_count = 0;
     std::size_t max_planes_at_point = 0;       ///< 1 点に集まる平面の最大枚数（§5.4、セル面込み）
     std::size_t max_mesh_planes_at_point = 0;  ///< 同上、メッシュ平面のみ（対照）
     std::size_t planes_total = 0;              ///< 総当たりの分母（表に載った平面の総数）

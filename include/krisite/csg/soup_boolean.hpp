@@ -975,6 +975,76 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
     }
 
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+    // ---- ★ 実験: 切断の符号列で同じ仕分けができるか（`RESEARCH-perf.md` §S3.5）----
+    //
+    // **問い**: 共平面重複の仕分けに、頂点 ID が要るのか。
+    // **要らなければ、上の縫合（構成点の構築・整列・値による併合）が消えます。**
+    // **実測で中核の 29.2% です。**
+    //
+    // **根拠**（ソースで確認済み。`IMPL-v2.md` §9）:
+    //
+    //   第 1 段 `cuts_for(sup)`  `std::map` の昇順で決定的。**支持平面だけで決まる**
+    //   第 2 段 `es`（共平面揃え） `std::sort` で決定的。**グループ全体の和集合**
+    //
+    // **どちらもグループ内の全断片に、同じ平面集合が同じ順序で適用されます。**
+    // **したがって重なり領域の断片は、同じ切断の履歴を持つはずです。**
+    //
+    // **ここでは出力を変えません。** 2 つの鍵で仕分けを作り、
+    // **グループの【中身】（断片の添字集合）が完全に一致するかを見るだけです。**
+    {
+        using HistKey = std::pair<PlaneId, std::vector<std::pair<PlaneId, std::int8_t>>>;
+        std::map<HistKey, std::vector<std::size_t>> by_hist;
+        for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+            if (raw[fi].size() < 3) continue;
+            st.region_hist_total += frags[fi].hist.size();
+            st.region_hist_max = std::max(st.region_hist_max, frags[fi].hist.size());
+            ++st.region_hist_count;
+            by_hist[HistKey{frags[fi].support, frags[fi].hist}].push_back(fi);
+        }
+        // **断片 → グループ** の写像を 2 つ作り、**同じ分割を与えるか**を見ます。
+        // **グループの数だけでは足りません**（違う断片が同じグループに入り得ます）。
+        std::vector<std::size_t> g_id(frags.size(), 0), g_hist(frags.size(), 0);
+        std::size_t k = 1;
+        for (const auto& kv : regions) {
+            for (std::size_t fi : kv.second) g_id[fi] = k;
+            ++k;
+        }
+        k = 1;
+        for (const auto& kv : by_hist) {
+            for (std::size_t fi : kv.second) g_hist[fi] = k;
+            ++k;
+        }
+        // **2 つの分割が一致する $\iff$ 群の対応が両方向とも関数になる。**
+        //
+        // **$O(F)$ で見られます。** 群ごとに相手の群を探すと $O(\text{群}^2)$ になり、
+        // **実データで 84 秒かかりました**（私の最初の実装）。
+        std::vector<std::size_t> i2h(k + 1, 0), h2i(k + 1, 0);
+        i2h.assign(regions.size() + 1, 0);
+        h2i.assign(by_hist.size() + 1, 0);
+        std::vector<char> bad_i(regions.size() + 1, 0);
+        for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+            if (g_id[fi] == 0) continue;
+            const std::size_t a = g_id[fi], b = g_hist[fi];
+            if (i2h[a] == 0) {
+                i2h[a] = b;
+            } else if (i2h[a] != b) {
+                bad_i[a] = 1;  // 同じ頂点 ID の群が、違う符号列の群に散った
+            }
+            if (h2i[b] == 0) {
+                h2i[b] = a;
+            } else if (h2i[b] != a) {
+                bad_i[a] = 1;  // 違う頂点 ID の群が、同じ符号列の群に混ざった
+            }
+        }
+        for (const auto& kv : regions) {
+            ++st.region_cmp_groups;
+            if (kv.second.size() >= 2) ++st.region_cmp_multi;
+            if (bad_i[g_id[kv.second.front()]] != 0) ++st.region_cmp_mismatch;
+        }
+    }
+#endif
+
     // **広がりの集計**（`SPEC-phase4.md` §2.6 の前提を、実際に使う経路で測る）
     for (std::size_t i = 0; i < pt_lo.size(); ++i) {
         std::size_t span = 0;
