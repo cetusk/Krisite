@@ -171,6 +171,9 @@ struct Totals {
     std::size_t rk_bits_total = 0, rk_bits_max = 0, rk_bits_count = 0;
     // **連鎖の側は別に数えます**（§14.8。**連鎖では成立しません**）
     std::size_t rkn_groups = 0, rkn_mismatch = 0, rkn_cross = 0;
+    /// **★ セルまたぎの【機構】の内訳**（`DESIGN-phase5-hotspots.md` §15.3）。
+    /// **「またいだ」は 1 段目です。中身を見ないと機構は決まりません。**
+    std::size_t rkn_cross_same = 0, rkn_cross_axis = 0;
 };
 
 Totals g;
@@ -422,6 +425,8 @@ void run_nary(const kritest::Case& c, const TriMesh& a, const TriMesh& b, const 
         g.rkn_groups += st1.region_cmp_groups + st2.region_cmp_groups;
         g.rkn_mismatch += st1.region_cmp_mismatch + st2.region_cmp_mismatch;
         g.rkn_cross += st1.region_cross_cell + st2.region_cross_cell;
+        g.rkn_cross_same += st1.region_cross_cell_same_edges + st2.region_cross_cell_same_edges;
+        g.rkn_cross_axis += st1.region_cross_cell_axis_support + st2.region_cross_cell_axis_support;
         const std::string tag = std::string("ケース ") + c.id + " (A∪B)\\D（" +
                                 (adaptive ? "適応" : "深度 " + std::to_string(depth)) + "）";
         KRI_CHECK_MSG(s2.source_count() == 3, tag + ": source 数が 3 でない");
@@ -537,6 +542,8 @@ void check_not_vacuous() {
         g.rk_groups, g.rk_multi, g.rk_mismatch, g.rk_cross);
     std::printf("       **連鎖では成立しません**: 群 %zu / 食い違い %zu / セルまたぎ %zu\n",
                 g.rkn_groups, g.rkn_mismatch, g.rkn_cross);
+    std::printf("       セルまたぎの内訳: 辺平面が同一 %zu / 支持平面が軸平行 %zu\n",
+                g.rkn_cross_same, g.rkn_cross_axis);
     std::printf("       符号列: 断片あたり 平均 %.1f / 最大 %zu / 256 ビット超 %zu\n",
                 g.rk_bits_count > 0 ? static_cast<double>(g.rk_bits_total) / g.rk_bits_count : 0.0,
                 g.rk_bits_max, g.rk_overflow);

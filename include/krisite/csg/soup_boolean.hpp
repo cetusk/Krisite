@@ -1068,15 +1068,41 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             if (bad[g_old[kv.second.front()]] != 0) ++st.region_cmp_mismatch;
         }
         // **群がセルをまたいでいないこと**（またぐと、新しい鍵で 2 つに割れます）
+        //
+        // **★ またいだ群については、【なぜまたぐか】まで降ります**
+        // （`.claude/rules/deduction.md` §2.1。「またいだ」は 1 段目です）。
+        //
+        //   同じ辺平面集合か  … 同じ多角形が 2 つのセルに割り当てられた
+        //   支持平面が軸平行か … その多角形がセル境界面に乗っている
         for (const auto& kv : old_regions) {
             const octree::Cell& c0 = frag_cell[kv.second.front()];
+            bool cross = false;
             for (std::size_t fi : kv.second) {
                 const octree::Cell& c1 = frag_cell[fi];
                 if (c1.depth != c0.depth || c1.i != c0.i || c1.j != c0.j || c1.k != c0.k) {
-                    ++st.region_cross_cell;
+                    cross = true;
                     break;
                 }
             }
+            if (!cross) continue;
+            ++st.region_cross_cell;
+            // **辺平面は集合として比べます。** 回転や始点の違いで列は変わり得ます。
+            std::vector<PlaneId> e0 = frags[kv.second.front()].edge;
+            std::sort(e0.begin(), e0.end());
+            bool same_edges = true;
+            for (std::size_t fi : kv.second) {
+                std::vector<PlaneId> e1 = frags[fi].edge;
+                std::sort(e1.begin(), e1.end());
+                if (e1 != e0) {
+                    same_edges = false;
+                    break;
+                }
+            }
+            if (same_edges) ++st.region_cross_cell_same_edges;
+            const geom::PlaneD& sp0 = out.table.at(frags[kv.second.front()].support);
+            const int nz = (arith::is_zero(sp0.a) ? 0 : 1) + (arith::is_zero(sp0.b) ? 0 : 1) +
+                           (arith::is_zero(sp0.c) ? 0 : 1);
+            if (nz == 1) ++st.region_cross_cell_axis_support;
         }
         st.region_hist_count = frags.size();
         for (const Fragment& f : frags) {
