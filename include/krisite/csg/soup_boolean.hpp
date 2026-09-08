@@ -28,6 +28,7 @@
 #include <chrono>
 #include <map>
 #include <mutex>
+#include <tuple>
 #include <vector>
 #if defined(KRISITE_DEBUG_SOUP)
 #include <cstdio>
@@ -37,6 +38,7 @@
 #include "krisite/csg/interior.hpp"
 #include "krisite/csg/polysoup.hpp"
 #include "krisite/csg/raycast.hpp"
+#include "krisite/geom/counters.hpp"
 #include "krisite/octree/adaptive.hpp"
 #include "krisite/par/thread_pool.hpp"
 
@@ -122,10 +124,23 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.regions_negative_w += b.regions_negative_w;
     a.regions_w_ge2 += b.regions_w_ge2;
     a.raycasts += b.raycasts;
+    a.out_aabb_narrowed += b.out_aabb_narrowed;
     a.interior.axis_line += b.interior.axis_line;
     a.interior.corner_offset += b.interior.corner_offset;
     a.interior.axis_failed += b.interior.axis_failed;
     a.interior.corner_tries += b.interior.corner_tries;
+    a.interior.side_tests += b.interior.side_tests;
+    a.interior.vertex_builds += b.interior.vertex_builds;
+    a.interior.candidates += b.interior.candidates;
+    a.interior.axis_out_of_range += b.interior.axis_out_of_range;
+    a.interior.axis_outside += b.interior.axis_outside;
+    a.interior.axis_degenerate += b.interior.axis_degenerate;
+    a.interior.axis_range_max_permille =
+        std::max(a.interior.axis_range_max_permille, b.interior.axis_range_max_permille);
+    a.side_calls_arrange += b.side_calls_arrange;
+    a.side_calls_classify += b.side_calls_classify;
+    a.intersect3_arrange += b.intersect3_arrange;
+    a.intersect3_classify += b.intersect3_classify;
     a.cache_hits += b.cache_hits;
     a.cache_misses += b.cache_misses;
     a.cache_entries += b.cache_entries;
@@ -133,6 +148,16 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.leaf_input_total += b.leaf_input_total;
     a.leaf_input_sq += b.leaf_input_sq;
     a.leaf_poly_sq += b.leaf_poly_sq;
+    a.leaf_poly_total += b.leaf_poly_total;
+    a.eo_forced_leaves += b.eo_forced_leaves;
+    a.eo_const_leaves += b.eo_const_leaves;
+    a.eo_const_input += b.eo_const_input;
+    a.eo_const_input_sq += b.eo_const_input_sq;
+    a.eo_const_polys += b.eo_const_polys;
+    a.eo_const_poly_sq += b.eo_const_poly_sq;
+    a.eo_const_bsp_slots += b.eo_const_bsp_slots;
+    a.eo_const_frags += b.eo_const_frags;
+    a.eo_dropped_leaves += b.eo_dropped_leaves;
     a.frag_edges_total += b.frag_edges_total;
     a.frag_edges_count += b.frag_edges_count;
     a.frag_edges_max = std::max(a.frag_edges_max, b.frag_edges_max);
@@ -417,6 +442,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     std::vector<Fragment> frags;
     std::vector<octree::Cell> frag_cell;
     std::vector<std::uint32_t> frag_src, frag_tag;
+    /// **断片ごとの「元の多角形の外接箱」**（§5.10.6）。`frag_cell` と対で使います。
+    std::vector<octree::Aabb> frag_box;
     /// セルで「多角形が 1 枚も無かった source」の内外（-1 = 未確定）。§3.2 の early-out
     std::vector<std::vector<std::int32_t>> frag_forced;
     /// **その source の巻き数が確定しているか**（`frag_forced` と同じ形）。
@@ -444,6 +471,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     struct LeafOut {
         std::vector<Fragment> frags;
         std::vector<std::uint32_t> src, tag;
+        /// **★ 断片のもとになった多角形の外接箱**（`SPEC-phase5.md` §5.10.6）。
+        ///
+        /// **出力の `Poly::aabb` を「元の箱 ∩ セル箱」にするために持ちます。**
+        /// 断片 $\subseteq$ 元の多角形 $\cap$ セル なので、この交差は保守的です。
+        std::vector<octree::Aabb> box;
         std::vector<std::int32_t> forced;
         std::vector<char> forced_known;
         bool empty_cell = false;
@@ -482,8 +514,23 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         PointCache* const cache = opt.cache_points ? &tl_cache[tid] : nullptr;
 #endif
         const octree::CellBox cbox = octree::box_of(cell);
+        // **★ 述語の計数**（`KRISITE_COUNT_PREDICATES` のときだけ）。
+        // **`thread_local` なので、同じスレッドでの差分を取れば正確です。**
+#if defined(KRISITE_COUNT_PREDICATES)
+        const std::uint64_t pc_side0 = geom::counters::side_calls;
+        const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
+        struct PredGuard {
+            BoolStats& s;
+            std::uint64_t s0, i0;
+            ~PredGuard() {
+                s.side_calls_arrange += geom::counters::side_calls - s0;
+                s.intersect3_arrange += geom::counters::intersect3_calls - i0;
+            }
+        } pred_guard{st, pc_side0, pc_i30};
+#endif
         std::vector<Fragment> local;
         std::vector<std::uint32_t> local_src, local_tag;
+        std::vector<octree::Aabb> local_box;
 
         // **arrange を段に刻みます**（`PERF.md` §1.1）。葉の粒度なので計時は無視できます
         using aclk = std::chrono::steady_clock;
@@ -519,6 +566,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             here.push_back(i);
         }
         st.leaf_poly_sq += here.size() * here.size();
+        st.leaf_poly_total += here.size();
         st.ms_arr_gather += a_lap();
         if (here.empty()) {
             ++st.empty_cells;
@@ -565,8 +613,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // **葉に入った三角形の数を記録します**（`SPEC-phase5.md` の CP1.5）。
         // **EMBER §4.5.3 が最適化しているのはこの量**（部分問題の多角形数）で、
         // $P$ でも深度でもありません。ここで持たないと比較になりません。
+        std::size_t in_leaf = 0;
         {
-            std::size_t in_leaf = 0, n_present = 0;
+            std::size_t n_present = 0;
             for (std::size_t i = 0; i < n_src; ++i) {
                 in_leaf += count[i];
                 if (count[i] > 0) {
@@ -620,6 +669,51 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
             if (any) ++st.early_out_cells;
         }
+
+        // ---- ★ 到達可能性解析の【測定】（`SPEC-phase5.md` §5.10.8）--------------
+        //
+        // **判定するだけで、まだ捨てていません。出力は 1 ビットも変わりません。**
+        //
+        // **指示関数が「このセルに居る source」に依存しないなら、
+        // その葉のどの断片も `in_front == in_back` になり、1 枚も出力されません。**
+        // **したがって葉ごと捨てられます**（EMBER §4.5.2 の規則）。
+        //
+        // **費用は葉あたり指示関数の節点数**（数十命令）で、葉の仕事に比べて無視できます。
+        bool eo_const_here = false;
+        {
+            bool any_known = false;
+            for (std::size_t i = 0; i < n_src; ++i) {
+                if (forced_known[i] != 0) any_known = true;
+            }
+            if (any_known) {
+                ++st.eo_forced_leaves;
+                const int abs_v = out.indicator.eval_abstract(forced, forced_known);
+                if (abs_v != Indicator::kAbsUnknown) {
+                    eo_const_here = true;
+                    ++st.eo_const_leaves;
+                    st.eo_const_input += in_leaf;
+                    st.eo_const_input_sq += in_leaf * in_leaf;
+                    st.eo_const_polys += here.size();
+                    st.eo_const_poly_sq += here.size() * here.size();
+                }
+            }
+        }
+        // **★ 定値なら、この葉は 1 枚も出力しません。葉ごと捨てます**（§5.10.8）。
+        //
+        // **論証**: 出力されるのは `in_front != in_back` の領域だけ。
+        // $w_{front}$ と $w_{back}$ が違うのは**断片に載っている面の source** の成分だけで、
+        // その source はこのセルに三角形を持つ（＝ `forced_known` が偽）。
+        // **確定した成分だけで指示関数の値が決まるなら、表裏は必ず一致します。**
+        if (eo_const_here && opt.early_out_reachability) {
+            ++st.eo_dropped_leaves;
+            ++st.empty_cells;
+            outl.empty_cell = true;
+            return;
+        }
+        // **★ 定値の葉で実際に使う仕事を測ります**（代理ではなく、省ける量そのもの）。
+        // **捨てる旗が立っていると、ここには来ません**（測定は旗を落として行います）。
+        const std::size_t eo_slots0 = st.bsp_cut_slots;
+        const std::size_t eo_frags0 = st.frag_edges_count;
 
         // セル面の平面（保持側つき）。**登録は並列区間の前で済ませています**
         const std::vector<CellPlane>& cps = cell_planes_of[li];
@@ -784,6 +878,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 local.push_back(std::move(p));
                 local_src.push_back(polys[idx].src);
                 local_tag.push_back(polys[idx].tag);
+                local_box.push_back(polys[idx].aabb);
             }
         }
 
@@ -804,6 +899,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // 2 つ目のグループ以降で添字が無効になります（実際に踏みました）。
             std::vector<Fragment> nl;
             std::vector<std::uint32_t> ns, nt;
+            std::vector<octree::Aabb> nb;
             for (const auto& g : by_sup) {
                 // 由来が 1 つだけなら、同じ多角形の断片どうしなので揃っています
                 bool multi = false;
@@ -819,6 +915,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                         nl.push_back(local[i]);
                         ns.push_back(local_src[i]);
                         nt.push_back(local_tag[i]);
+                        nb.push_back(local_box[i]);
                     }
                     continue;
                 }
@@ -848,12 +945,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                         nl.push_back(std::move(p));
                         ns.push_back(local_src[i]);
                         nt.push_back(local_tag[i]);
+                        nb.push_back(local_box[i]);
                     }
                 }
             }
             local.swap(nl);
             local_src.swap(ns);
             local_tag.swap(nt);
+            local_box.swap(nb);
         }
 
         st.ms_arr_coplanar += a_lap();
@@ -861,10 +960,15 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         outl.frags = std::move(local);
         outl.src = std::move(local_src);
         outl.tag = std::move(local_tag);
+        outl.box = std::move(local_box);
         outl.forced = forced;
         outl.forced_known = forced_known;
         outl.active = !outl.frags.empty();
         if (outl.active) ++st.active_cells;
+        if (eo_const_here) {
+            st.eo_const_bsp_slots += st.bsp_cut_slots - eo_slots0;
+            st.eo_const_frags += st.frag_edges_count - eo_frags0;
+        }
     });
 
     // **葉の順に結合します**（§4.2 の正準な順序）。
@@ -882,6 +986,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             frag_cell.push_back(leaves[li]);
             frag_src.push_back(o.src[i]);
             frag_tag.push_back(o.tag[i]);
+            frag_box.push_back(o.box[i]);
             frag_forced.push_back(o.forced);
             frag_forced_known.push_back(o.forced_known);
         }
@@ -902,6 +1007,17 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // 値で併合するので、そのままでは並列にできません。**中核だけを並列化したときの
     // 上限は $1/0.161 = 6.2$ 倍**で、これは出口の頂点併合（`SPEC-phase4.md` §3.1）と
     // 同じ形の問題です。**並列整列 + 区分ごとの併合**で崩せますが、CP1 では扱いません。
+    // ---- ★ 縫合は【検査のときだけ】走ります（`DESIGN-phase5-hotspots.md` §14）----
+    //
+    // **共平面重複の仕分けに頂点 ID を使うのをやめました。**
+    // **鍵は `(セル, 支持平面, 切断の符号列)` です**（`detail::RegionKey2`）。
+    //
+    // **`opt.verify_region_key` が真のときだけ、従来の鍵も作って突き合わせます。**
+    // **既定は偽です。** この段は実測で中核の 29.2% を占めていました。
+    // **既定では従来どおり縫合します**（`opt.region_key_cuts` が偽）。
+    // **真にすると新しい鍵（切断の符号列）で仕分け、従来の鍵とも突き合わせます。**
+    const bool use_cuts = opt.region_key_cuts;
+    const bool do_stitch = !use_cuts || opt.verify_region_key;
     PointCache stitch_cache;
     PointCache* const cache = opt.cache_points ? &stitch_cache : nullptr;
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
@@ -915,8 +1031,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     //
     // 点ごとに、その点を参照した断片のセル添字（最大深度に正規化）の範囲を持ちます。
     std::vector<std::array<std::uint32_t, 3>> pt_lo, pt_hi;
-    std::vector<std::vector<std::uint32_t>> raw(frags.size());
-    for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+    std::vector<std::vector<std::uint32_t>> raw(do_stitch ? frags.size() : 0);
+    for (std::size_t fi = 0; do_stitch && fi < frags.size(); ++fi) {
         const Fragment& f = frags[fi];
         const std::size_t n = vertex_count(f);
         raw[fi].reserve(n);
@@ -944,6 +1060,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     }
     st.constructed_points = points.size();
     std::vector<std::uint32_t> order(points.size());
+    (void)cache;
     for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
     std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
         return geom::lex_less(points[a], points[b]);
@@ -966,13 +1083,137 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     //
     // 同じ領域の断片は、(支持平面, 頂点集合) が一致します。**共平面重複は
     // 全順序で 1 枚だけ残します**（`SPEC-phase3.md` §5.4.1 / EMBER §4.3 の C4）。
-    std::map<detail::RegionKey, std::vector<std::size_t>> regions;
+    // **鍵は 2 通りあります**（`DESIGN-phase5-hotspots.md` §14）。
+    //
+    //   従来（既定）  (支持平面, 頂点 ID の整列集合)   ← 縫合が要る
+    //   新しい        (セル, 支持平面, 切断の符号列)   ← 縫合が要らない。**連鎖で不可**
+    //
+    // **`RegionKey2` に統一して持ちます。** 従来の鍵は、
+    // **頂点 ID の列を `cutbits` の位置に詰めて**表します（型を 2 つ持たないため）。
+    std::map<detail::RegionKey2, std::vector<std::size_t>> regions;
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
-        if (raw[fi].size() < 3) continue;
-        std::vector<std::uint32_t> ids;
-        ids.reserve(raw[fi].size());
-        for (std::uint32_t v : raw[fi]) ids.push_back(remap[v]);
-        regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
+        if (use_cuts) {
+            if (vertex_count(frags[fi]) < 3) continue;
+            regions[detail::RegionKey2{detail::cell_key(frag_cell[fi]), frags[fi].support,
+                                       frags[fi].cutbits, frags[fi].ncuts}]
+                .push_back(fi);
+        } else {
+            if (raw[fi].size() < 3) continue;
+            std::vector<std::uint32_t> ids;
+            ids.reserve(raw[fi].size());
+            for (std::uint32_t v : raw[fi]) ids.push_back(remap[v]);
+            std::sort(ids.begin(), ids.end());
+            ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+            std::vector<std::uint64_t> packed(ids.begin(), ids.end());
+            regions[detail::RegionKey2{0, frags[fi].support, std::move(packed),
+                                       static_cast<std::uint32_t>(ids.size())}]
+                .push_back(fi);
+        }
+    }
+
+    // ---- ★ 従来の鍵（頂点 ID）との突き合わせ（`opt.verify_region_key`）------------
+    //
+    // **置き換えが正しいことを示すのは、この検査だけです。**
+    // **旗を外すと、示すものが無くなります**（§14.3.2）。
+    //
+    // **検査は「群の対応が両方向とも関数か」で行います。**
+    // **群の数の一致では足りません**（違う断片が同じ群に入り得ます）。
+    if (use_cuts || opt.verify_region_key) {
+        std::map<detail::RegionKey, std::vector<std::size_t>> old_regions;
+        for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+            if (vertex_count(frags[fi]) < 3) continue;
+            std::vector<std::uint32_t> ids;
+            ids.reserve(raw[fi].size());
+            for (std::uint32_t v : raw[fi]) ids.push_back(remap[v]);
+            old_regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
+        }
+        std::vector<std::size_t> g_old(frags.size(), 0), g_new(frags.size(), 0);
+        std::size_t ko = 1;
+        for (const auto& kv : old_regions) {
+            for (std::size_t fi : kv.second) g_old[fi] = ko;
+            ++ko;
+        }
+        // **`use_cuts` なら `regions` が既に新しい鍵。**
+        // **そうでなければ、突き合わせのために新しい鍵を別に作ります。**
+        std::map<detail::RegionKey2, std::vector<std::size_t>> cut_regions;
+        if (!use_cuts) {
+            for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+                if (vertex_count(frags[fi]) < 3) continue;
+                cut_regions[detail::RegionKey2{detail::cell_key(frag_cell[fi]), frags[fi].support,
+                                               frags[fi].cutbits, frags[fi].ncuts}]
+                    .push_back(fi);
+            }
+        }
+        const auto& new_regions = use_cuts ? regions : cut_regions;
+        std::size_t kn = 1;
+        for (const auto& kv : new_regions) {
+            for (std::size_t fi : kv.second) g_new[fi] = kn;
+            ++kn;
+        }
+        std::vector<std::size_t> o2n(old_regions.size() + 1, 0), n2o(new_regions.size() + 1, 0);
+        std::vector<char> bad(old_regions.size() + 1, 0);
+        for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+            if (g_old[fi] == 0) continue;
+            const std::size_t a = g_old[fi], b = g_new[fi];
+            if (o2n[a] == 0) {
+                o2n[a] = b;
+            } else if (o2n[a] != b) {
+                bad[a] = 1;
+            }
+            if (n2o[b] == 0) {
+                n2o[b] = a;
+            } else if (n2o[b] != a) {
+                bad[a] = 1;
+            }
+        }
+        for (const auto& kv : old_regions) {
+            ++st.region_cmp_groups;
+            if (kv.second.size() >= 2) ++st.region_cmp_multi;
+            if (bad[g_old[kv.second.front()]] != 0) ++st.region_cmp_mismatch;
+        }
+        // **群がセルをまたいでいないこと**（またぐと、新しい鍵で 2 つに割れます）
+        //
+        // **★ またいだ群については、【なぜまたぐか】まで降ります**
+        // （`.claude/rules/deduction.md` §2.1。「またいだ」は 1 段目です）。
+        //
+        //   同じ辺平面集合か  … 同じ多角形が 2 つのセルに割り当てられた
+        //   支持平面が軸平行か … その多角形がセル境界面に乗っている
+        for (const auto& kv : old_regions) {
+            const octree::Cell& c0 = frag_cell[kv.second.front()];
+            bool cross = false;
+            for (std::size_t fi : kv.second) {
+                const octree::Cell& c1 = frag_cell[fi];
+                if (c1.depth != c0.depth || c1.i != c0.i || c1.j != c0.j || c1.k != c0.k) {
+                    cross = true;
+                    break;
+                }
+            }
+            if (!cross) continue;
+            ++st.region_cross_cell;
+            // **辺平面は集合として比べます。** 回転や始点の違いで列は変わり得ます。
+            std::vector<PlaneId> e0 = frags[kv.second.front()].edge;
+            std::sort(e0.begin(), e0.end());
+            bool same_edges = true;
+            for (std::size_t fi : kv.second) {
+                std::vector<PlaneId> e1 = frags[fi].edge;
+                std::sort(e1.begin(), e1.end());
+                if (e1 != e0) {
+                    same_edges = false;
+                    break;
+                }
+            }
+            if (same_edges) ++st.region_cross_cell_same_edges;
+            const geom::PlaneD& sp0 = out.table.at(frags[kv.second.front()].support);
+            const int nz = (arith::is_zero(sp0.a) ? 0 : 1) + (arith::is_zero(sp0.b) ? 0 : 1) +
+                           (arith::is_zero(sp0.c) ? 0 : 1);
+            if (nz == 1) ++st.region_cross_cell_axis_support;
+        }
+        st.region_hist_count = frags.size();
+        for (const Fragment& f : frags) {
+            st.region_hist_total += f.ncuts;
+            st.region_hist_max = std::max(st.region_hist_max, std::size_t{f.ncuts});
+            if (f.ncuts > 256) ++st.region_bits_overflow;
+        }
     }
 
     // **広がりの集計**（`SPEC-phase4.md` §2.6 の前提を、実際に使う経路で測る）
@@ -1009,7 +1250,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
     // **順序非依存の検査**（§14 の CP3 の判定）。分類が可変な共有状態に依存していれば、
     // 逆順にすると結果が変わります。依存していなければ幾何の多重集合は同じです。
-    std::vector<const std::pair<const detail::RegionKey, std::vector<std::size_t>>*> region_order;
+    std::vector<const std::pair<const detail::RegionKey2, std::vector<std::size_t>>*> region_order;
     region_order.reserve(regions.size());
     for (const auto& kv : regions) region_order.push_back(&kv);
     if (opt.reverse_regions) std::reverse(region_order.begin(), region_order.end());
@@ -1050,6 +1291,18 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         PointCache* const cache = opt.cache_points ? &tl_cache2[0] : nullptr;
 #else
         PointCache* const cache = opt.cache_points ? &tl_cache2[tid] : nullptr;
+#endif
+#if defined(KRISITE_COUNT_PREDICATES)
+        const std::uint64_t pc_side0 = geom::counters::side_calls;
+        const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
+        struct PredGuard {
+            BoolStats& s;
+            std::uint64_t s0, i0;
+            ~PredGuard() {
+                s.side_calls_classify += geom::counters::side_calls - s0;
+                s.intersect3_classify += geom::counters::intersect3_calls - i0;
+            }
+        } pred_guard{st, pc_side0, pc_i30};
 #endif
         const auto& kv = *kvp;
         // 同じ領域に複数の断片が載っていても、出力するのは 1 枚です（§5.4.1）。
@@ -1149,11 +1402,41 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         q.frag.flipped = in_front;  // 外向き法線が支持平面の法線と逆か
         q.src = frag_src[pick];
         q.tag = frag_tag[pick];
+        // **★ 切断の履歴は、この演算の中でしか意味を持ちません**
+        // （`DESIGN-phase5-hotspots.md` §14.8）。
+        //
+        // **連鎖では、次の段の切断が前の段の履歴の後ろに積まれます。**
+        // **前の段の履歴は次の段のセル分割とも切断集合とも無関係なので、
+        // 同じ領域が違う鍵になります**（実測: `(A∪B)\D` で $\chi$ が 2 → 12）。
+        //
+        // **出力を作るときに捨てます。** 次の段は空から積み直します。
+        q.frag.cutbits.clear();
+        q.frag.ncuts = 0;
+        // **★ 外接箱は「元の多角形の箱 ∩ セル箱」です**（`SPEC-phase5.md` §5.10.6）。
+        //
+        // **以前はセル箱をそのまま入れていました。** それは保守的ですが緩すぎて、
+        // **連鎖の 2 段目で割り当てが膨らみ、適応分割の判定まで歪みます**
+        // （`DESIGN-phase5-hotspots.md` §15.4。固定深度でも非空の葉が 400 → 429）。
+        //
+        // **正しさ**: 断片は「元の多角形をセルでクリップしたもの」なので
+        // $\text{断片} \subseteq \text{元の多角形} \cap \text{セル}$、
+        // したがって断片の真の箱はこの交差に含まれます。**保守性は保たれます。**
+        //
+        // **費用**: 整数の比較 6 回。新しい述語も `geom` への追加も要りません。
         const octree::CellBox cb2 = octree::box_of(frag_cell[pick]);
+        const octree::Aabb& ob = frag_box[pick];
+        bool narrowed = false;
         for (int k = 0; k < 3; ++k) {
-            q.aabb.lo[k] = cb2.lo[k];
-            q.aabb.hi[k] = cb2.hi[k];
+            // **旗を落とすと完全に従来どおり**（セル箱）になります（`opt.tight_out_aabb`）。
+            q.aabb.lo[k] = opt.tight_out_aabb ? std::max(ob.lo[k], cb2.lo[k]) : cb2.lo[k];
+            q.aabb.hi[k] = opt.tight_out_aabb ? std::min(ob.hi[k], cb2.hi[k]) : cb2.hi[k];
+            if (q.aabb.lo[k] > cb2.lo[k] || q.aabb.hi[k] < cb2.hi[k]) narrowed = true;
         }
+        // **番人**（§5.10.6）。**1 個も狭まらないなら、この機構は空回りしています。**
+        if (narrowed) ++st.out_aabb_narrowed;
+        // **★ 葉の深度は別に持ちます**（`polysoup.hpp` の `Poly::cell_depth`）。
+        // **箱を狭めると、箱の辺の長さから深度を逆算できません**（A-3 が退避します）。
+        q.cell_depth = static_cast<std::uint8_t>(frag_cell[pick].depth);
         // **立体は in の側にあります。** 外向き法線は立体から外を向くので、
         // +N 側が in なら外向き法線は -N です（§5.2）。
         if (need_reverse) {

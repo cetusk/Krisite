@@ -162,6 +162,23 @@ struct Totals {
     std::size_t range_skipped = 0;        ///< 二分探索で飛ばした候補（**0 なら空回り**）
     std::size_t side_unsorted_total = 0;  ///< 絞り込みなしの `side`
     std::size_t side_sorted_total = 0;    ///< 絞り込みありの `side`
+    // ---- 共平面重複の仕分けの鍵（`DESIGN-phase5-hotspots.md` §14）--------------
+    std::size_t rk_groups = 0;    ///< 突き合わせた群
+    std::size_t rk_multi = 0;     ///< **断片が 2 個以上の群**（重なりがある証拠）
+    std::size_t rk_mismatch = 0;  ///< **食い違い。0 でなければ置き換えは誤り**
+    std::size_t rk_cross = 0;     ///< **群がセルをまたいだ件数。0 でなければ鍵が割れる**
+    std::size_t rk_overflow = 0;  ///< 符号列が 256 ビットを超えた断片
+    std::size_t rk_bits_total = 0, rk_bits_max = 0, rk_bits_count = 0;
+    // **連鎖の側は別に数えます**（§14.8。**連鎖では成立しません**）
+    std::size_t rkn_groups = 0, rkn_mismatch = 0, rkn_cross = 0;
+    /// **★ 出力の外接箱が狭まった多角形の数**（`SPEC-phase5.md` §5.10.6 の番人）。
+    /// **0 なら機構が空回りしています。**
+    std::size_t aabb_narrowed = 0;
+    /// **★ セルまたぎの【機構】の内訳**（`DESIGN-phase5-hotspots.md` §15.3）。
+    /// **「またいだ」は 1 段目です。中身を見ないと機構は決まりません。**
+    std::size_t rkn_cross_same = 0, rkn_cross_axis = 0;
+    /// **箱を狭める機構を【外した】側のセルまたぎ**（§17.3 の論証の対偶）。
+    std::size_t rkn_cross_loose = 0;
 };
 
 Totals g;
@@ -172,7 +189,20 @@ void run_config(const kritest::Case& c, const TriMesh& a, const TriMesh& b, Bool
     const PolySoup sa = from_mesh(a), sb = from_mesh(b);
 
     BoolStats st{};
-    const PolySoup r = boolean(sa, sb, op, opt, &st);
+    // **★ コーパスでは、従来の鍵（頂点 ID）との突き合わせを常時走らせます**
+    // （`DESIGN-phase5-hotspots.md` §14.3.2。**置き換えが正しいことを示す唯一の検査**）
+    BoolOptions opt_v = opt;
+    opt_v.verify_region_key = true;  // **仕分けは従来どおり。突き合わせだけ**（§14）
+    const PolySoup r = boolean(sa, sb, op, opt_v, &st);
+    g.aabb_narrowed += st.out_aabb_narrowed;
+    g.rk_groups += st.region_cmp_groups;
+    g.rk_multi += st.region_cmp_multi;
+    g.rk_mismatch += st.region_cmp_mismatch;
+    g.rk_cross += st.region_cross_cell;
+    g.rk_overflow += st.region_bits_overflow;
+    g.rk_bits_total += st.region_hist_total;
+    g.rk_bits_max = std::max(g.rk_bits_max, st.region_hist_max);
+    g.rk_bits_count += st.region_hist_count;
 
     // ---- 分裂 off / on -------------------------------------------------------
     ToMeshOptions off, on;
@@ -387,14 +417,43 @@ void run_nary(const kritest::Case& c, const TriMesh& a, const TriMesh& b, const 
 
     long long chi0 = 0;
     std::size_t comp0 = 0;
-    for (std::size_t pass = 0; pass < kPasses; ++pass) {
-        const bool adaptive = (pass == kPasses - 1);
-        const unsigned depth = adaptive ? kMaxDepth : static_cast<unsigned>(pass);
-        const BoolOptions o = all_on(depth, adaptive);
-        const PolySoup s1 = boolean(sa, sb, BoolOp::Union, o);
-        const PolySoup s2 = boolean(s1, sd, BoolOp::Difference, o);
+    // **★ 外接箱を狭める機構を、外した側でも回します**（`SPEC-phase5.md` §5.10.6）。
+    //
+    // > **`CLAUDE.md`「機構を追加したら、それを外す経路も用意してください。
+    // > 外せないと、検査がその機構の影に入ります」。**
+    //
+    // **実際に影に入りました。** 箱を狭めると格子が変わり、
+    // **変異 17（存在判定を半開区間で見る）が観測可能になる配置が消えました。**
+    // **cp5n が唯一の検出器**なので、外した側を回さないと網が縮みます。
+    for (std::size_t pass = 0; pass < kPasses * 2; ++pass) {
+        const bool tight = (pass < kPasses);
+        const std::size_t p2 = pass % kPasses;
+        const bool adaptive = (p2 == kPasses - 1);
+        const unsigned depth = adaptive ? kMaxDepth : static_cast<unsigned>(p2);
+        BoolOptions o = all_on(depth, adaptive);
+        o.tight_out_aabb = tight;
+        // **★ 連鎖でも鍵の突き合わせを走らせます**（`DESIGN` §14）
+        // **★ 連鎖でも突き合わせます**（§14.8 の食い違いは、ここで測ったものです）
+        o.verify_region_key = true;
+        BoolStats st1{}, st2{};
+        const PolySoup s1 = boolean(sa, sb, BoolOp::Union, o, &st1);
+        const PolySoup s2 = boolean(s1, sd, BoolOp::Difference, o, &st2);
+        // **★ 連鎖の側は別に数えます**（§14.8）。**単発の結果と混ぜないこと**
+        // **★ 鍵の突き合わせは、狭めた側でだけ数えます。**
+        // **外した側は「昔の格子」なので、混ぜると §17.3 の論証が検査できません。**
+        if (tight) {
+            g.rkn_groups += st1.region_cmp_groups + st2.region_cmp_groups;
+            g.rkn_mismatch += st1.region_cmp_mismatch + st2.region_cmp_mismatch;
+            g.rkn_cross += st1.region_cross_cell + st2.region_cross_cell;
+        } else {
+            // **外した側では、またぎが復活するはずです**（§17.3 の論証の対偶）。
+            g.rkn_cross_loose += st1.region_cross_cell + st2.region_cross_cell;
+        }
+        g.rkn_cross_same += st1.region_cross_cell_same_edges + st2.region_cross_cell_same_edges;
+        g.rkn_cross_axis += st1.region_cross_cell_axis_support + st2.region_cross_cell_axis_support;
         const std::string tag = std::string("ケース ") + c.id + " (A∪B)\\D（" +
-                                (adaptive ? "適応" : "深度 " + std::to_string(depth)) + "）";
+                                (adaptive ? "適応" : "深度 " + std::to_string(depth)) +
+                                (tight ? "" : "・箱を狭めない") + "）";
         KRI_CHECK_MSG(s2.source_count() == 3, tag + ": source 数が 3 でない");
         const TopologyReport rep = check_topology(to_mesh(s2, tm).triangles);
         KRI_CHECK_MSG(rep.empty || rep.ok(), tag + ": n 項の出力が多様体でない");
@@ -433,9 +492,19 @@ void check_not_vacuous() {
                   "構成の数が式と合わない" + kritest::pair_msg(want_configs, g.configs));
     KRI_CHECK_MSG(g.order_checks == want_configs, "順序非依存の検査数が構成数と合わない");
     KRI_CHECK_MSG(g.early_out_checks == want_configs, "early-out 比較の数が構成数と合わない");
-    KRI_CHECK_MSG(g.nary_configs == cases * kPasses, "n 項の構成数が式と合わない");
+    KRI_CHECK_MSG(g.nary_configs == cases * kPasses * 2, "n 項の構成数が式と合わない");
+    // **★ 外した側では、セルまたぎが復活しなければなりません**（§17.3 の論証の対偶）。
+    // **復活しないなら、狭めたことが効いた証拠になっていません。**
+    KRI_CHECK_MSG(g.rkn_cross_loose > 0,
+                  "**箱を狭めない側でもセルまたぎが 0 でした。**"
+                  "§17.3 の論証は「箱が緩いから両側に入る」なので、"
+                  "外した側では復活するはずです");
 
     // 機構が実際に発火したこと
+    // **★ 外接箱を狭める機構の番人**（`SPEC-phase5.md` §5.10.6）。
+    // **狭まった多角形が 1 個も無いなら、交差を取る意味がありません。**
+    KRI_CHECK_MSG(g.aabb_narrowed > 0,
+                  "出力の外接箱が 1 個も狭まっていない（`Poly::aabb` の交差が空回り）");
     KRI_CHECK_MSG(g.bsp_cuts_used > 0, "局所 BSP が 1 枚も切っていない");
     KRI_CHECK_MSG(g.bsp_cuts_skipped > 0, "局所 BSP が 1 枚も省いていない");
     KRI_CHECK_MSG(g.early_out_cells > 0, "early-out が 1 度も発火していない");
@@ -472,6 +541,77 @@ void check_not_vacuous() {
     // **突き合わせを 1 度も回していなければ、一致は何も言っていません。**
     KRI_CHECK_MSG(g.verify_agree > 0,
                   "**検証の増分計算と従来経路の突き合わせを 1 度も回していません。空回りです**");
+    // ---- 共平面重複の仕分けの鍵（`DESIGN-phase5-hotspots.md` §14）--------------
+    //
+    // **中核から頂点 ID による仕分け（縫合）を外しました。**
+    // **鍵は (セル, 支持平面, 切断の符号列) です。**
+    // **置き換えが正しいことを示すのは、この突き合わせだけです。**
+    // **単発の演算では成立します**（3 入力で実測。§14.7）
+    KRI_CHECK_MSG(g.rk_mismatch == 0,
+                  "**単発の演算で、新しい鍵（セル, 支持平面, 符号列）が"
+                  "頂点 ID による仕分けと食い違いました**" +
+                      kritest::pair_msg(g.rk_mismatch, 0));
+    // **★ 群がセルをまたぐと、新しい鍵では 2 つに割れます。**
+    KRI_CHECK_MSG(g.rk_cross == 0,
+                  "**単発の演算で群がセルをまたぎました。**"
+                  "新しい鍵では同じ群が 2 つに割れます" +
+                      kritest::pair_msg(g.rk_cross, 0));
+    // ---- ★ 連鎖では成立しないことを、検査として固定します（§14.8）--------------
+    //
+    // **`CLAUDE.md`「素通りする組合せも固定する」。**
+    // **「連鎖でも通った」ことにして進むと、実データで静かに壊れます。**
+    // **★ セルまたぎの番人は、証明とセットで置き換えました**（2026-09-08）。
+    //
+    // **`CLAUDE.md`「番人を retire するときは、証明とセットにしてください」。**
+    // **以前は「連鎖で 371 件出る」ことを固定していました。**
+    // **`Poly::aabb` を「元の多角形の箱 ∩ セル箱」に狭めたら 0 件になりました**
+    // （`DESIGN-phase5-hotspots.md` §15.5 / §17）。
+    //
+    // **構造的に到達不能であることの論証**:
+    //
+    //   1. 371 件すべてが「支持平面が軸平行」かつ「辺平面の集合が同一」だった（実測）
+    //   2. 多角形が軸平行平面 $x = c$ に乗るなら、その真の外接箱は $x$ で潰れている
+    //   3. 箱は「元の箱 ∩ セル箱」で、`from_mesh` の箱は tight なので、
+    //      **帰納的に、乗っている多角形の箱は必ず潰れている**
+    //   4. 潰れた箱には半開区間 $[\mathrm{lo}, \mathrm{hi})$ の割り当てが片側だけを選ぶ
+    //   5. 支持平面が軸平行でない多角形は、セル面と線か点でしか接しないので、
+    //      隣の葉でクリップすると頂点数が 3 未満になり、仕分けから外れる
+    //
+    // **したがって「またぎが消えたこと」を固定します。**
+    // **箱を再び緩めると、この検査が落ちます。**
+    KRI_CHECK_MSG(g.rkn_cross == 0,
+                  "**連鎖で群がセルをまたぎました。** `Poly::aabb` が緩んでいませんか"
+                  "（§15.5 の論証。箱は「元の箱 ∩ セル箱」であるべきです）" +
+                      kritest::pair_msg(g.rkn_cross, 0));
+    // **連鎖で成立しないことは変わりません。** ただし**理由が変わりました**。
+    //
+    //   以前の理解  セルまたぎ（→ 箱を狭めて消えました）
+    //   **いまの理解  適応分割の格子が段ごとに違う**（固定深度なら食い違い 0。§15.4）
+    KRI_CHECK_MSG(g.rkn_mismatch > 0,
+                  "**連鎖で食い違いが消えました。** §15.4 の制約が変わったなら、"
+                  "新しい鍵を連鎖でも使えるか再検討してください");
+    // **番人**: **共平面重複が 1 件も無ければ、両方の鍵は自明に一致します。**
+    KRI_CHECK_MSG(g.rk_multi > 0,
+                  "**断片が 2 個以上の群が 1 つもありません。**"
+                  "共平面重複の無い入力だけで比較しており、一致は何も言っていません");
+    KRI_CHECK_MSG(g.rk_groups > 0, "**突き合わせを 1 度も回していません。空回りです**");
+    std::printf(
+        "    ★ 仕分けの鍵: 群 %zu / **重なりのある群 %zu** / **食い違い %zu** / "
+        "セルまたぎ %zu\n",
+        g.rk_groups, g.rk_multi, g.rk_mismatch, g.rk_cross);
+    std::printf(
+        "       **連鎖では成立しません**（適応の格子が段で違うため。§15.4）: "
+        "群 %zu / 食い違い %zu / セルまたぎ %zu\n",
+        g.rkn_groups, g.rkn_mismatch, g.rkn_cross);
+    std::printf(
+        "    外接箱を狭めた多角形 %zu（`Poly::aabb` = 元の箱 ∩ セル箱）"
+        "／**狭めない側のセルまたぎ %zu**\n",
+        g.aabb_narrowed, g.rkn_cross_loose);
+    std::printf("       セルまたぎの内訳: 辺平面が同一 %zu / 支持平面が軸平行 %zu\n",
+                g.rkn_cross_same, g.rkn_cross_axis);
+    std::printf("       符号列: 断片あたり 平均 %.1f / 最大 %zu / 256 ビット超 %zu\n",
+                g.rk_bits_count > 0 ? static_cast<double>(g.rk_bits_total) / g.rk_bits_count : 0.0,
+                g.rk_bits_max, g.rk_overflow);
     // **走査順の入れ替えが実際に走査を減らしていること**（空回りの番人）。
     // **等しければ、多角形がすべて 1 辺しかないか、機構が効いていません。**
     // **絞り込みが実際に候補を飛ばしていること**（空回りの番人）。

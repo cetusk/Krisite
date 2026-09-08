@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 #include "krisite/csg/faces.hpp"
@@ -31,6 +32,36 @@ struct Fragment {
     bool flipped = false;  ///< 外向き法線が support の法線と逆か
     std::vector<PlaneId> edge;
     int owner = 0;  ///< 0 = A, 1 = B
+    /// **切断の符号列**（`DESIGN-phase5-hotspots.md` §14）。
+    ///
+    /// **共平面重複の仕分け（`region_key`）の鍵です。**
+    /// **これがあるので、中核は頂点 ID を作らずに済みます**（縫合が要らない）。
+    ///
+    /// **鍵は `(セル, 支持平面, この符号列)`。** セルが要る理由は §14.7.2 —
+    /// **第 2 段の切断（共平面揃え）がセルごとに決まる**ので、
+    /// **符号だけでは違うセルの領域が混ざります**（実測で「粗すぎ」が全件）。
+    ///
+    /// **1 切断 = 1 ビット。** 実測で断片あたり 13〜117 ビット（最大 328）。
+    std::vector<std::uint64_t> cutbits;
+    /// **符号列のビット数。** `cutbits` の長さだけでは区別できません
+    /// （65 ビットと 128 ビットは、どちらも 2 ワード）
+    std::uint32_t ncuts = 0;
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+    /// **切断の履歴**（`RESEARCH-perf.md` §S3.5 の実験。**実験用です**）。
+    ///
+    /// **問い**: 共平面重複の仕分け（`region_key`）を、
+    /// **頂点 ID ではなく切断の符号列**で行えるか。
+    /// できれば**中核の縫合（実測で 29.2%）が消えます。**
+    ///
+    /// > **`edge` だけでは足りません。** `split_fragment` は
+    /// > **pos 側にも neg 側にも切断平面を `edge` に足す**ので、
+    /// > **切断の両側が同じ辺平面の集合を持ちます。符号が要ります。**
+    ///
+    /// **コンパイル時の旗で囲んであります。** 既定では
+    /// **`Fragment` にこのメンバは存在せず、メモリは 1 バイトも増えません。**
+    /// **実験が終わったら、鍵として残すか消すかを別に判断します。**
+    std::vector<std::pair<PlaneId, std::int8_t>> hist;
+#endif
 };
 
 /// 頂点数 = 辺数。
@@ -54,6 +85,21 @@ inline geom::HPointD fragment_vertex(const PlaneTable& t, const Fragment& f, std
     std::sort(k.begin(), k.end());
     return geom::intersect3(t.at(k[0]), t.at(k[1]), t.at(k[2]));
 }
+
+namespace detail {
+
+/// **切断の符号を 1 ビット足す**（`DESIGN-phase5-hotspots.md` §14）。
+///
+/// **「切られなかった」ことも履歴の一部です**（§14.1）。
+/// 全頂点が片側にある場合も符号を記録しないと、
+/// **相手の多角形が切られたときに、同じ領域が違う鍵になります。**
+inline void push_cut(Fragment& f, bool positive) noexcept {
+    const std::uint32_t i = f.ncuts++;
+    if ((i >> 6) >= f.cutbits.size()) f.cutbits.push_back(0);
+    if (positive) f.cutbits[i >> 6] |= (std::uint64_t{1} << (i & 63));
+}
+
+}  // namespace detail
 
 /// 断片を平面 `q` で分割した結果。存在しない側は `edge` が空。
 struct SplitResult {
@@ -137,6 +183,9 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
     const geom::PlaneD& qp = t.at(q);
     std::vector<int> s(n);
     bool any_pos = false, any_neg = false;
+    // **切断の履歴**（実験用。上記）。**`q == f.support` の場合は追記しません** —
+    // その分岐は上で早期に返しており、**共平面の 2 つの多角形で同じ扱い**なので、
+    // 鍵の比較には影響しません。
     for (std::size_t i = 0; i < n; ++i) {
         s[i] = geom::side(qp, fragment_vertex(t, f, i, cache));
         if (s[i] > 0) any_pos = true;
@@ -145,11 +194,24 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
     if (!any_neg) {  // すべて >= 0
         r.pos = f;
         r.has_pos = true;
+        detail::push_cut(r.pos, true);
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+        // **★ 切断が効かなくても符号は記録します。**
+        //
+        // **相手の多角形はこの平面で切られるかもしれません。**
+        // そのとき相手の pos 側は `(q,+1)` を持つので、
+        // **こちらが持たないと、同じ領域が違う鍵になります。**
+        r.pos.hist.emplace_back(q, static_cast<std::int8_t>(1));
+#endif
         return r;
     }
     if (!any_pos) {  // すべて <= 0
         r.neg = f;
         r.has_neg = true;
+        detail::push_cut(r.neg, false);
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+        r.neg.hist.emplace_back(q, static_cast<std::int8_t>(-1));
+#endif
         return r;
     }
 
@@ -160,6 +222,13 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
         out.flipped = f.flipped;
         out.owner = f.owner;
         out.edge = std::move(e);
+        out.cutbits = f.cutbits;
+        out.ncuts = f.ncuts;
+        detail::push_cut(out, k > 0);
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+        out.hist = f.hist;
+        out.hist.emplace_back(q, static_cast<std::int8_t>(k));
+#endif
         return true;
     };
     r.has_pos = make(+1, r.pos);

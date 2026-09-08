@@ -430,6 +430,73 @@ void test_cell_index() {
 ///
 /// **合計では比べられません**（多角形が届かない葉は早期に戻るので、集計に到達する葉が減る）。
 /// **葉の列挙は 10-a で変えていないので `leaves` の並びは同一**で、**添字で比べられます。**
+/// **案 A（到達可能性による葉の除去）**（`SPEC-phase5.md` §5.10.8）。
+///
+/// **見るのは 2 つです。**
+///
+///   1. 旗の ON / OFF で出力がバイト単位で一致すること（**捨てた葉は 1 枚も出力しない**）
+///   2. **実際に捨てた葉が 0 でないこと**（0 なら 1 の検査は何も言っていません）
+///
+/// > **`SPEC-phase5.md` §5.10.8.5**: 「捨てた葉の数が 0 なら、その検査は
+/// > 何も言っていません。『捨てた葉が 0 なら落とす』番人を置いてください」。
+///
+/// **未確認だった点**（隣の葉の辺に載る T 頂点が、捨てた葉から来ていないか）は、
+/// **`to_mesh` まで通したバイト一致**で潰します。
+void test_reachability_early_out() {
+    std::printf("  案 A: 到達可能性による葉の除去\n");
+    std::size_t n = 0, fired = 0, dropped_total = 0, leaves_off = 0;
+    for (const kritest::Case& c : kritest::corpus()) {
+        const TriMesh a = c.make_a(), b = c.make_b();
+        for (unsigned d = 0; d <= kMaxDepth; ++d) {
+            for (csg::BoolOp op :
+                 {csg::BoolOp::Union, csg::BoolOp::Intersection, csg::BoolOp::Difference}) {
+                csg::SoupMesh m[2];
+                std::size_t dropped = 0;
+                for (int on = 1; on >= 0; --on) {
+                    csg::BoolOptions o = kritest::phase1_options(d);
+                    // **★ 案 A は `forced` を入力にするので、`early_out` が要ります。**
+                    // **`phase1_options` は `early_out = false`** なので、明示的に立てます。
+                    // **立てないと `forced_known` が 1 つも無く、機構が成立しません**
+                    // （**実際に踏みました**。捨てた葉 0 で番人が落ちました）。
+                    o.early_out = true;
+                    o.adaptive = true;  // 適応でないと片方だけの葉が粗いまま残ります
+                    o.early_out_reachability = (on != 0);
+                    csg::BoolStats st;
+                    const csg::PolySoup s =
+                        csg::boolean(csg::from_mesh(a), csg::from_mesh(b), op, o, &st);
+                    m[on] = csg::to_mesh(s);
+                    if (on) {
+                        dropped = st.eo_dropped_leaves;
+                    } else {
+                        leaves_off += st.leaf_nonempty;
+                    }
+                }
+                const std::string tag = std::string(c.id) + " 深度 " + std::to_string(d) +
+                                        " 演算 " + std::to_string(static_cast<int>(op));
+                ++n;
+                if (dropped > 0) ++fired;
+                dropped_total += dropped;
+                KRI_CHECK_MSG(m[1].triangles == m[0].triangles,
+                              tag + ": 案 A で三角形が変わった。**捨てた葉が出力に効いています**");
+                KRI_CHECK_MSG(m[1].vertices.size() == m[0].vertices.size(),
+                              tag + ": 案 A で頂点数が変わった" +
+                                  kritest::pair_msg(m[1].vertices.size(), m[0].vertices.size()));
+                bool same = m[1].vertices.size() == m[0].vertices.size();
+                for (std::size_t i = 0; same && i < m[1].vertices.size(); ++i) {
+                    same = geom::cmp_h_lex(m[1].vertices[i], m[0].vertices[i]) == 0;
+                }
+                KRI_CHECK_MSG(same, tag + ": 案 A で頂点の値が変わった");
+            }
+        }
+    }
+    std::printf("    %zu 件。**捨てた葉があったのは %zu 件**（計 %zu 葉 / 外した側の葉 %zu）\n", n,
+                fired, dropped_total, leaves_off);
+    KRI_CHECK_MSG(n > 0, "案 A: 比較が 1 件も回っていない。**空回りです**");
+    // **★ 番人**（`SPEC-phase5.md` §5.10.8.5）。**捨てていないなら比較は何も言っていません。**
+    KRI_CHECK_MSG(dropped_total > 0,
+                  "**案 A が 1 葉も捨てていません。** バイト一致の検査が空回りしています");
+}
+
 void test_exact_assign() {
     std::printf("  10-a: 割り当てを支持平面で絞る\n");
     std::size_t n = 0, fired = 0, rejected_total = 0, leaves_cmp = 0;
@@ -641,6 +708,7 @@ int main() {
     test_local_bsp_vs_over_subdivision();
     test_cell_index();
     test_exact_assign();
+    test_reachability_early_out();
     test_ray_prefilter();
     test_single_src_split();
     std::printf("\n");

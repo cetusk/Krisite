@@ -255,41 +255,47 @@ public:
     /// > **スープ経路で 0 なら、機構が空回りしています**（`CLAUDE.md`）。
     bool build(const PlaneTable& table, const std::vector<geom::HPointD>& verts,
                const std::vector<octree::Aabb>& box, const std::vector<PlaneId>& support,
-               par::ThreadPool* pool = nullptr, std::size_t* locate_tests = nullptr,
-               std::size_t* group_tests = nullptr, bool sort_candidates = true) {
+               const std::vector<std::uint8_t>& cell_depth, par::ThreadPool* pool = nullptr,
+               std::size_t* locate_tests = nullptr, std::size_t* group_tests = nullptr,
+               bool sort_candidates = true) {
         slot_.assign(box.size(), kNoGroup);
         group_.clear();
         if (box.empty() || verts.empty()) return false;
+        if (cell_depth.size() != box.size()) return false;
 
-        // ---- 1. 箱 → 葉（深度と添字）。**箱の辺の長さから深度が決まる** ----
+        // ---- 1. 箱 → 葉（深度と添字）----
         //
-        // **セルの箱でなければ諦めます。** 立方体でない、辺が 2 冪でない、
-        // 格子に載っていない、のいずれかで判定できます。
-        const auto depth_of = [](std::int64_t side_len) -> unsigned {
-            for (unsigned d = 0; d + 1 <= kCoordBits; ++d) {
-                if ((std::int64_t{1} << (kCoordBits - d)) == side_len) return d;
-            }
-            return kNoDepth;
-        };
+        // **深度は呼び出し側が持っています**（`Poly::cell_depth`。§5.10.6）。
+        //
+        // > **以前は「箱の辺の長さ」から逆算していました。**
+        // > **`Poly::aabb` を「元の多角形の箱 ∩ セル箱」に狭めたので、逆算できません。**
+        // > **箱に「割り当ての範囲」と「葉の符号」の 2 つの役目があったのが誤りでした。**
+        //
+        // **添字は `box.lo` から復元します。** 箱は葉の箱に含まれ、
+        // `box.lo` は $[\text{cell.lo}, \text{cell.hi})$ に居るので、床関数で一意です。
         std::unordered_map<std::uint64_t, std::uint32_t> leaf_id;
         std::vector<std::uint32_t> poly_leaf(box.size());
         unsigned dmax = 0;
         for (std::size_t i = 0; i < box.size(); ++i) {
-            const std::int64_t sx = box[i].hi[0] - box[i].lo[0];
-            if (sx != box[i].hi[1] - box[i].lo[1] || sx != box[i].hi[2] - box[i].lo[2])
-                return false;
-            const unsigned d = depth_of(sx);
-            if (d == kNoDepth) return false;
-            const std::int64_t step = std::int64_t{1} << (kCoordBits - d);
-            for (int t = 0; t < 3; ++t) {
-                if (((box[i].lo[t] - kCoordMin) % step) != 0) return false;
-            }
+            if (cell_depth[i] == octree::kNoCellDepth)
+                return false;  // 深度が不明（`from_mesh` 直後）
+            const unsigned d = cell_depth[i];
+            if (d + 1 > kCoordBits) return false;
             const std::uint32_t ix =
                 static_cast<std::uint32_t>((box[i].lo[0] - kCoordMin) >> (kCoordBits - d));
             const std::uint32_t iy =
                 static_cast<std::uint32_t>((box[i].lo[1] - kCoordMin) >> (kCoordBits - d));
             const std::uint32_t iz =
                 static_cast<std::uint32_t>((box[i].lo[2] - kCoordMin) >> (kCoordBits - d));
+            // **箱が本当にその葉に収まっているか**を確かめます。
+            // **収まっていなければ、深度の記録と箱が食い違っています**（退避）。
+            for (int t = 0; t < 3; ++t) {
+                const std::uint32_t m = (t == 0) ? ix : ((t == 1) ? iy : iz);
+                if (box[i].lo[t] < octree::cell_bound(d, m) ||
+                    box[i].hi[t] > octree::cell_bound(d, m + 1)) {
+                    return false;
+                }
+            }
             dmax = std::max(dmax, d);
             const std::uint64_t k = leaf_key(d, ix, iy, iz);
             auto it = leaf_id.find(k);

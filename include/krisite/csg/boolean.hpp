@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <tuple>
 #include <vector>
 
 #include "krisite/csg/faces.hpp"
@@ -87,12 +88,116 @@ struct BoolStats {
     /// > 実装されていませんでした。** スープ経路（実際に使う経路）では常に 0 で、
     /// > **番人が空回りしていました**（`DESIGN-phase5-hotspots.md` §9.4）。
     std::size_t merge_groups = 0;
-    std::size_t duplicate_fragments = 0;       ///< 重複割り当てが生んだ重複断片（§5.4）
-    std::size_t coplanar_same = 0;             ///< 共平面重複のうち向きが同じ対の数
-    std::size_t coplanar_opposite = 0;         ///< 向きが逆の対の数
-    std::size_t constructed_points = 0;        ///< 第1段が作った構成点の総数（§5.4 の分母）
-    std::size_t merged_points = 0;             ///< 第2段の併合後の点数
-    std::size_t merged_by_value = 0;           ///< 第1段が取りこぼし第2段が併合した数（§5.4）
+    std::size_t duplicate_fragments = 0;  ///< 重複割り当てが生んだ重複断片（§5.4）
+    /// **★ 出力の外接箱が、セル箱より狭まった多角形の数**（`SPEC-phase5.md` §5.10.6）。
+    ///
+    /// **番人です。** 箱を「元の多角形の箱 $\cap$ セル箱」にする機構が、
+    /// **1 個も狭められていないなら空回りしています。**
+    /// **「機構を足したら、それが空回りしていないことを別に検査する」**（`CLAUDE.md`）。
+    std::size_t out_aabb_narrowed = 0;
+    // ---- ★ early-out の到達可能性解析（`SPEC-phase5.md` §5.10.8）の【測定】--------
+    //
+    // **判定するだけで、まだ捨てていません。** 出力は 1 ビットも変わりません。
+    // **「捨てられる葉が 0 なら、案 A を実装する意味がありません。」**
+    /// **確定した source が 1 つ以上ある葉の数**（＝ 機会の分母）。
+    std::size_t eo_forced_leaves = 0;
+    /// **★ 抽象評価が定値になった葉の数**（＝ 捨てられる葉。効果の上限）。
+    std::size_t eo_const_leaves = 0;
+    /// 同、その葉に届いた **source の三角形数**の和（$\sum P_\ell$）。
+    ///
+    /// **葉の数だけでは効きが分かりません。** 小さい葉ばかりなら効きません。
+    std::size_t eo_const_input = 0;
+    /// **★ 同、$\sum P_\ell^2$。** 局所 BSP が $O(P_\ell^2)$ なので**これが本当の効き**です。
+    std::size_t eo_const_input_sq = 0;
+    /// 同、その葉に**割り当てられた多角形数**の和と、その 2 乗和。
+    ///
+    /// **`leaf_input_*` は source の三角形、こちらは `polys`。両方が費用に効きます**
+    /// （切断集合は三角形から作り、切る対象は多角形）。
+    std::size_t eo_const_polys = 0;
+    std::size_t eo_const_poly_sq = 0;
+    /// **★ 定値の葉で実際に使われた仕事**（代理ではなく、省ける量そのもの）。
+    ///
+    /// > **`CLAUDE.md`「数えている量が、費用の代理になっているかを確かめてください」。**
+    /// > **$\sum P_\ell^2$ は三角形で数えるか多角形で数えるかで大きく食い違いました**
+    /// > **（実測 43.4% 対 0.9%）。そこで実際の演算回数を直接数えます。**
+    ///
+    /// `bsp_cut_slots`（局所 BSP の切断候補の走査）と、
+    /// `frag_edges_count`（作った断片の数）の、定値の葉での増分です。
+    /// **分母は同名の全体の計数です。**
+    std::size_t eo_const_bsp_slots = 0;
+    std::size_t eo_const_frags = 0;
+    /// **★ 実際に捨てた葉の数**（`early_out_reachability` が真のとき）。
+    ///
+    /// **番人**: **0 ならバイト一致の検査が何も言っていません**（`SPEC-phase5.md` §5.10.8.5）。
+    std::size_t eo_dropped_leaves = 0;
+    std::size_t coplanar_same = 0;       ///< 共平面重複のうち向きが同じ対の数
+    std::size_t coplanar_opposite = 0;   ///< 向きが逆の対の数
+    std::size_t constructed_points = 0;  ///< 第1段が作った構成点の総数（§5.4 の分母）
+    std::size_t merged_points = 0;       ///< 第2段の併合後の点数
+    std::size_t merged_by_value = 0;     ///< 第1段が取りこぼし第2段が併合した数（§5.4）
+    // ---- ★ 実験: 共平面重複の仕分けを、切断の符号列で行えるか --------------------
+    //
+    // **`RESEARCH-perf.md` §S3.5。`KRISITE_EXPERIMENT_REGION_HIST` で有効になります。**
+    // **既定では 0 のままです**（実験の経路が存在しません）。
+    /// **突き合わせたグループの数**（頂点 ID による仕分けのグループ数）
+    std::size_t region_cmp_groups = 0;
+    /// **★ そのうち断片が 2 個以上のグループ**（= 共平面重複が実際にある証拠）。
+    ///
+    /// **0 なら、両方の鍵が自明に一致しています。番人としてこれを数えます。**
+    std::size_t region_cmp_multi = 0;
+    /// **★ 2 つの鍵で仕分けが食い違ったグループの数。0 でなければ実験は失敗です。**
+    ///
+    /// **グループの【数】ではなく【中身】（断片の添字集合）を比べます。**
+    /// 数が同じでも、違う断片が同じグループに入っている可能性があります。
+    std::size_t region_cmp_mismatch = 0;
+    /// **切断の履歴の長さ**（符号列の費用。断片あたりの平均を出すための分子）
+    std::size_t region_hist_total = 0;
+    std::size_t region_hist_max = 0;
+    /// **符号列を数えた断片の数**（`region_hist_total` の分母）。
+    /// **群の数で割ってはいけません** — 群と断片は 1 対 1 ではありません
+    std::size_t region_hist_count = 0;
+    // ---- ビット列版（`DESIGN-phase5-hotspots.md` §14.2）------------------------
+    /// **ビット列（符号だけ。平面 ID を落とす）による仕分けが食い違った群の数**。
+    ///
+    /// **成立するのは「同じセル・同じ支持平面のグループの中」だけです**（§14.2.3）。
+    /// **セルをまたぐ比較が起きるなら、ビット列は使えません。**
+    std::size_t region_bits_mismatch = 0;
+    /// **★ 番人: 同じ `region_key` の断片が、複数のセルに分かれている群の数。**
+    ///
+    /// **0 なら §14.2.3 の論証は検証されていません**（セルをまたぐ機会が無かっただけ）。
+    /// **非零で食い違い 0 なら、論証が実測で裏づけられます。**
+    std::size_t region_cross_cell = 0;
+    /// **★ セルまたぎの【機構】を切り分けるための計数**（`SPEC-phase5.md` §5.10.5.7）。
+    ///
+    /// **`region_cross_cell` は「またいだ」ことしか言いません。**
+    /// **`.claude/rules/deduction.md` §2.1 が要求する「なぜまたぐか」に答えるには、
+    /// またいだ群の【中身】を見る必要があります。**
+    ///
+    /// 群の中の断片の辺平面の集合が**完全に一致する**群の数。
+    /// **一致するなら「同じ多角形が 2 つのセルに割り当てられた」**ということで、
+    /// 切断の結果が違ったのではありません。
+    std::size_t region_cross_cell_same_edges = 0;
+    /// 同上のうち、**支持平面が軸平行**（= セル境界面と同じ向き）の群の数。
+    ///
+    /// **セル境界平面に乗る多角形は、半開区間の割り当てでは片側だけに入るはず**です。
+    /// **にもかかわらず両側に入っているなら、割り当てに使った外接箱が
+    /// 多角形のものではありません**（`polysoup.hpp` の `Poly::aabb` は「保守的」）。
+    std::size_t region_cross_cell_axis_support = 0;
+    /// **符号列が 256 ビットを超えた断片の数**（§14.2.4 の「あふれ」）。
+    std::size_t region_bits_overflow = 0;
+    // ---- ビット列版が失敗した原因の切り分け（2026-09-08）------------------------
+    /// **群の中で `hist` の【長さ】が揃っていない群の数。**
+    ///
+    /// **揃っていなければ、「$i$ 番目の切断」が群の中で同じ平面を指しません。**
+    std::size_t region_bits_len_differ = 0;
+    /// **群の中で `hist` の【平面の列】が揃っていない群の数**（長さは同じでも中身が違う）。
+    std::size_t region_bits_planes_differ = 0;
+    /// **同じ頂点 ID の群が、違うビット群に散った件数**（ビット列が細かすぎる側）。
+    std::size_t region_bits_split = 0;
+    /// **★ 違う頂点 ID の群が、同じビット群に混ざった件数**（ビット列が粗すぎる側）。
+    std::size_t region_bits_merge = 0;
+    /// **セルを鍵に加えたビット列**（セル, 支持平面, 符号列）での食い違い。
+    std::size_t region_cellbits_mismatch = 0;
     std::size_t max_planes_at_point = 0;       ///< 1 点に集まる平面の最大枚数（§5.4、セル面込み）
     std::size_t max_mesh_planes_at_point = 0;  ///< 同上、メッシュ平面のみ（対照）
     std::size_t planes_total = 0;              ///< 総当たりの分母（表に載った平面の総数）
@@ -119,6 +224,20 @@ struct BoolStats {
     /// 既定ビルドでは 0 のままです（計数のコストを本番に持ち込まないため）。
     std::uint64_t side_calls = 0;
     std::uint64_t intersect3_calls = 0;
+    /// **★ 段ごとの `side` の内訳**（`KRISITE_COUNT_PREDICATES` のときだけ非零）。
+    ///
+    /// > **スープ経路には述語の計数がありませんでした**（2026-09-08 に発覚）。
+    /// > **二項メッシュ経路（`boolean.hpp` の 1282 行）にしか無く、
+    /// > 実際に使う経路では常に 0 でした。**
+    /// > **`CLAUDE.md`「計装がどちらにあるかも確かめてください」の 2 度目です。**
+    ///
+    /// **`side_calls_arrange` は arrange（葉ごと）、
+    /// `side_calls_classify` は分類（領域ごと）の合計**です。
+    /// **代表点の構成（`interior.side_tests`）は後者の内側にあります。**
+    std::uint64_t side_calls_arrange = 0;
+    std::uint64_t side_calls_classify = 0;
+    std::uint64_t intersect3_arrange = 0;
+    std::uint64_t intersect3_classify = 0;
 
     /// §2.3 の絞り込み（SPEC-phase2）。
     ///
@@ -151,6 +270,8 @@ struct BoolStats {
     /// **多角形**（葉に割り当てられた `polys`）。**どちらが効くかは測って決めます。**
     std::size_t leaf_input_sq = 0;
     std::size_t leaf_poly_sq = 0;
+    /// $\sum_\ell$（葉に割り当てられた多角形数）。**`leaf_poly_sq` の分母側**。
+    std::size_t leaf_poly_total = 0;
     // ---- 無次元群（`PERF.md` §1.8。**借りてよいのは無次元群が一致するときだけ**）----
     //
     // **$\sum_\ell P_\ell^2$ が同じでも「単位の中身」が違えば、
@@ -343,6 +464,25 @@ inline std::array<PlaneId, 3> vertex_key(const Fragment& f, std::size_t i) {
 /// 凸多角形は頂点集合で一意に定まるので、順序を捨てても領域は復元できます。
 using RegionKey = std::pair<PlaneId, std::vector<std::uint32_t>>;
 
+/// **断片の正準キー（v2）** — `DESIGN-phase5-hotspots.md` §14。
+///
+/// **(セル, 支持平面, 切断の符号列, ビット数)。**
+/// **頂点 ID を使いません。したがって中核に縫合が要りません。**
+///
+/// **セルが要る理由**（§14.7.2。実測で確定）:
+/// **第 2 段の切断（共平面揃え）はセルごと・支持平面ごとに決まる**ので、
+/// **符号だけでは違うセルの領域が混ざります**（「粗すぎ」が全件）。
+///
+/// **ビット数を持つ理由**: `cutbits` の長さだけでは区別できません
+/// （65 ビットと 128 ビットは、どちらも 2 ワード）。
+using RegionKey2 = std::tuple<std::uint64_t, PlaneId, std::vector<std::uint64_t>, std::uint32_t>;
+
+/// セルを 64 ビットに詰める（深度 20 まで）。
+inline std::uint64_t cell_key(const octree::Cell& c) noexcept {
+    return (static_cast<std::uint64_t>(c.depth) << 60) | (static_cast<std::uint64_t>(c.i) << 40) |
+           (static_cast<std::uint64_t>(c.j) << 20) | static_cast<std::uint64_t>(c.k);
+}
+
 inline RegionKey region_key(PlaneId support, std::vector<std::uint32_t> ids) {
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
@@ -478,6 +618,46 @@ struct BoolOptions {
     ///
     /// **無効にしたときは $g$ で比較してはいけません**（§5.4）。非多様体出力では
     /// $\chi$ が奇数になり得ます。
+    /// **共平面重複の仕分けに、切断の符号列を使う**（`DESIGN-phase5-hotspots.md` §14）。
+    ///
+    /// **鍵は `(セル, 支持平面, 切断の符号列)`。** 真にすると**中核の縫合が要らなくなります**
+    /// （実測で中核の 29.2%）。
+    ///
+    /// > **★ 既定は偽です。連鎖で成立しないことが分かりました**（§14.8）。
+    /// > **単発の演算では 3 入力すべてで食い違い 0 でしたが、
+    /// > 連鎖（$(A\cup B)\setminus D$）では群がセルをまたぎ、
+    /// > 同じ群が 2 つの鍵に割れます**（実測 371 件）。
+    ///
+    /// **真にすると、従来の鍵との突き合わせも同時に走ります**（検査のため）。
+    /// **★ 出力の外接箱を「元の多角形の箱 $\cap$ セル箱」に狭めるか**
+    /// （`SPEC-phase5.md` §5.10.6）。**既定は真。**
+    ///
+    /// > **偽にすると従来どおりセル箱を入れます。**
+    /// > **`CLAUDE.md`「正しさの検査では、性能のための機構を無効化できること。
+    /// > 『実質的に無効』ではなく『完全に外れる』形にすること」。**
+    ///
+    /// **実際に要りました。** 箱を狭めると格子が変わり、
+    /// **変異 17（存在判定を半開区間で見る）が観測可能になる配置が
+    /// コーパスから消えました**（`DESIGN-phase5-hotspots.md` §17.5）。
+    /// **唯一の検出器だったので、外す経路が無ければ網が縮みます。**
+    /// **★ 到達可能性による葉の除去**（`SPEC-phase5.md` §5.10.8。EMBER §4.5.2）。**既定は真。**
+    ///
+    /// **指示関数を 3 値論理で抽象評価し、
+    /// 「このセルに居る source」に依存しないなら葉ごと捨てます。**
+    ///
+    /// **その葉のどの断片も `in_front == in_back` になるので、出力は変わりません。**
+    /// **`early_out` が偽なら `forced` が無いので、この機構も自動的に無効になります。**
+    ///
+    /// > **偽にすると完全に外れます**（`CLAUDE.md`「正しさの検査では、
+    /// > 性能のための機構を無効化できること」）。**比較の正解器側です。**
+    bool early_out_reachability = true;
+    bool tight_out_aabb = true;
+    bool region_key_cuts = false;
+    /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。
+    ///
+    /// **出力は変わりません。** `region_key_cuts` と違い、仕分けには使いません。
+    /// **コーパスでは常時真にしてください**（§14.3.2。置き換えの根拠を守る唯一の検査）。
+    bool verify_region_key = false;
     bool split_contacts = true;
     /// **構成点の保持**（§4）。平面3つ組をキーにメモ化する。
     ///

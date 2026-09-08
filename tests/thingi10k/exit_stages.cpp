@@ -160,6 +160,31 @@ int main(int argc, char** argv) {
             std::chrono::duration<double>(std::chrono::steady_clock::now() - tc0).count();
 
         std::printf("### %s — 中核 %.3f s（多角形 %zu）\n\n", op_name[oi], core, soup.polys.size());
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+        // ★ 実験（`RESEARCH-perf.md` §S3.5）。**出力は変わりません**
+        std::printf(
+            "| **実験: 切断の符号列** | 群 %zu / **重なりのある群 %zu** / "
+            "**食い違い %zu** |\n",
+            bs.region_cmp_groups, bs.region_cmp_multi, bs.region_cmp_mismatch);
+        std::printf("| 符号列の長さ（断片あたり） | 平均 %.1f / 最大 %zu（断片 %zu） |\n",
+                    bs.region_hist_count > 0
+                        ? static_cast<double>(bs.region_hist_total) / bs.region_hist_count
+                        : 0.0,
+                    bs.region_hist_max, bs.region_hist_count);
+        std::printf(
+            "| **ビット列（符号だけ）** | 食い違い %zu（細かすぎ %zu / **粗すぎ %zu**）"
+            " / **セルをまたぐ群 %zu** |\n",
+            bs.region_bits_mismatch, bs.region_bits_split, bs.region_bits_merge,
+            bs.region_cross_cell);
+        std::printf("| **(セル, 支持平面, 符号列)** | **食い違い %zu** |\n",
+                    bs.region_cellbits_mismatch);
+        std::printf("| 256 ビットを超えた断片 | %zu / %zu（%.3f%%） |\n", bs.region_bits_overflow,
+                    bs.region_hist_count,
+                    bs.region_hist_count > 0
+                        ? 100.0 * bs.region_bits_overflow / bs.region_hist_count
+                        : 0.0);
+        std::printf("| 縫合の段（この実験で消える候補） | %.3f s |\n\n", bs.ms_stitch / 1000);
+#endif
 
         csg::ToMeshOptions fast;
         fast.threads = nthreads;

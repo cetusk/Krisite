@@ -184,6 +184,50 @@ void test_both_paths_are_exercised() {
                   "**予備経路が一度も走っていない。** 角のオフセットが検証されていません");
 }
 
+/// **★ float ヒント `approx` が符号と桁を保つこと**（`DESIGN-phase5-hotspots.md` §20.3）。
+///
+/// > **初版は「最上位リムを符号付き、それ以外を符号なしとして積む」形でした。**
+/// > **【すべての負の値】で $2^{128}$ を返します。**
+/// > $-1$（$N$ リム）は `{~0, ..., ~0}` で、最上位は $-1$ ですが次のリムは $2^{64}-1$。
+/// > **double の仮数は 53 ビットなので $2^{64}-1$ は $2^{64}$ に丸められ、
+/// > $-1 \cdot 2^{64} + 2^{64} = 0$ になって符号が消えます。**
+///
+/// **厳密性は無傷でした**（ヒントは候補を出すだけで、判定は厳密演算）。
+/// **だから正しさの検査では 3 フェーズにわたって見つかりませんでした。**
+/// **主経路の成功率が 2.5〜25.9% に落ちていただけです**（修正後 70.5〜86.2%）。
+///
+/// > **`CLAUDE.md`「機構を足したら、それが空回りしていないことを別に検査してください」。**
+/// > **`test_both_paths_are_exercised` は「両方の経路が使われる」ことしか見ておらず、
+/// > 【どちらが主経路か】を見ていませんでした。**
+void test_approx_sign_and_magnitude() {
+    std::size_t checks = 0;
+    const long long vals[] = {0, 1, -1, 2, -2, 1000, -1000, 1048575, -1048575, 33554431, -33554431};
+    for (long long v : vals) {
+        // **リム数を変えても同じ**であること（キャンセルはリム数に依存しました）
+        const double a2 = krisite::csg::detail::approx(krisite::arith::from_i64<2>(v));
+        const double a4 = krisite::csg::detail::approx(krisite::arith::from_i64<4>(v));
+        const double a6 = krisite::csg::detail::approx(krisite::arith::from_i64<6>(v));
+        const auto want = static_cast<double>(v);
+        KRI_CHECK_MSG(a2 == want, "approx(2 リム) が真の値と違う" + kritest::pair_msg(want, a2));
+        KRI_CHECK_MSG(a4 == want, "approx(4 リム) が真の値と違う" + kritest::pair_msg(want, a4));
+        KRI_CHECK_MSG(a6 == want, "approx(6 リム) が真の値と違う" + kritest::pair_msg(want, a6));
+        checks += 3;
+    }
+    // **仮数に収まらない大きさ**では、符号と相対誤差で見ます。
+    {
+        const auto big = krisite::arith::mul(krisite::arith::from_i64<4>(-1234567890123456789LL),
+                                             krisite::arith::from_i64<4>(1000000007LL));
+        const double got = krisite::csg::detail::approx(big);
+        KRI_CHECK_MSG(got < 0, "approx: 大きい負の値で符号が消えた");
+        const double want = -1234567890123456789.0 * 1000000007.0;
+        const double rel = (got - want) / want;
+        KRI_CHECK_MSG(rel > -1e-12 && rel < 1e-12,
+                      "approx: 大きい値の相対誤差が大きすぎる " + std::to_string(rel));
+        checks += 2;
+    }
+    std::printf("  approx の符号と桁: %zu 件\n", checks);
+}
+
 }  // namespace
 
 int main() {
@@ -191,6 +235,7 @@ int main() {
     test_edge_plane_properties();
     test_interior_point_is_inside();
     test_both_paths_are_exercised();
+    test_approx_sign_and_magnitude();
     std::printf("\n");
     return kritest::finish("csg/interior");
 }

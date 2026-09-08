@@ -309,15 +309,20 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         // 実測の削減は 3〜391 倍で、**出力が占めるセルの数**で決まります（`BENCH.md`）。
         std::vector<octree::Aabb> box;
         std::vector<PlaneId> sup;
+        // **★ 葉の深度は多角形が持っています**（`Poly::cell_depth`。§5.10.6）。
+        // **箱の辺の長さから逆算する形はやめました**（箱を狭めたので逆算できません）。
+        std::vector<std::uint8_t> cdep;
         box.reserve(s.polys.size());
         sup.reserve(s.polys.size());
+        cdep.reserve(s.polys.size());
         for (const Poly& q : s.polys) {
             box.push_back(q.aabb);
             sup.push_back(q.frag.support);
+            cdep.push_back(q.cell_depth);
         }
-        used_cell_index =
-            cell_index.build(s.table, out.vertices, box, sup, &pool, &st.cell_index_locate_tests,
-                             &st.cell_index_group_tests, opt.sort_candidates);
+        used_cell_index = cell_index.build(s.table, out.vertices, box, sup, cdep, &pool,
+                                           &st.cell_index_locate_tests, &st.cell_index_group_tests,
+                                           opt.sort_candidates);
     }
     if (!used_cell_index) {
         std::vector<PlaneId> sup;

@@ -22,6 +22,13 @@
 
 namespace krisite::octree {
 
+/// **セルの深度が「不明」であることを表す印**（`csg::Poly::cell_depth`）。
+///
+/// **`from_mesh` 直後のスープは、まだ八分木に割り当てられていません。**
+/// **深度を `std::uint8_t` で持つのは、`Poly` を太らせないためです**
+/// （深度の上限は `kCoordBits - 1`）。
+inline constexpr std::uint8_t kNoCellDepth = 0xFF;
+
 /// セルの添字。深度 k のとき各軸 0 .. 2^k - 1。
 struct CellIndex {
     std::uint32_t i = 0, j = 0, k = 0;
