@@ -141,6 +141,15 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.side_calls_classify += b.side_calls_classify;
     a.intersect3_arrange += b.intersect3_arrange;
     a.intersect3_classify += b.intersect3_classify;
+    a.side_w64_arrange += b.side_w64_arrange;
+    a.side_w128_arrange += b.side_w128_arrange;
+    a.side_w192_arrange += b.side_w192_arrange;
+    a.side_wmore_arrange += b.side_wmore_arrange;
+    a.side_w64_classify += b.side_w64_classify;
+    a.side_w128_classify += b.side_w128_classify;
+    a.side_w192_classify += b.side_w192_classify;
+    a.side_wmore_classify += b.side_wmore_classify;
+    a.side_wmax = std::max(a.side_wmax, b.side_wmax);
     a.cache_hits += b.cache_hits;
     a.cache_misses += b.cache_misses;
     a.cache_entries += b.cache_entries;
@@ -519,14 +528,22 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #if defined(KRISITE_COUNT_PREDICATES)
         const std::uint64_t pc_side0 = geom::counters::side_calls;
         const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
+        const std::uint64_t pc_w0[4] = {geom::counters::side_w64, geom::counters::side_w128,
+                                        geom::counters::side_w192, geom::counters::side_wmore};
         struct PredGuard {
             BoolStats& s;
             std::uint64_t s0, i0;
+            const std::uint64_t* w0;
             ~PredGuard() {
                 s.side_calls_arrange += geom::counters::side_calls - s0;
                 s.intersect3_arrange += geom::counters::intersect3_calls - i0;
+                s.side_w64_arrange += geom::counters::side_w64 - w0[0];
+                s.side_w128_arrange += geom::counters::side_w128 - w0[1];
+                s.side_w192_arrange += geom::counters::side_w192 - w0[2];
+                s.side_wmore_arrange += geom::counters::side_wmore - w0[3];
+                s.side_wmax = std::max(s.side_wmax, geom::counters::side_wmax);
             }
-        } pred_guard{st, pc_side0, pc_i30};
+        } pred_guard{st, pc_side0, pc_i30, pc_w0};
 #endif
         std::vector<Fragment> local;
         std::vector<std::uint32_t> local_src, local_tag;
@@ -1295,14 +1312,22 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #if defined(KRISITE_COUNT_PREDICATES)
         const std::uint64_t pc_side0 = geom::counters::side_calls;
         const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
+        const std::uint64_t pc_w0[4] = {geom::counters::side_w64, geom::counters::side_w128,
+                                        geom::counters::side_w192, geom::counters::side_wmore};
         struct PredGuard {
             BoolStats& s;
             std::uint64_t s0, i0;
+            const std::uint64_t* w0;
             ~PredGuard() {
                 s.side_calls_classify += geom::counters::side_calls - s0;
                 s.intersect3_classify += geom::counters::intersect3_calls - i0;
+                s.side_w64_classify += geom::counters::side_w64 - w0[0];
+                s.side_w128_classify += geom::counters::side_w128 - w0[1];
+                s.side_w192_classify += geom::counters::side_w192 - w0[2];
+                s.side_wmore_classify += geom::counters::side_wmore - w0[3];
+                s.side_wmax = std::max(s.side_wmax, geom::counters::side_wmax);
             }
-        } pred_guard{st, pc_side0, pc_i30};
+        } pred_guard{st, pc_side0, pc_i30, pc_w0};
 #endif
         const auto& kv = *kvp;
         // 同じ領域に複数の断片が載っていても、出力するのは 1 枚です（§5.4.1）。

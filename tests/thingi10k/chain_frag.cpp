@@ -196,6 +196,43 @@ void print_rows() {
         }
     }
 
+    // ---- ★★ `side` の被符号値の【実際の】幅（`SPEC-phase5.md` §5.10.10 の案 E）------
+    //
+    // **測るのは最終的な被符号値の幅です**（中間結果の最大ではありません）。
+    // **上界と並べて出します** — 張り付いていれば案 E は成立しません。
+    if (g_rows[0].st.side_calls_arrange + g_rows[0].st.side_calls_classify > 0) {
+        std::printf("\n**上界**: `bits::kSide` = %zu ビット（$9b+20$、$b$ = %d）→ %zu リム\n",
+                    static_cast<std::size_t>(geom::bits::kSide), KRISITE_COORD_BITS,
+                    static_cast<std::size_t>(geom::limbs::kSide));
+        std::printf("\n| 段 | 演算 | `side` | **≤64** | **≤128** | **≤192** | **>192** | 最大 |\n");
+        std::printf("|---|---|---:|---:|---:|---:|---:|---:|\n");
+        for (const Row& r : g_rows) {
+            const auto row = [&](const char* stage, std::uint64_t n, std::uint64_t a,
+                                 std::uint64_t b, std::uint64_t c, std::uint64_t d) {
+                const double t = static_cast<double>(n);
+                std::printf(
+                    "| %s | %s | %llu | **%.1f%%** | **%.1f%%** | **%.1f%%** | "
+                    "**%.1f%%** | %llu |\n",
+                    r.name.c_str(), stage, static_cast<unsigned long long>(n),
+                    n == 0 ? 0.0 : 100.0 * static_cast<double>(a) / t,
+                    n == 0 ? 0.0 : 100.0 * static_cast<double>(b) / t,
+                    n == 0 ? 0.0 : 100.0 * static_cast<double>(c) / t,
+                    n == 0 ? 0.0 : 100.0 * static_cast<double>(d) / t,
+                    static_cast<unsigned long long>(r.st.side_wmax));
+            };
+            row("arrange",
+                r.st.side_w64_arrange + r.st.side_w128_arrange + r.st.side_w192_arrange +
+                    r.st.side_wmore_arrange,
+                r.st.side_w64_arrange, r.st.side_w128_arrange, r.st.side_w192_arrange,
+                r.st.side_wmore_arrange);
+            row("分類",
+                r.st.side_w64_classify + r.st.side_w128_classify + r.st.side_w192_classify +
+                    r.st.side_wmore_classify,
+                r.st.side_w64_classify, r.st.side_w128_classify, r.st.side_w192_classify,
+                r.st.side_wmore_classify);
+        }
+    }
+
     // ---- ★ 分類の費用（依頼 2 の材料）--------------------------------------
     //
     // **参照点の伝播で置き換えたいのは、この「領域ごとの大域レイキャスト」です。**

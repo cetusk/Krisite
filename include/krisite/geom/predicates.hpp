@@ -6,6 +6,9 @@
 #ifndef KRISITE_GEOM_PREDICATES_HPP
 #define KRISITE_GEOM_PREDICATES_HPP
 
+#include <bit>
+#include <cstddef>
+
 #include "krisite/arith/fixed_int.hpp"
 #include "krisite/arith/ops.hpp"
 #include "krisite/geom/counters.hpp"
@@ -175,10 +178,46 @@ inline arith::fixed_int<limbs::kSide> side_value(const PlaneD& pl, const HPointD
     return acc;
 }
 
+#if defined(KRISITE_COUNT_PREDICATES)
+namespace detail {
+
+/// **被符号値の実際のビット幅を数える**（`SPEC-phase5.md` §5.10.10 の案 E）。
+///
+/// **計測専用のビルドでしか存在しません。**
+/// **`CONTRACTS.md` §11「計測の費用を本番に持ち込むこと」の禁止に従います。**
+template <std::size_t N>
+inline void record_side_width(const arith::fixed_int<N>& v) noexcept {
+    const auto a = arith::is_negative(v) ? arith::neg(v) : v;
+    std::size_t w = 0;
+    for (std::size_t i = N; i-- > 0;) {
+        if (a[i] != 0) {
+            w = 64 * i + static_cast<std::size_t>(std::bit_width(a[i]));
+            break;
+        }
+    }
+    if (w <= 64) {
+        ++counters::side_w64;
+    } else if (w <= 128) {
+        ++counters::side_w128;
+    } else if (w <= 192) {
+        ++counters::side_w192;
+    } else {
+        ++counters::side_wmore;
+    }
+    if (w > counters::side_wmax) counters::side_wmax = w;
+}
+
+}  // namespace detail
+#endif
+
 inline int side(const PlaneD& pl, const HPointD& v) noexcept {
     KRISITE_COUNT(side_calls);
     KRISITE_CHECK(!arith::is_zero(v.w), "side: HPoint の w == 0（不変条件違反）");
-    return arith::sign(v.w) * arith::sign(side_value(pl, v));
+    const auto val = side_value(pl, v);
+#if defined(KRISITE_COUNT_PREDICATES)
+    detail::record_side_width(val);
+#endif
+    return arith::sign(v.w) * arith::sign(val);
 }
 
 // ---- cmp_h ------------------------------------------------------------------

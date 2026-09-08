@@ -30,9 +30,30 @@ namespace counters {
 inline thread_local std::uint64_t side_calls = 0;
 inline thread_local std::uint64_t intersect3_calls = 0;
 
+// ---- ★ `side` の被符号値の【実際の】ビット幅（`SPEC-phase5.md` §5.10.10 の案 E）----
+//
+// **測るのは「計算過程で現れる最大の中間結果の幅」ではなく、
+// 【最終的な被符号値の幅】です。** 前者は上界（$9b+20$）で決まりますが、
+// **後者は入力の分布で決まります。**
+//
+// **区分は 64 / 128 / 192 / それ以上の 4 つです。** リム数の段が 64 ビットごとなので、
+// **192 ビット（3 リム）で済むなら 4 リムから 1 リム減ります**
+// （Nehring-Wirxel の Table 1 で 192b → 256b が 103 → 142 サイクル、1.38 倍）。
+inline thread_local std::uint64_t side_w64 = 0;
+inline thread_local std::uint64_t side_w128 = 0;
+inline thread_local std::uint64_t side_w192 = 0;
+inline thread_local std::uint64_t side_wmore = 0;
+/// **観測した最大幅**（上界と並べるために要ります。張り付いていれば案 E は不成立）。
+inline thread_local std::uint64_t side_wmax = 0;
+
 inline void reset() noexcept {
     side_calls = 0;
     intersect3_calls = 0;
+    side_w64 = 0;
+    side_w128 = 0;
+    side_w192 = 0;
+    side_wmore = 0;
+    side_wmax = 0;
 }
 
 }  // namespace counters

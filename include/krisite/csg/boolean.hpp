@@ -238,6 +238,17 @@ struct BoolStats {
     std::uint64_t side_calls_classify = 0;
     std::uint64_t intersect3_arrange = 0;
     std::uint64_t intersect3_classify = 0;
+    // ---- ★ `side` の被符号値の【実際の】幅（`SPEC-phase5.md` §5.10.10 の案 E）------
+    //
+    // **区分は 64 / 128 / 192 / それ以上の 4 つ**（リム数の段が 64 ビットごとなので、
+    // **192 ビットで済めば 4 リムから 1 リム減ります**）。
+    // **`KRISITE_COUNT_PREDICATES` のときだけ非零です。**
+    std::uint64_t side_w64_arrange = 0, side_w128_arrange = 0;
+    std::uint64_t side_w192_arrange = 0, side_wmore_arrange = 0;
+    std::uint64_t side_w64_classify = 0, side_w128_classify = 0;
+    std::uint64_t side_w192_classify = 0, side_wmore_classify = 0;
+    /// **観測した最大幅**（上界 `bits::kSide` と並べるために要ります）。
+    std::uint64_t side_wmax = 0;
 
     /// §2.3 の絞り込み（SPEC-phase2）。
     ///
