@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
+#include <tuple>
 #include <vector>
 
 #include "krisite/csg/faces.hpp"
@@ -114,6 +115,32 @@ struct BoolStats {
     /// **符号列を数えた断片の数**（`region_hist_total` の分母）。
     /// **群の数で割ってはいけません** — 群と断片は 1 対 1 ではありません
     std::size_t region_hist_count = 0;
+    // ---- ビット列版（`DESIGN-phase5-hotspots.md` §14.2）------------------------
+    /// **ビット列（符号だけ。平面 ID を落とす）による仕分けが食い違った群の数**。
+    ///
+    /// **成立するのは「同じセル・同じ支持平面のグループの中」だけです**（§14.2.3）。
+    /// **セルをまたぐ比較が起きるなら、ビット列は使えません。**
+    std::size_t region_bits_mismatch = 0;
+    /// **★ 番人: 同じ `region_key` の断片が、複数のセルに分かれている群の数。**
+    ///
+    /// **0 なら §14.2.3 の論証は検証されていません**（セルをまたぐ機会が無かっただけ）。
+    /// **非零で食い違い 0 なら、論証が実測で裏づけられます。**
+    std::size_t region_cross_cell = 0;
+    /// **符号列が 256 ビットを超えた断片の数**（§14.2.4 の「あふれ」）。
+    std::size_t region_bits_overflow = 0;
+    // ---- ビット列版が失敗した原因の切り分け（2026-09-08）------------------------
+    /// **群の中で `hist` の【長さ】が揃っていない群の数。**
+    ///
+    /// **揃っていなければ、「$i$ 番目の切断」が群の中で同じ平面を指しません。**
+    std::size_t region_bits_len_differ = 0;
+    /// **群の中で `hist` の【平面の列】が揃っていない群の数**（長さは同じでも中身が違う）。
+    std::size_t region_bits_planes_differ = 0;
+    /// **同じ頂点 ID の群が、違うビット群に散った件数**（ビット列が細かすぎる側）。
+    std::size_t region_bits_split = 0;
+    /// **★ 違う頂点 ID の群が、同じビット群に混ざった件数**（ビット列が粗すぎる側）。
+    std::size_t region_bits_merge = 0;
+    /// **セルを鍵に加えたビット列**（セル, 支持平面, 符号列）での食い違い。
+    std::size_t region_cellbits_mismatch = 0;
     std::size_t max_planes_at_point = 0;       ///< 1 点に集まる平面の最大枚数（§5.4、セル面込み）
     std::size_t max_mesh_planes_at_point = 0;  ///< 同上、メッシュ平面のみ（対照）
     std::size_t planes_total = 0;              ///< 総当たりの分母（表に載った平面の総数）
@@ -364,6 +391,25 @@ inline std::array<PlaneId, 3> vertex_key(const Fragment& f, std::size_t i) {
 /// 凸多角形は頂点集合で一意に定まるので、順序を捨てても領域は復元できます。
 using RegionKey = std::pair<PlaneId, std::vector<std::uint32_t>>;
 
+/// **断片の正準キー（v2）** — `DESIGN-phase5-hotspots.md` §14。
+///
+/// **(セル, 支持平面, 切断の符号列, ビット数)。**
+/// **頂点 ID を使いません。したがって中核に縫合が要りません。**
+///
+/// **セルが要る理由**（§14.7.2。実測で確定）:
+/// **第 2 段の切断（共平面揃え）はセルごと・支持平面ごとに決まる**ので、
+/// **符号だけでは違うセルの領域が混ざります**（「粗すぎ」が全件）。
+///
+/// **ビット数を持つ理由**: `cutbits` の長さだけでは区別できません
+/// （65 ビットと 128 ビットは、どちらも 2 ワード）。
+using RegionKey2 = std::tuple<std::uint64_t, PlaneId, std::vector<std::uint64_t>, std::uint32_t>;
+
+/// セルを 64 ビットに詰める（深度 20 まで）。
+inline std::uint64_t cell_key(const octree::Cell& c) noexcept {
+    return (static_cast<std::uint64_t>(c.depth) << 60) | (static_cast<std::uint64_t>(c.i) << 40) |
+           (static_cast<std::uint64_t>(c.j) << 20) | static_cast<std::uint64_t>(c.k);
+}
+
 inline RegionKey region_key(PlaneId support, std::vector<std::uint32_t> ids) {
     std::sort(ids.begin(), ids.end());
     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
@@ -499,6 +545,23 @@ struct BoolOptions {
     ///
     /// **無効にしたときは $g$ で比較してはいけません**（§5.4）。非多様体出力では
     /// $\chi$ が奇数になり得ます。
+    /// **共平面重複の仕分けに、切断の符号列を使う**（`DESIGN-phase5-hotspots.md` §14）。
+    ///
+    /// **鍵は `(セル, 支持平面, 切断の符号列)`。** 真にすると**中核の縫合が要らなくなります**
+    /// （実測で中核の 29.2%）。
+    ///
+    /// > **★ 既定は偽です。連鎖で成立しないことが分かりました**（§14.8）。
+    /// > **単発の演算では 3 入力すべてで食い違い 0 でしたが、
+    /// > 連鎖（$(A\cup B)\setminus D$）では群がセルをまたぎ、
+    /// > 同じ群が 2 つの鍵に割れます**（実測 371 件）。
+    ///
+    /// **真にすると、従来の鍵との突き合わせも同時に走ります**（検査のため）。
+    bool region_key_cuts = false;
+    /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。
+    ///
+    /// **出力は変わりません。** `region_key_cuts` と違い、仕分けには使いません。
+    /// **コーパスでは常時真にしてください**（§14.3.2。置き換えの根拠を守る唯一の検査）。
+    bool verify_region_key = false;
     bool split_contacts = true;
     /// **構成点の保持**（§4）。平面3つ組をキーにメモ化する。
     ///

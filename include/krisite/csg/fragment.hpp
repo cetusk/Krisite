@@ -32,6 +32,20 @@ struct Fragment {
     bool flipped = false;  ///< 外向き法線が support の法線と逆か
     std::vector<PlaneId> edge;
     int owner = 0;  ///< 0 = A, 1 = B
+    /// **切断の符号列**（`DESIGN-phase5-hotspots.md` §14）。
+    ///
+    /// **共平面重複の仕分け（`region_key`）の鍵です。**
+    /// **これがあるので、中核は頂点 ID を作らずに済みます**（縫合が要らない）。
+    ///
+    /// **鍵は `(セル, 支持平面, この符号列)`。** セルが要る理由は §14.7.2 —
+    /// **第 2 段の切断（共平面揃え）がセルごとに決まる**ので、
+    /// **符号だけでは違うセルの領域が混ざります**（実測で「粗すぎ」が全件）。
+    ///
+    /// **1 切断 = 1 ビット。** 実測で断片あたり 13〜117 ビット（最大 328）。
+    std::vector<std::uint64_t> cutbits;
+    /// **符号列のビット数。** `cutbits` の長さだけでは区別できません
+    /// （65 ビットと 128 ビットは、どちらも 2 ワード）
+    std::uint32_t ncuts = 0;
 #if defined(KRISITE_EXPERIMENT_REGION_HIST)
     /// **切断の履歴**（`RESEARCH-perf.md` §S3.5 の実験。**実験用です**）。
     ///
@@ -71,6 +85,21 @@ inline geom::HPointD fragment_vertex(const PlaneTable& t, const Fragment& f, std
     std::sort(k.begin(), k.end());
     return geom::intersect3(t.at(k[0]), t.at(k[1]), t.at(k[2]));
 }
+
+namespace detail {
+
+/// **切断の符号を 1 ビット足す**（`DESIGN-phase5-hotspots.md` §14）。
+///
+/// **「切られなかった」ことも履歴の一部です**（§14.1）。
+/// 全頂点が片側にある場合も符号を記録しないと、
+/// **相手の多角形が切られたときに、同じ領域が違う鍵になります。**
+inline void push_cut(Fragment& f, bool positive) noexcept {
+    const std::uint32_t i = f.ncuts++;
+    if ((i >> 6) >= f.cutbits.size()) f.cutbits.push_back(0);
+    if (positive) f.cutbits[i >> 6] |= (std::uint64_t{1} << (i & 63));
+}
+
+}  // namespace detail
 
 /// 断片を平面 `q` で分割した結果。存在しない側は `edge` が空。
 struct SplitResult {
@@ -165,6 +194,7 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
     if (!any_neg) {  // すべて >= 0
         r.pos = f;
         r.has_pos = true;
+        detail::push_cut(r.pos, true);
 #if defined(KRISITE_EXPERIMENT_REGION_HIST)
         // **★ 切断が効かなくても符号は記録します。**
         //
@@ -178,6 +208,7 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
     if (!any_pos) {  // すべて <= 0
         r.neg = f;
         r.has_neg = true;
+        detail::push_cut(r.neg, false);
 #if defined(KRISITE_EXPERIMENT_REGION_HIST)
         r.neg.hist.emplace_back(q, static_cast<std::int8_t>(-1));
 #endif
@@ -191,6 +222,9 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
         out.flipped = f.flipped;
         out.owner = f.owner;
         out.edge = std::move(e);
+        out.cutbits = f.cutbits;
+        out.ncuts = f.ncuts;
+        detail::push_cut(out, k > 0);
 #if defined(KRISITE_EXPERIMENT_REGION_HIST)
         out.hist = f.hist;
         out.hist.emplace_back(q, static_cast<std::int8_t>(k));

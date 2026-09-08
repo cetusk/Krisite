@@ -28,6 +28,7 @@
 #include <chrono>
 #include <map>
 #include <mutex>
+#include <tuple>
 #include <vector>
 #if defined(KRISITE_DEBUG_SOUP)
 #include <cstdio>
@@ -902,6 +903,17 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // 値で併合するので、そのままでは並列にできません。**中核だけを並列化したときの
     // 上限は $1/0.161 = 6.2$ 倍**で、これは出口の頂点併合（`SPEC-phase4.md` §3.1）と
     // 同じ形の問題です。**並列整列 + 区分ごとの併合**で崩せますが、CP1 では扱いません。
+    // ---- ★ 縫合は【検査のときだけ】走ります（`DESIGN-phase5-hotspots.md` §14）----
+    //
+    // **共平面重複の仕分けに頂点 ID を使うのをやめました。**
+    // **鍵は `(セル, 支持平面, 切断の符号列)` です**（`detail::RegionKey2`）。
+    //
+    // **`opt.verify_region_key` が真のときだけ、従来の鍵も作って突き合わせます。**
+    // **既定は偽です。** この段は実測で中核の 29.2% を占めていました。
+    // **既定では従来どおり縫合します**（`opt.region_key_cuts` が偽）。
+    // **真にすると新しい鍵（切断の符号列）で仕分け、従来の鍵とも突き合わせます。**
+    const bool use_cuts = opt.region_key_cuts;
+    const bool do_stitch = !use_cuts || opt.verify_region_key;
     PointCache stitch_cache;
     PointCache* const cache = opt.cache_points ? &stitch_cache : nullptr;
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
@@ -915,8 +927,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     //
     // 点ごとに、その点を参照した断片のセル添字（最大深度に正規化）の範囲を持ちます。
     std::vector<std::array<std::uint32_t, 3>> pt_lo, pt_hi;
-    std::vector<std::vector<std::uint32_t>> raw(frags.size());
-    for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+    std::vector<std::vector<std::uint32_t>> raw(do_stitch ? frags.size() : 0);
+    for (std::size_t fi = 0; do_stitch && fi < frags.size(); ++fi) {
         const Fragment& f = frags[fi];
         const std::size_t n = vertex_count(f);
         raw[fi].reserve(n);
@@ -944,6 +956,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     }
     st.constructed_points = points.size();
     std::vector<std::uint32_t> order(points.size());
+    (void)cache;
     for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
     std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
         return geom::lex_less(points[a], points[b]);
@@ -966,84 +979,112 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     //
     // 同じ領域の断片は、(支持平面, 頂点集合) が一致します。**共平面重複は
     // 全順序で 1 枚だけ残します**（`SPEC-phase3.md` §5.4.1 / EMBER §4.3 の C4）。
-    std::map<detail::RegionKey, std::vector<std::size_t>> regions;
+    // **鍵は 2 通りあります**（`DESIGN-phase5-hotspots.md` §14）。
+    //
+    //   従来（既定）  (支持平面, 頂点 ID の整列集合)   ← 縫合が要る
+    //   新しい        (セル, 支持平面, 切断の符号列)   ← 縫合が要らない。**連鎖で不可**
+    //
+    // **`RegionKey2` に統一して持ちます。** 従来の鍵は、
+    // **頂点 ID の列を `cutbits` の位置に詰めて**表します（型を 2 つ持たないため）。
+    std::map<detail::RegionKey2, std::vector<std::size_t>> regions;
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
-        if (raw[fi].size() < 3) continue;
-        std::vector<std::uint32_t> ids;
-        ids.reserve(raw[fi].size());
-        for (std::uint32_t v : raw[fi]) ids.push_back(remap[v]);
-        regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
+        if (use_cuts) {
+            if (vertex_count(frags[fi]) < 3) continue;
+            regions[detail::RegionKey2{detail::cell_key(frag_cell[fi]), frags[fi].support,
+                                       frags[fi].cutbits, frags[fi].ncuts}]
+                .push_back(fi);
+        } else {
+            if (raw[fi].size() < 3) continue;
+            std::vector<std::uint32_t> ids;
+            ids.reserve(raw[fi].size());
+            for (std::uint32_t v : raw[fi]) ids.push_back(remap[v]);
+            std::sort(ids.begin(), ids.end());
+            ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+            std::vector<std::uint64_t> packed(ids.begin(), ids.end());
+            regions[detail::RegionKey2{0, frags[fi].support, std::move(packed),
+                                       static_cast<std::uint32_t>(ids.size())}]
+                .push_back(fi);
+        }
     }
 
-#if defined(KRISITE_EXPERIMENT_REGION_HIST)
-    // ---- ★ 実験: 切断の符号列で同じ仕分けができるか（`RESEARCH-perf.md` §S3.5）----
+    // ---- ★ 従来の鍵（頂点 ID）との突き合わせ（`opt.verify_region_key`）------------
     //
-    // **問い**: 共平面重複の仕分けに、頂点 ID が要るのか。
-    // **要らなければ、上の縫合（構成点の構築・整列・値による併合）が消えます。**
-    // **実測で中核の 29.2% です。**
+    // **置き換えが正しいことを示すのは、この検査だけです。**
+    // **旗を外すと、示すものが無くなります**（§14.3.2）。
     //
-    // **根拠**（ソースで確認済み。`IMPL-v2.md` §9）:
-    //
-    //   第 1 段 `cuts_for(sup)`  `std::map` の昇順で決定的。**支持平面だけで決まる**
-    //   第 2 段 `es`（共平面揃え） `std::sort` で決定的。**グループ全体の和集合**
-    //
-    // **どちらもグループ内の全断片に、同じ平面集合が同じ順序で適用されます。**
-    // **したがって重なり領域の断片は、同じ切断の履歴を持つはずです。**
-    //
-    // **ここでは出力を変えません。** 2 つの鍵で仕分けを作り、
-    // **グループの【中身】（断片の添字集合）が完全に一致するかを見るだけです。**
-    {
-        using HistKey = std::pair<PlaneId, std::vector<std::pair<PlaneId, std::int8_t>>>;
-        std::map<HistKey, std::vector<std::size_t>> by_hist;
+    // **検査は「群の対応が両方向とも関数か」で行います。**
+    // **群の数の一致では足りません**（違う断片が同じ群に入り得ます）。
+    if (use_cuts || opt.verify_region_key) {
+        std::map<detail::RegionKey, std::vector<std::size_t>> old_regions;
         for (std::size_t fi = 0; fi < frags.size(); ++fi) {
-            if (raw[fi].size() < 3) continue;
-            st.region_hist_total += frags[fi].hist.size();
-            st.region_hist_max = std::max(st.region_hist_max, frags[fi].hist.size());
-            ++st.region_hist_count;
-            by_hist[HistKey{frags[fi].support, frags[fi].hist}].push_back(fi);
+            if (vertex_count(frags[fi]) < 3) continue;
+            std::vector<std::uint32_t> ids;
+            ids.reserve(raw[fi].size());
+            for (std::uint32_t v : raw[fi]) ids.push_back(remap[v]);
+            old_regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
         }
-        // **断片 → グループ** の写像を 2 つ作り、**同じ分割を与えるか**を見ます。
-        // **グループの数だけでは足りません**（違う断片が同じグループに入り得ます）。
-        std::vector<std::size_t> g_id(frags.size(), 0), g_hist(frags.size(), 0);
-        std::size_t k = 1;
-        for (const auto& kv : regions) {
-            for (std::size_t fi : kv.second) g_id[fi] = k;
-            ++k;
+        std::vector<std::size_t> g_old(frags.size(), 0), g_new(frags.size(), 0);
+        std::size_t ko = 1;
+        for (const auto& kv : old_regions) {
+            for (std::size_t fi : kv.second) g_old[fi] = ko;
+            ++ko;
         }
-        k = 1;
-        for (const auto& kv : by_hist) {
-            for (std::size_t fi : kv.second) g_hist[fi] = k;
-            ++k;
-        }
-        // **2 つの分割が一致する $\iff$ 群の対応が両方向とも関数になる。**
-        //
-        // **$O(F)$ で見られます。** 群ごとに相手の群を探すと $O(\text{群}^2)$ になり、
-        // **実データで 84 秒かかりました**（私の最初の実装）。
-        std::vector<std::size_t> i2h(k + 1, 0), h2i(k + 1, 0);
-        i2h.assign(regions.size() + 1, 0);
-        h2i.assign(by_hist.size() + 1, 0);
-        std::vector<char> bad_i(regions.size() + 1, 0);
-        for (std::size_t fi = 0; fi < frags.size(); ++fi) {
-            if (g_id[fi] == 0) continue;
-            const std::size_t a = g_id[fi], b = g_hist[fi];
-            if (i2h[a] == 0) {
-                i2h[a] = b;
-            } else if (i2h[a] != b) {
-                bad_i[a] = 1;  // 同じ頂点 ID の群が、違う符号列の群に散った
-            }
-            if (h2i[b] == 0) {
-                h2i[b] = a;
-            } else if (h2i[b] != a) {
-                bad_i[a] = 1;  // 違う頂点 ID の群が、同じ符号列の群に混ざった
+        // **`use_cuts` なら `regions` が既に新しい鍵。**
+        // **そうでなければ、突き合わせのために新しい鍵を別に作ります。**
+        std::map<detail::RegionKey2, std::vector<std::size_t>> cut_regions;
+        if (!use_cuts) {
+            for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+                if (vertex_count(frags[fi]) < 3) continue;
+                cut_regions[detail::RegionKey2{detail::cell_key(frag_cell[fi]), frags[fi].support,
+                                               frags[fi].cutbits, frags[fi].ncuts}]
+                    .push_back(fi);
             }
         }
-        for (const auto& kv : regions) {
+        const auto& new_regions = use_cuts ? regions : cut_regions;
+        std::size_t kn = 1;
+        for (const auto& kv : new_regions) {
+            for (std::size_t fi : kv.second) g_new[fi] = kn;
+            ++kn;
+        }
+        std::vector<std::size_t> o2n(old_regions.size() + 1, 0), n2o(new_regions.size() + 1, 0);
+        std::vector<char> bad(old_regions.size() + 1, 0);
+        for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+            if (g_old[fi] == 0) continue;
+            const std::size_t a = g_old[fi], b = g_new[fi];
+            if (o2n[a] == 0) {
+                o2n[a] = b;
+            } else if (o2n[a] != b) {
+                bad[a] = 1;
+            }
+            if (n2o[b] == 0) {
+                n2o[b] = a;
+            } else if (n2o[b] != a) {
+                bad[a] = 1;
+            }
+        }
+        for (const auto& kv : old_regions) {
             ++st.region_cmp_groups;
             if (kv.second.size() >= 2) ++st.region_cmp_multi;
-            if (bad_i[g_id[kv.second.front()]] != 0) ++st.region_cmp_mismatch;
+            if (bad[g_old[kv.second.front()]] != 0) ++st.region_cmp_mismatch;
+        }
+        // **群がセルをまたいでいないこと**（またぐと、新しい鍵で 2 つに割れます）
+        for (const auto& kv : old_regions) {
+            const octree::Cell& c0 = frag_cell[kv.second.front()];
+            for (std::size_t fi : kv.second) {
+                const octree::Cell& c1 = frag_cell[fi];
+                if (c1.depth != c0.depth || c1.i != c0.i || c1.j != c0.j || c1.k != c0.k) {
+                    ++st.region_cross_cell;
+                    break;
+                }
+            }
+        }
+        st.region_hist_count = frags.size();
+        for (const Fragment& f : frags) {
+            st.region_hist_total += f.ncuts;
+            st.region_hist_max = std::max(st.region_hist_max, std::size_t{f.ncuts});
+            if (f.ncuts > 256) ++st.region_bits_overflow;
         }
     }
-#endif
 
     // **広がりの集計**（`SPEC-phase4.md` §2.6 の前提を、実際に使う経路で測る）
     for (std::size_t i = 0; i < pt_lo.size(); ++i) {
@@ -1079,7 +1120,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
     // **順序非依存の検査**（§14 の CP3 の判定）。分類が可変な共有状態に依存していれば、
     // 逆順にすると結果が変わります。依存していなければ幾何の多重集合は同じです。
-    std::vector<const std::pair<const detail::RegionKey, std::vector<std::size_t>>*> region_order;
+    std::vector<const std::pair<const detail::RegionKey2, std::vector<std::size_t>>*> region_order;
     region_order.reserve(regions.size());
     for (const auto& kv : regions) region_order.push_back(&kv);
     if (opt.reverse_regions) std::reverse(region_order.begin(), region_order.end());
@@ -1219,6 +1260,16 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         q.frag.flipped = in_front;  // 外向き法線が支持平面の法線と逆か
         q.src = frag_src[pick];
         q.tag = frag_tag[pick];
+        // **★ 切断の履歴は、この演算の中でしか意味を持ちません**
+        // （`DESIGN-phase5-hotspots.md` §14.8）。
+        //
+        // **連鎖では、次の段の切断が前の段の履歴の後ろに積まれます。**
+        // **前の段の履歴は次の段のセル分割とも切断集合とも無関係なので、
+        // 同じ領域が違う鍵になります**（実測: `(A∪B)\D` で $\chi$ が 2 → 12）。
+        //
+        // **出力を作るときに捨てます。** 次の段は空から積み直します。
+        q.frag.cutbits.clear();
+        q.frag.ncuts = 0;
         const octree::CellBox cb2 = octree::box_of(frag_cell[pick]);
         for (int k = 0; k < 3; ++k) {
             q.aabb.lo[k] = cb2.lo[k];

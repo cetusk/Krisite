@@ -171,6 +171,18 @@ int main(int argc, char** argv) {
                         ? static_cast<double>(bs.region_hist_total) / bs.region_hist_count
                         : 0.0,
                     bs.region_hist_max, bs.region_hist_count);
+        std::printf(
+            "| **ビット列（符号だけ）** | 食い違い %zu（細かすぎ %zu / **粗すぎ %zu**）"
+            " / **セルをまたぐ群 %zu** |\n",
+            bs.region_bits_mismatch, bs.region_bits_split, bs.region_bits_merge,
+            bs.region_cross_cell);
+        std::printf("| **(セル, 支持平面, 符号列)** | **食い違い %zu** |\n",
+                    bs.region_cellbits_mismatch);
+        std::printf("| 256 ビットを超えた断片 | %zu / %zu（%.3f%%） |\n", bs.region_bits_overflow,
+                    bs.region_hist_count,
+                    bs.region_hist_count > 0
+                        ? 100.0 * bs.region_bits_overflow / bs.region_hist_count
+                        : 0.0);
         std::printf("| 縫合の段（この実験で消える候補） | %.3f s |\n\n", bs.ms_stitch / 1000);
 #endif
 

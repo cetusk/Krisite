@@ -162,13 +162,15 @@ struct Totals {
     std::size_t range_skipped = 0;        ///< 二分探索で飛ばした候補（**0 なら空回り**）
     std::size_t side_unsorted_total = 0;  ///< 絞り込みなしの `side`
     std::size_t side_sorted_total = 0;    ///< 絞り込みありの `side`
-#if defined(KRISITE_EXPERIMENT_REGION_HIST)
-    // ---- ★ 実験: 共平面重複の仕分けを切断の符号列で（`RESEARCH-perf.md` §S3.5）----
-    std::size_t rc_groups = 0;    ///< 突き合わせたグループ
-    std::size_t rc_multi = 0;     ///< **断片が 2 個以上のグループ**（重なりがある証拠）
-    std::size_t rc_mismatch = 0;  ///< **食い違ったグループ。0 でなければ失敗**
-    std::size_t rh_total = 0, rh_max = 0, rh_count = 0;  ///< 符号列の長さと、その分母
-#endif
+    // ---- 共平面重複の仕分けの鍵（`DESIGN-phase5-hotspots.md` §14）--------------
+    std::size_t rk_groups = 0;    ///< 突き合わせた群
+    std::size_t rk_multi = 0;     ///< **断片が 2 個以上の群**（重なりがある証拠）
+    std::size_t rk_mismatch = 0;  ///< **食い違い。0 でなければ置き換えは誤り**
+    std::size_t rk_cross = 0;     ///< **群がセルをまたいだ件数。0 でなければ鍵が割れる**
+    std::size_t rk_overflow = 0;  ///< 符号列が 256 ビットを超えた断片
+    std::size_t rk_bits_total = 0, rk_bits_max = 0, rk_bits_count = 0;
+    // **連鎖の側は別に数えます**（§14.8。**連鎖では成立しません**）
+    std::size_t rkn_groups = 0, rkn_mismatch = 0, rkn_cross = 0;
 };
 
 Totals g;
@@ -179,16 +181,19 @@ void run_config(const kritest::Case& c, const TriMesh& a, const TriMesh& b, Bool
     const PolySoup sa = from_mesh(a), sb = from_mesh(b);
 
     BoolStats st{};
-    const PolySoup r = boolean(sa, sb, op, opt, &st);
-#if defined(KRISITE_EXPERIMENT_REGION_HIST)
-    // **出力は変えていません。** 2 つの鍵で仕分けを作り、中身が一致するかを見るだけです
-    g.rc_groups += st.region_cmp_groups;
-    g.rc_multi += st.region_cmp_multi;
-    g.rc_mismatch += st.region_cmp_mismatch;
-    g.rh_total += st.region_hist_total;
-    g.rh_max = std::max(g.rh_max, st.region_hist_max);
-    g.rh_count += st.region_hist_count;
-#endif
+    // **★ コーパスでは、従来の鍵（頂点 ID）との突き合わせを常時走らせます**
+    // （`DESIGN-phase5-hotspots.md` §14.3.2。**置き換えが正しいことを示す唯一の検査**）
+    BoolOptions opt_v = opt;
+    opt_v.verify_region_key = true;  // **仕分けは従来どおり。突き合わせだけ**（§14）
+    const PolySoup r = boolean(sa, sb, op, opt_v, &st);
+    g.rk_groups += st.region_cmp_groups;
+    g.rk_multi += st.region_cmp_multi;
+    g.rk_mismatch += st.region_cmp_mismatch;
+    g.rk_cross += st.region_cross_cell;
+    g.rk_overflow += st.region_bits_overflow;
+    g.rk_bits_total += st.region_hist_total;
+    g.rk_bits_max = std::max(g.rk_bits_max, st.region_hist_max);
+    g.rk_bits_count += st.region_hist_count;
 
     // ---- 分裂 off / on -------------------------------------------------------
     ToMeshOptions off, on;
@@ -406,9 +411,17 @@ void run_nary(const kritest::Case& c, const TriMesh& a, const TriMesh& b, const 
     for (std::size_t pass = 0; pass < kPasses; ++pass) {
         const bool adaptive = (pass == kPasses - 1);
         const unsigned depth = adaptive ? kMaxDepth : static_cast<unsigned>(pass);
-        const BoolOptions o = all_on(depth, adaptive);
-        const PolySoup s1 = boolean(sa, sb, BoolOp::Union, o);
-        const PolySoup s2 = boolean(s1, sd, BoolOp::Difference, o);
+        BoolOptions o = all_on(depth, adaptive);
+        // **★ 連鎖でも鍵の突き合わせを走らせます**（`DESIGN` §14）
+        // **★ 連鎖でも突き合わせます**（§14.8 の食い違いは、ここで測ったものです）
+        o.verify_region_key = true;
+        BoolStats st1{}, st2{};
+        const PolySoup s1 = boolean(sa, sb, BoolOp::Union, o, &st1);
+        const PolySoup s2 = boolean(s1, sd, BoolOp::Difference, o, &st2);
+        // **★ 連鎖の側は別に数えます**（§14.8）。**単発の結果と混ぜないこと**
+        g.rkn_groups += st1.region_cmp_groups + st2.region_cmp_groups;
+        g.rkn_mismatch += st1.region_cmp_mismatch + st2.region_cmp_mismatch;
+        g.rkn_cross += st1.region_cross_cell + st2.region_cross_cell;
         const std::string tag = std::string("ケース ") + c.id + " (A∪B)\\D（" +
                                 (adaptive ? "適応" : "深度 " + std::to_string(depth)) + "）";
         KRI_CHECK_MSG(s2.source_count() == 3, tag + ": source 数が 3 でない");
@@ -488,25 +501,45 @@ void check_not_vacuous() {
     // **突き合わせを 1 度も回していなければ、一致は何も言っていません。**
     KRI_CHECK_MSG(g.verify_agree > 0,
                   "**検証の増分計算と従来経路の突き合わせを 1 度も回していません。空回りです**");
-#if defined(KRISITE_EXPERIMENT_REGION_HIST)
-    // ---- ★ 実験の判定と番人（`RESEARCH-perf.md` §S3.5）------------------------
+    // ---- 共平面重複の仕分けの鍵（`DESIGN-phase5-hotspots.md` §14）--------------
     //
-    // **食い違いが 0 でなければ、切断の符号列では仕分けられません。**
-    KRI_CHECK_MSG(g.rc_mismatch == 0,
-                  "**切断の符号列による仕分けが、頂点 ID による仕分けと食い違いました**" +
-                      kritest::pair_msg(g.rc_mismatch, 0));
+    // **中核から頂点 ID による仕分け（縫合）を外しました。**
+    // **鍵は (セル, 支持平面, 切断の符号列) です。**
+    // **置き換えが正しいことを示すのは、この突き合わせだけです。**
+    // **単発の演算では成立します**（3 入力で実測。§14.7）
+    KRI_CHECK_MSG(g.rk_mismatch == 0,
+                  "**単発の演算で、新しい鍵（セル, 支持平面, 符号列）が"
+                  "頂点 ID による仕分けと食い違いました**" +
+                      kritest::pair_msg(g.rk_mismatch, 0));
+    // **★ 群がセルをまたぐと、新しい鍵では 2 つに割れます。**
+    KRI_CHECK_MSG(g.rk_cross == 0,
+                  "**単発の演算で群がセルをまたぎました。**"
+                  "新しい鍵では同じ群が 2 つに割れます" +
+                      kritest::pair_msg(g.rk_cross, 0));
+    // ---- ★ 連鎖では成立しないことを、検査として固定します（§14.8）--------------
+    //
+    // **`CLAUDE.md`「素通りする組合せも固定する」。**
+    // **「連鎖でも通った」ことにして進むと、実データで静かに壊れます。**
+    KRI_CHECK_MSG(g.rkn_cross > 0,
+                  "**連鎖で群がセルをまたぐ現象が消えました。**"
+                  "§14.8 の制約が変わったなら、設計を見直してください");
+    KRI_CHECK_MSG(g.rkn_mismatch > 0,
+                  "**連鎖で食い違いが消えました。** §14.8 の制約が変わったなら、"
+                  "新しい鍵を連鎖でも使えるか再検討してください");
     // **番人**: **共平面重複が 1 件も無ければ、両方の鍵は自明に一致します。**
-    // **重なりのある入力で比較していることを、数で示します。**
-    KRI_CHECK_MSG(g.rc_multi > 0,
-                  "**断片が 2 個以上のグループが 1 つもありません。**"
+    KRI_CHECK_MSG(g.rk_multi > 0,
+                  "**断片が 2 個以上の群が 1 つもありません。**"
                   "共平面重複の無い入力だけで比較しており、一致は何も言っていません");
-    KRI_CHECK_MSG(g.rc_groups > 0, "**突き合わせを 1 度も回していません。空回りです**");
+    KRI_CHECK_MSG(g.rk_groups > 0, "**突き合わせを 1 度も回していません。空回りです**");
     std::printf(
-        "    ★ 実験（切断の符号列）: 群 %zu / **重なりのある群 %zu** / "
-        "食い違い %zu、符号列の長さ **断片あたり** 平均 %.1f・最大 %zu\n",
-        g.rc_groups, g.rc_multi, g.rc_mismatch,
-        g.rh_count > 0 ? static_cast<double>(g.rh_total) / g.rh_count : 0.0, g.rh_max);
-#endif
+        "    ★ 仕分けの鍵: 群 %zu / **重なりのある群 %zu** / **食い違い %zu** / "
+        "セルまたぎ %zu\n",
+        g.rk_groups, g.rk_multi, g.rk_mismatch, g.rk_cross);
+    std::printf("       **連鎖では成立しません**: 群 %zu / 食い違い %zu / セルまたぎ %zu\n",
+                g.rkn_groups, g.rkn_mismatch, g.rkn_cross);
+    std::printf("       符号列: 断片あたり 平均 %.1f / 最大 %zu / 256 ビット超 %zu\n",
+                g.rk_bits_count > 0 ? static_cast<double>(g.rk_bits_total) / g.rk_bits_count : 0.0,
+                g.rk_bits_max, g.rk_overflow);
     // **走査順の入れ替えが実際に走査を減らしていること**（空回りの番人）。
     // **等しければ、多角形がすべて 1 辺しかないか、機構が効いていません。**
     // **絞り込みが実際に候補を飛ばしていること**（空回りの番人）。
