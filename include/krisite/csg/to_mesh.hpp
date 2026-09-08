@@ -355,10 +355,9 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
             // **計時は旗で囲みます**（`ToMeshOptions::time_stages`）。
             // **本番の経路に時計を持ち込みません。**
             const auto t0 = opt.time_stages ? Clock::now() : Clock::time_point{};
-            const TPolygon tp =
-                insert_t_vertices_with(s.table, out.vertices, *cand, edge, poly, &t, nullptr,
-                                       opt.scan_per_edge, opt.count_box_reject,
-                                       used_cell_index && cell_index.sorted());
+            const TPolygon tp = insert_t_vertices_with(
+                s.table, out.vertices, *cand, edge, poly, &t, nullptr, opt.scan_per_edge,
+                opt.count_box_reject, used_cell_index && cell_index.sorted());
             const auto t1 = opt.time_stages ? Clock::now() : Clock::time_point{};
             fan_triangulate(tp, poly_tris[pi], &t, opt.general_triangulation);
             if (opt.time_stages) {
@@ -436,9 +435,9 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
     }
 
     st.ms_split = lap(t_stage);
-    st.ms_total =
-        std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(Clock::now() - t_enter)
-            .count();
+    st.ms_total = std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(
+                      Clock::now() - t_enter)
+                      .count();
     if (stats != nullptr) *stats = st;
     return out;
 }

@@ -237,14 +237,14 @@ void run_config(const kritest::Case& c, const TriMesh& a, const TriMesh& b, Bool
         KRI_CHECK_MSG(t_naive.split.unresolved == t_on.split.unresolved,
                       tag + ": unresolved が増分計算と従来経路で違う" +
                           kritest::pair_msg(t_naive.split.unresolved, t_on.split.unresolved));
-        KRI_CHECK_MSG(t_naive.split.actual_delta_v == t_on.split.actual_delta_v,
-                      tag + ": ΔV が増分計算と従来経路で違う" +
-                          kritest::pair_msg(t_naive.split.actual_delta_v,
-                                            t_on.split.actual_delta_v));
-        KRI_CHECK_MSG(t_naive.split.actual_delta_e == t_on.split.actual_delta_e,
-                      tag + ": ΔE が増分計算と従来経路で違う" +
-                          kritest::pair_msg(t_naive.split.actual_delta_e,
-                                            t_on.split.actual_delta_e));
+        KRI_CHECK_MSG(
+            t_naive.split.actual_delta_v == t_on.split.actual_delta_v,
+            tag + ": ΔV が増分計算と従来経路で違う" +
+                kritest::pair_msg(t_naive.split.actual_delta_v, t_on.split.actual_delta_v));
+        KRI_CHECK_MSG(
+            t_naive.split.actual_delta_e == t_on.split.actual_delta_e,
+            tag + ": ΔE が増分計算と従来経路で違う" +
+                kritest::pair_msg(t_naive.split.actual_delta_e, t_on.split.actual_delta_e));
         // **出力は 1 ビットも変わってはいけません**（検証は出力に触りません）
         KRI_CHECK_MSG(m_naive.triangles == m_on.triangles,
                       tag + ": 検証の経路を変えたら出力が変わった");
@@ -498,9 +498,10 @@ void check_not_vacuous() {
                 g.bsp_x_adaptive, g.bsp_x_early_out, g.wnv_x_split, g.uneven_leaves);
     // **`unresolved` の内訳**（`SPEC-phase5.md` §1.5.0.1。「解けなかった数」だけでは
     // 機構が働いたか分かりません）。**事後の検査が 0 なら、その経路は未検査です**
-    std::printf("    検証の増分計算: 突き合わせ %zu 構成、事後の非多様体 %zu、"
-                "分裂させず残した辺 %zu\n",
-                g.verify_agree, g.unresolved_post, g.unsplit_edges);
+    std::printf(
+        "    検証の増分計算: 突き合わせ %zu 構成、事後の非多様体 %zu、"
+        "分裂させず残した辺 %zu\n",
+        g.verify_agree, g.unresolved_post, g.unsplit_edges);
     // **走査順の効果は演算回数で出します**（`CLAUDE.md`「効果は演算回数で測る」）。
     // **`side` はほとんど減りません** — 減るのは候補集合の走査だけです（§5.11）
     std::printf("    候補の絞り込み: 飛ばした %zu、`side` %zu → %zu（**%.2f 倍**）\n",
@@ -508,16 +509,17 @@ void check_not_vacuous() {
                 g.side_sorted_total > 0
                     ? static_cast<double>(g.side_unsorted_total) / g.side_sorted_total
                     : 0.0);
-    std::printf("    T 解決の走査: 辺ごと %zu → 多角形あたり %zu（%.2f 倍）、"
-                "`side` %zu → %zu（%.3f 倍）\n",
-                g.scan_per_edge_total, g.scan_per_poly_total,
-                g.scan_per_poly_total > 0
-                    ? static_cast<double>(g.scan_per_edge_total) / g.scan_per_poly_total
-                    : 0.0,
-                g.side_per_edge_total, g.side_per_poly_total,
-                g.side_per_poly_total > 0
-                    ? static_cast<double>(g.side_per_edge_total) / g.side_per_poly_total
-                    : 0.0);
+    std::printf(
+        "    T 解決の走査: 辺ごと %zu → 多角形あたり %zu（%.2f 倍）、"
+        "`side` %zu → %zu（%.3f 倍）\n",
+        g.scan_per_edge_total, g.scan_per_poly_total,
+        g.scan_per_poly_total > 0
+            ? static_cast<double>(g.scan_per_edge_total) / g.scan_per_poly_total
+            : 0.0,
+        g.side_per_edge_total, g.side_per_poly_total,
+        g.side_per_poly_total > 0
+            ? static_cast<double>(g.side_per_edge_total) / g.side_per_poly_total
+            : 0.0);
 }
 
 }  // namespace

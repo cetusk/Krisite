@@ -64,10 +64,10 @@ void compare(const std::string& tag, const std::vector<Tri>& tris, std::size_t v
 
     SplitStats sf{}, sn{};
     std::vector<std::uint32_t> of, on;
-    const std::vector<Tri> rf =
-        krisite::mesh::split_contacts(tris, vertex_count, &of, &sf, nullptr, nullptr, nullptr, fast);
+    const std::vector<Tri> rf = krisite::mesh::split_contacts(tris, vertex_count, &of, &sf, nullptr,
+                                                              nullptr, nullptr, fast);
     const std::vector<Tri> rn = krisite::mesh::split_contacts(tris, vertex_count, &on, &sn, nullptr,
-                                                             nullptr, nullptr, naive);
+                                                              nullptr, nullptr, naive);
 
     // **出力は経路に依りません**（検証は出力に触りません）
     KRI_CHECK_MSG(rf == rn, tag + ": 検証の経路で出力が変わった");
@@ -82,9 +82,9 @@ void compare(const std::string& tag, const std::vector<Tri>& tris, std::size_t v
                   tag + ": ΔV が違う" + kritest::pair_msg(sf.actual_delta_v, sn.actual_delta_v));
     KRI_CHECK_MSG(sf.actual_delta_e == sn.actual_delta_e,
                   tag + ": ΔE が違う" + kritest::pair_msg(sf.actual_delta_e, sn.actual_delta_e));
-    KRI_CHECK_MSG(sf.actual_delta_chi == sn.actual_delta_chi,
-                  tag + ": Δχ が違う" +
-                      kritest::pair_msg(sf.actual_delta_chi, sn.actual_delta_chi));
+    KRI_CHECK_MSG(
+        sf.actual_delta_chi == sn.actual_delta_chi,
+        tag + ": Δχ が違う" + kritest::pair_msg(sf.actual_delta_chi, sn.actual_delta_chi));
 
     // **従来経路の答えを、`check_topology` から直接も確かめます。**
     // 正解器の正解器です（`sn` は同じ関数の中で `check_topology` を呼んでいるので、
@@ -142,9 +142,15 @@ int main() {
     {
         // **幾何としては成り立ちません。`split_contacts` は索引しか見ません。**
         std::vector<Tri> t = {
-            {0, 1, 2}, {1, 0, 3}, {0, 1, 4}, {1, 0, 5},
+            {0, 1, 2},
+            {1, 0, 3},
+            {0, 1, 4},
+            {1, 0, 5},
             // 4 枚を 1 つの連結成分に繋ぐ「別の場所」（次数 2 の辺で 4 枚を環にする）
-            {2, 3, 6}, {3, 4, 6}, {4, 5, 6}, {5, 2, 6},
+            {2, 3, 6},
+            {3, 4, 6},
+            {4, 5, 6},
+            {5, 2, 6},
         };
         compare("(a) 次数 4 の辺が残る", t, 7);
     }

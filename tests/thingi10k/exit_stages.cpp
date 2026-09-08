@@ -82,14 +82,15 @@ void print_breakdown(const char* tag, const Run& r) {
     // **5 段の和と `ms_total` が一致しなければ、計時されていない段があります。**
     // **`ms_total` と壁時計の差は、`to_mesh` の【外】にあります。**
     const double sum = s.ms_construct + s.ms_merge + s.ms_index + s.ms_tri + s.ms_split;
-    std::printf("|   └ 検算（ms） | 5 段の和 %.1f | `to_mesh` の全体 %.1f | 差 %+.1f | "
-                "壁時計 %.1f | 外側の差 %+.1f | |\n",
-                sum, s.ms_total, s.ms_total - sum, r.total * 1000.0,
-                r.total * 1000.0 - s.ms_total);
+    std::printf(
+        "|   └ 検算（ms） | 5 段の和 %.1f | `to_mesh` の全体 %.1f | 差 %+.1f | "
+        "壁時計 %.1f | 外側の差 %+.1f | |\n",
+        sum, s.ms_total, s.ms_total - sum, r.total * 1000.0, r.total * 1000.0 - s.ms_total);
     const mesh::SplitStats& p = s.split;
-    std::printf("|   └ 分裂の内訳（ms） | 辺表 %.1f | 診断 %.1f | 扇 %.1f | 書戻し %.1f | "
-                "**検証 %.1f** | |\n",
-                p.ms_edges, p.ms_diag, p.ms_fan, p.ms_apply, p.ms_verify);
+    std::printf(
+        "|   └ 分裂の内訳（ms） | 辺表 %.1f | 診断 %.1f | 扇 %.1f | 書戻し %.1f | "
+        "**検証 %.1f** | |\n",
+        p.ms_edges, p.ms_diag, p.ms_fan, p.ms_apply, p.ms_verify);
 }
 
 }  // namespace
@@ -158,8 +159,7 @@ int main(int argc, char** argv) {
         const double core =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - tc0).count();
 
-        std::printf("### %s — 中核 %.3f s（多角形 %zu）\n\n", op_name[oi], core,
-                    soup.polys.size());
+        std::printf("### %s — 中核 %.3f s（多角形 %zu）\n\n", op_name[oi], core, soup.polys.size());
 
         csg::ToMeshOptions fast;
         fast.threads = nthreads;
@@ -188,24 +188,24 @@ int main(int argc, char** argv) {
             if (i == 0 || e.total < best_pe.total) best_pe = e;
         }
 
-        std::printf("| 経路 | 合計 s | 構成点 | 値で併合 | 平面索引 | 扇（T+三角形化） | "
-                    "接触の分裂 |\n|---|---:|---:|---:|---:|---:|---:|\n");
+        std::printf(
+            "| 経路 | 合計 s | 構成点 | 値で併合 | 平面索引 | 扇（T+三角形化） | "
+            "接触の分裂 |\n|---|---:|---:|---:|---:|---:|---:|\n");
         print_breakdown("**増分計算（既定）**", best_fast);
         print_breakdown("従来（check_topology×2）", best_naive);
         std::printf("\n");
 
         // **出力は 1 ビットも変わってはいけません**
-        std::printf("| 出力のハッシュ | %s |\n", best_fast.hash == best_naive.hash
-                                                     ? "**一致**"
-                                                     : "**★ 食い違い（重大）**");
+        std::printf("| 出力のハッシュ | %s |\n",
+                    best_fast.hash == best_naive.hash ? "**一致**" : "**★ 食い違い（重大）**");
         std::printf("| 検証の時間の比 | %.2f 倍 |\n",
                     best_fast.st.split.ms_verify > 0
                         ? best_naive.st.split.ms_verify / best_fast.st.split.ms_verify
                         : 0.0);
         std::printf("| 出口の合計の比 | %.2f 倍 |\n",
                     best_fast.total > 0 ? best_naive.total / best_fast.total : 0.0);
-        std::printf("| `unresolved`（増分 / 従来） | %zu / %zu |\n",
-                    best_fast.st.split.unresolved, best_naive.st.split.unresolved);
+        std::printf("| `unresolved`（増分 / 従来） | %zu / %zu |\n", best_fast.st.split.unresolved,
+                    best_naive.st.split.unresolved);
         std::printf("| うち事後の非多様体 | %zu / %zu |\n", best_fast.st.split.unresolved_post,
                     best_naive.st.split.unresolved_post);
         std::printf("| ΔV（増分 / 従来） | %zu / %zu |\n", best_fast.st.split.actual_delta_v,
@@ -230,62 +230,65 @@ int main(int argc, char** argv) {
         // **比率としてなら読めます** — 同じ並列区間の中の 2 段だからです。
         {
             const double a = best_fast.st.t.ms_insert_t, b = best_fast.st.t.ms_fan_tri;
-            std::printf("| **扇の内訳（CPU 時間 ms）** | T 解決 %.1f / 三角形化 %.1f"
-                        "（%.0f%% : %.0f%%） |\n",
-                        a, b, (a + b > 0) ? 100.0 * a / (a + b) : 0.0,
-                        (a + b > 0) ? 100.0 * b / (a + b) : 0.0);
-            std::printf("| 壁時計の `ms_tri` と、CPU 時間の和 | %.1f ms / %.1f ms"
-                        "（並列効率 %.2f） |\n",
-                        best_fast.st.ms_tri, a + b,
-                        best_fast.st.ms_tri > 0 ? (a + b) / best_fast.st.ms_tri : 0.0);
-            std::printf("| T 解決の演算回数 | 走査した辺 %zu / 索引の候補 %zu / "
-                        "挿入 %zu / 1 辺の最大 %zu |\n",
-                        best_fast.st.t.edges_scanned, best_fast.st.t.candidates,
-                        best_fast.st.t.inserted, best_fast.st.t.max_per_edge);
+            std::printf(
+                "| **扇の内訳（CPU 時間 ms）** | T 解決 %.1f / 三角形化 %.1f"
+                "（%.0f%% : %.0f%%） |\n",
+                a, b, (a + b > 0) ? 100.0 * a / (a + b) : 0.0,
+                (a + b > 0) ? 100.0 * b / (a + b) : 0.0);
+            std::printf(
+                "| 壁時計の `ms_tri` と、CPU 時間の和 | %.1f ms / %.1f ms"
+                "（並列効率 %.2f） |\n",
+                best_fast.st.ms_tri, a + b,
+                best_fast.st.ms_tri > 0 ? (a + b) / best_fast.st.ms_tri : 0.0);
+            std::printf(
+                "| T 解決の演算回数 | 走査した辺 %zu / 索引の候補 %zu / "
+                "挿入 %zu / 1 辺の最大 %zu |\n",
+                best_fast.st.t.edges_scanned, best_fast.st.t.candidates, best_fast.st.t.inserted,
+                best_fast.st.t.max_per_edge);
             // **★ 述語の評価回数**（`CLAUDE.md`「効果は演算回数で測ってください」）。
             // **候補数ではなく、これが照合の本体の費用です。**
-            std::printf("| **述語の評価回数** | `side` %zu / `strictly_between` %zu / "
-                        "候補集合の走査 %zu |\n",
-                        best_fast.st.t.side_tests, best_fast.st.t.between_tests,
-                        best_fast.st.t.cand_scans);
+            std::printf(
+                "| **述語の評価回数** | `side` %zu / `strictly_between` %zu / "
+                "候補集合の走査 %zu |\n",
+                best_fast.st.t.side_tests, best_fast.st.t.between_tests, best_fast.st.t.cand_scans);
             std::printf("| 一般解 | 作った三角形 %zu / 従来へ落ちた多角形 %zu |\n",
                         best_fast.st.t.general_used, best_fast.st.t.general_fallback);
             // **走査順の新旧を、同じ実行の中で比べます**（§5.11）
             const auto& pe = best_pe.st.t;
-            std::printf("| **走査順（辺ごと → 多角形あたり 1 回）** | 走査 %zu → %zu（%.2f 倍）"
-                        " / `side` %zu → %zu（%.3f 倍） |\n",
-                        pe.cand_scans, best_fast.st.t.cand_scans,
-                        best_fast.st.t.cand_scans > 0
-                            ? static_cast<double>(pe.cand_scans) / best_fast.st.t.cand_scans
-                            : 0.0,
-                        pe.side_tests, best_fast.st.t.side_tests,
-                        best_fast.st.t.side_tests > 0
-                            ? static_cast<double>(pe.side_tests) / best_fast.st.t.side_tests
-                            : 0.0);
-            std::printf("| 同、扇の CPU 時間と出口の壁時計 | %.1f → %.1f ms / %.3f → %.3f s "
-                        "（%s） |\n",
-                        pe.ms_insert_t + pe.ms_fan_tri, a + b, best_pe.total, best_fast.total,
-                        best_pe.hash == best_fast.hash ? "**ハッシュ一致**"
-                                                       : "**★ 食い違い（重大）**");
+            std::printf(
+                "| **走査順（辺ごと → 多角形あたり 1 回）** | 走査 %zu → %zu（%.2f 倍）"
+                " / `side` %zu → %zu（%.3f 倍） |\n",
+                pe.cand_scans, best_fast.st.t.cand_scans,
+                best_fast.st.t.cand_scans > 0
+                    ? static_cast<double>(pe.cand_scans) / best_fast.st.t.cand_scans
+                    : 0.0,
+                pe.side_tests, best_fast.st.t.side_tests,
+                best_fast.st.t.side_tests > 0
+                    ? static_cast<double>(pe.side_tests) / best_fast.st.t.side_tests
+                    : 0.0);
+            std::printf(
+                "| 同、扇の CPU 時間と出口の壁時計 | %.1f → %.1f ms / %.3f → %.3f s "
+                "（%s） |\n",
+                pe.ms_insert_t + pe.ms_fan_tri, a + b, best_pe.total, best_fast.total,
+                best_pe.hash == best_fast.hash ? "**ハッシュ一致**" : "**★ 食い違い（重大）**");
         }
         // ---- 案 (b2) の効果（`DESIGN` §13）--------------------------------------
         {
             const Run bx = run_once(soup, unsorted);
             const auto& t = bx.st.t;
-            std::printf("| **案 (b2) 候補の区間の絞り込み** | 飛ばした %zu / `side` %zu → %zu"
-                        "（**%.2f 倍**） |\n",
-                        best_fast.st.t.cand_skipped_by_range, t.side_tests,
-                        best_fast.st.t.side_tests,
-                        best_fast.st.t.side_tests > 0
-                            ? static_cast<double>(t.side_tests) / best_fast.st.t.side_tests
-                            : 0.0);
-            std::printf("| 同、扇の CPU 時間と出口の壁時計 | %.1f → %.1f ms / %.3f → %.3f s"
-                        "（%s） |\n",
-                        t.ms_insert_t + t.ms_fan_tri,
-                        best_fast.st.t.ms_insert_t + best_fast.st.t.ms_fan_tri, bx.total,
-                        best_fast.total,
-                        bx.hash == best_fast.hash ? "**ハッシュ一致**"
-                                                  : "**★ 食い違い（重大）**");
+            std::printf(
+                "| **案 (b2) 候補の区間の絞り込み** | 飛ばした %zu / `side` %zu → %zu"
+                "（**%.2f 倍**） |\n",
+                best_fast.st.t.cand_skipped_by_range, t.side_tests, best_fast.st.t.side_tests,
+                best_fast.st.t.side_tests > 0
+                    ? static_cast<double>(t.side_tests) / best_fast.st.t.side_tests
+                    : 0.0);
+            std::printf(
+                "| 同、扇の CPU 時間と出口の壁時計 | %.1f → %.1f ms / %.3f → %.3f s"
+                "（%s） |\n",
+                t.ms_insert_t + t.ms_fan_tri,
+                best_fast.st.t.ms_insert_t + best_fast.st.t.ms_fan_tri, bx.total, best_fast.total,
+                bx.hash == best_fast.hash ? "**ハッシュ一致**" : "**★ 食い違い（重大）**");
             std::printf("| 同、挿入した T 頂点 | %zu → %zu（**1 個も変わってはいけない**） |\n",
                         t.inserted, best_fast.st.t.inserted);
             // **整列の費用は索引の段（`ms_index`）に乗ります。** 同一実行の中で比べます
@@ -294,13 +297,12 @@ int main(int argc, char** argv) {
                         best_fast.st.ms_index - bx.st.ms_index);
             std::printf("| 同、扇の段（壁時計） | %.1f → %.1f ms |\n", bx.st.ms_tri,
                         best_fast.st.ms_tri);
-            std::printf("| 二分探索に払う `cmp_h` | %zu（多角形あたり %.1f 回） |\n",
-                        best_fast.st.t.box_cmp_tests,
-                        best_fast.st.cell_index_groups > 0
-                            ? static_cast<double>(best_fast.st.t.box_cmp_tests) /
-                                  best_fast.st.t.cand_scans
-                            : 0.0);
-
+            std::printf(
+                "| 二分探索に払う `cmp_h` | %zu（多角形あたり %.1f 回） |\n",
+                best_fast.st.t.box_cmp_tests,
+                best_fast.st.cell_index_groups > 0
+                    ? static_cast<double>(best_fast.st.t.box_cmp_tests) / best_fast.st.t.cand_scans
+                    : 0.0);
         }
         std::printf("\n");
     }

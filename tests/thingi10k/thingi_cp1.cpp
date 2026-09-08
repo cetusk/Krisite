@@ -322,7 +322,8 @@ struct PairStruct {
           << ' ' << degenerate_kept << ' ' << apex_fallback << ' ' << radial_attempted << ' '
           << radial_resolved
           // **§1.5.0 が要求していたのに入っていなかった項目**（2026-09-07 追加。`IMPL-v2.md` §3）
-          << ' ' << split_vertices << ' ' << unresolved_post << ' ' << unsplit_edges
+          << ' ' << split_vertices << ' ' << unresolved_post << ' '
+          << unsplit_edges
           // **出口の 5 段と、入口・中核・出口の合計**（2026-09-08 追加。§5.11.1）
           << ' ' << (long long)ms_construct << ' ' << (long long)ms_merge << ' '
           << (long long)ms_index << ' ' << (long long)ms_tri << ' ' << (long long)ms_split << ' '
@@ -350,9 +351,9 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     const auto tsi = std::chrono::steady_clock::now();
     csg::PolySoup A = csg::from_mesh(a, fm), B = csg::from_mesh(b, fm);
     if (ps != nullptr) {
-        ps->ms_inlet = std::chrono::duration<double, std::milli>(
-                           std::chrono::steady_clock::now() - tsi)
-                           .count();
+        ps->ms_inlet =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tsi)
+                .count();
     }
     if (ps != nullptr && nsi_decl == 1) {
         ps->fm_seconds =
@@ -404,9 +405,9 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
         const auto t_core = std::chrono::steady_clock::now();
         const csg::PolySoup soup = csg::boolean(A, B, op, o, &bs);
         if (ps != nullptr) {
-            ps->ms_core += std::chrono::duration<double, std::milli>(
-                               std::chrono::steady_clock::now() - t_core)
-                               .count();
+            ps->ms_core +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_core)
+                    .count();
         }
         std::printf("      [%6.1f s] %s 中核 完了（多角形 %zu、断片 %zu）→ 出口…\n", lap(),
                     kOpName[k3], soup.polys.size(), bs.raw_fragments);

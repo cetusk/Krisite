@@ -1148,9 +1148,8 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
         // 費用より検出力を取ります。** `CLAUDE.md`「正解器は被検体と別経路で書く」。
         mesh::SplitOptions sopt;
         sopt.verify_delta = true;
-        out.triangles =
-            mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split, owner_ptr,
-                                 &tri_from_early, nullptr, sopt);
+        out.triangles = mesh::split_contacts(out.triangles, out.vertices.size(), &origin, &st.split,
+                                             owner_ptr, &tri_from_early, nullptr, sopt);
         for (std::uint32_t o : origin) out.vertices.push_back(out.vertices[o]);
     }
 

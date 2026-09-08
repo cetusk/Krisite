@@ -479,16 +479,12 @@ struct TPolygon {
 ///
 /// **1 個ずつ入れてはいけません**（§2.4.3）。生成された部分辺にさらに候補が載る場合を
 /// 取りこぼします。ここでは元の線分について候補を**全部集めてから**並べて入れます。
-inline TPolygon insert_t_vertices_with(const PlaneTable& table,
-                                       const std::vector<geom::HPointD>& verts,
-                                       const std::vector<std::uint32_t>& cand_in,
-                                       const std::vector<PlaneId>& edge,
-                                       const std::vector<std::uint32_t>& poly,
-                                       TJunctionStats* stats = nullptr,
-                                       const std::vector<char>* from_cache = nullptr,
-                                       bool scan_per_edge = false,
-                                       bool count_box_reject = false,
-                                       bool sorted_cand = false) {
+inline TPolygon insert_t_vertices_with(
+    const PlaneTable& table, const std::vector<geom::HPointD>& verts,
+    const std::vector<std::uint32_t>& cand_in, const std::vector<PlaneId>& edge,
+    const std::vector<std::uint32_t>& poly, TJunctionStats* stats = nullptr,
+    const std::vector<char>* from_cache = nullptr, bool scan_per_edge = false,
+    bool count_box_reject = false, bool sorted_cand = false) {
     KRISITE_CHECK(poly.size() == edge.size(), "insert_t_vertices: 頂点数と辺数が違う");
     const std::size_t n = poly.size();
 
@@ -598,18 +594,18 @@ inline TPolygon insert_t_vertices_with(const PlaneTable& table,
             if (geom::cmp_h(verts[poly[j]], verts[poly[hi_i]], geom::Axis::X) > 0) hi_i = j;
         }
         // **閉区間 [lo, hi]。** 端と同じ X を持つ候補も残します
-        const auto lower = std::lower_bound(
-            cand_in.begin(), cand_in.end(), poly[lo_i],
-            [&verts, stats](std::uint32_t a, std::uint32_t key) {
-                if (stats) ++stats->box_cmp_tests;
-                return geom::cmp_h(verts[a], verts[key], geom::Axis::X) < 0;
-            });
-        const auto upper = std::upper_bound(
-            cand_in.begin(), cand_in.end(), poly[hi_i],
-            [&verts, stats](std::uint32_t key, std::uint32_t a) {
-                if (stats) ++stats->box_cmp_tests;
-                return geom::cmp_h(verts[key], verts[a], geom::Axis::X) < 0;
-            });
+        const auto lower =
+            std::lower_bound(cand_in.begin(), cand_in.end(), poly[lo_i],
+                             [&verts, stats](std::uint32_t a, std::uint32_t key) {
+                                 if (stats) ++stats->box_cmp_tests;
+                                 return geom::cmp_h(verts[a], verts[key], geom::Axis::X) < 0;
+                             });
+        const auto upper =
+            std::upper_bound(cand_in.begin(), cand_in.end(), poly[hi_i],
+                             [&verts, stats](std::uint32_t key, std::uint32_t a) {
+                                 if (stats) ++stats->box_cmp_tests;
+                                 return geom::cmp_h(verts[key], verts[a], geom::Axis::X) < 0;
+                             });
         c_begin = static_cast<std::size_t>(lower - cand_in.begin());
         c_end = static_cast<std::size_t>(upper - cand_in.begin());
         if (stats) stats->cand_skipped_by_range += cand_in.size() - (c_end - c_begin);

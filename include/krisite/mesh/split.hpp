@@ -403,11 +403,11 @@ inline SplitTopo split_topology(const std::vector<Tri>& tris, const std::vector<
 
     /// 元の辺 1 本の中の、出力側の辺 1 本。
     struct Grp {
-        VertexId u = 0, w = 0;         ///< 出力側の端点（`u < w` に正準化）
-        std::uint32_t slot_u = 0;      ///< 最初の出現の、`u` 側の角
-        std::uint32_t slot_w = 0;      ///< 同じ出現の、`w` 側の角
-        std::size_t n = 0;             ///< 接する面数
-        int fwd = 0, bwd = 0;          ///< `#(u,w)` と `#(w,u)`
+        VertexId u = 0, w = 0;     ///< 出力側の端点（`u < w` に正準化）
+        std::uint32_t slot_u = 0;  ///< 最初の出現の、`u` 側の角
+        std::uint32_t slot_w = 0;  ///< 同じ出現の、`w` 側の角
+        std::size_t n = 0;         ///< 接する面数
+        int fwd = 0, bwd = 0;      ///< `#(u,w)` と `#(w,u)`
     };
     std::vector<Grp> g;
     for (const auto& kv : edge_tris) {
@@ -469,8 +469,8 @@ inline SplitTopo split_topology(const std::vector<Tri>& tris, const std::vector<
         for (std::size_t t = 0; t < out.size() && r.vertex_manifold; ++t) {
             for (int k = 0; k < 3; ++k) {
                 const VertexId x = out[t][static_cast<std::size_t>(k)];
-                const std::uint32_t rt = find(static_cast<std::uint32_t>(3 * t) +
-                                              static_cast<std::uint32_t>(k));
+                const std::uint32_t rt =
+                    find(static_cast<std::uint32_t>(3 * t) + static_cast<std::uint32_t>(k));
                 if (root_of[x] == kNone) {
                     root_of[x] = rt;
                 } else if (root_of[x] != rt) {
@@ -886,7 +886,8 @@ inline std::vector<Tri> split_contacts(
     // **★ この段は「仕事ではなく検査」なのに、既定で本番に乗っていました。**
     // **実測で `split_contacts` の 71〜75%、出口全体の 43〜77% の大半を占めます**
     // （`HANDOVER.md` §4.3。**`IMPL-phase5.md` §99 への参照は空振りでした** —
-    // その節は書かれていません。`IMPL-v2.md` §2 に測り直した数字があります）。`CLAUDE.md`「計測の機構にも外す経路を用意してください。
+    // その節は書かれていません。`IMPL-v2.md` §2
+    // に測り直した数字があります）。`CLAUDE.md`「計測の機構にも外す経路を用意してください。
     // **計測の費用を本番に持ち込まないこと**」の 2 度目の実例です。
     //
     // **3 段に分けました。**
