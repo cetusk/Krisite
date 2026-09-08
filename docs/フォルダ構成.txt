@@ -105,12 +105,22 @@ Krisite/
 
     ctest にも CI にも入りません。手でコンパイルして回します。
 
-      zigcxx -std=c++20 -O2 -g -Iinclude -Itests \
+      zigcxx -std=c++20 -O3 -DNDEBUG -Iinclude -Itests \
         -DKRISITE_COORD_BITS=21 tests/thingi10k/<名前>.cpp -o build/<名前> -lpthread
+
+    ★ 性能を測るなら -O3 -DNDEBUG を使ってください（CI と BENCH.md の条件）。
+      -O2 -g との差は中央値 2% ですが、40 対中 33 対で -O3 が速い。
 
     既知の穴です（IMPL-phase5.md）。実データの駆動が壊れても CI は緑のままです。
 
-(2) 同じ名前の実行ファイルを 2 つ作らないでください。
+(2) ★ clang-format を手元に入れてください。CI が落ちます。
+
+      uv pip install --python ~/.venv-kris/bin/python "clang-format==22.1.8"
+
+    CI は版を固定しています（.github/workflows/ci.yml）。同じ版で整形すること。
+    対象は *.hpp / *.cpp だけです（CMake ファイルにかけると壊れます）。
+
+(3) 同じ名前の実行ファイルを 2 つ作らないでください。
 
     コーパスのテスト（tests/csg/test_cp1.cpp → build/tests/cp1）と、
     実データの駆動（tests/thingi10k/thingi_cp1.cpp）は別物です。
