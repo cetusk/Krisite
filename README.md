@@ -155,11 +155,17 @@ Linux(GCC/Clang) / macOS(Apple Silicon) / Windows(MSVC) × `b = 21, 26` のマ�
 | ファイル | 内容 |
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **現在地とフェーズの全体像。まずここを読む** |
+| [`docs/CONTRACTS.md`](docs/CONTRACTS.md) | **確定した契約の索引。** 5 つの仕様書を辿らずに済む 1 枚 |
+| [`docs/HANDOVER.md`](docs/HANDOVER.md) | **引き継ぎ用の現在地。** 記録の読み方と、判断待ちの一覧 |
 | `docs/SPEC-phase<N>.md` | 各フェーズの仕様（**仕様が正**） |
 | `docs/IMPL-phase<N>.md` | 各フェーズの実装ノート（判断と根拠、外した仮説の記録） |
+| [`docs/IMPL-v2.md`](docs/IMPL-v2.md) | **2 人目の実装担当の記録**（2026-09-07 以降） |
 | [`docs/DESIGN-phase5-hotspots.md`](docs/DESIGN-phase5-hotspots.md) | Phase 5 の性能の検討ログ（手法の比較） |
+| [`docs/RESEARCH-perf.md`](docs/RESEARCH-perf.md) | 文献の性能主張と、その前提が Krisite に当てはまるかの検証 |
+| [`docs/PERF.md`](docs/PERF.md) | 費用モデルと、測定の作法 |
 | [`docs/DECISION-core-contract.md`](docs/DECISION-core-contract.md) | 中核の契約（$n$ 項・WNV・中核と後処理の分離）を決めた経緯 |
 | [`docs/LOG-phase3-design.md`](docs/LOG-phase3-design.md) | Phase 3 の仕様を決めるまでの議論ログ |
+| [`docs/LOG-phase5-checkpoints.md`](docs/LOG-phase5-checkpoints.md) | Phase 5 のチェックポイントの記録 |
 | [`docs/BENCH.md`](docs/BENCH.md) | **ベンチマークと実測値**（数値はここが正） |
 | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | 第三者コンポーネントの扱いと、それを機構で保証する仕組み |
 | [`docs/STYLE.md`](docs/STYLE.md) | コーディング規約 |
@@ -225,8 +231,31 @@ Manifold（Apache-2.0）は**テストの正解器としてのみ**使い、既�
 > **CP1 と CP2 は、この修正を入れた状態で回し直していません。**
 > **性能改善を先に行い、そのあと 1 回だけ回します。**
 
+### 性能の改善（2026-09-07 〜 09-08）
+
+**すべて「出力が変わらないこと」を検査で守っています。**
+**効果は演算回数で測っています**（時間は実行ごとに ±15% 動くため）。
+
+| 機構 | 効果 | 出力 |
+|---|---|---|
+| 分裂の検証を同値な増分計算に置き換え | 出口 **1.8〜2.4 倍**、検証だけなら 11.9〜36.4 倍 | バイト一致 |
+| T 解決の照合を多角形あたり 1 回 + 区間の二分探索に | `side` の評価 **7.3〜26 倍**減 | バイト一致 |
+| 出力の外接箱を「元の多角形の箱 $\cap$ セル箱」に狭める | 葉の数 **−19〜−50%**、隅のレイキャスト **−74〜−98.6%** | 単発はバイト一致（連鎖は位相と体積で一致） |
+| 到達可能性による early-out（EMBER §4.5.2） | 作った断片 **−0.5〜−40.8%**（$\setminus$ と $\cap$ で効き、$\cup$ では効きません） | バイト一致 |
+| **代表点の float ヒントの欠陥を修正** | **主経路の成功率 2.5〜25.9% → 70.5〜86.2%** | バイト一致 |
+
+**最後の 1 件は Phase 3 から 3 フェーズにわたって壊れていた欠陥です。**
+**固定幅整数を double に落とす補助関数が、【すべての負の値】で $2^{128}$ を
+返していました。**
+
+> **厳密性は無傷でした。** ヒントは候補を出すだけで、判定は厳密演算です。
+> **壊れていても答えは正しく、遅くなるだけでした。**
+> **だから正しさの検査では見つかりません。**
+> 経緯は [`docs/DESIGN-phase5-hotspots.md`](docs/DESIGN-phase5-hotspots.md) §20。
+
 測定値は [`docs/BENCH.md`](docs/BENCH.md)、経緯と判断は
-[`docs/IMPL-phase5.md`](docs/IMPL-phase5.md) にあります。
+[`docs/IMPL-phase5.md`](docs/IMPL-phase5.md) と
+[`docs/IMPL-v2.md`](docs/IMPL-v2.md) にあります。
 **現在地の要約は [`docs/HANDOVER.md`](docs/HANDOVER.md) です。**
 
 ## 参考文献
