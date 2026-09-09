@@ -33,7 +33,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
-#include <memory>
 #include <utility>
 #include <vector>
 
@@ -147,6 +146,17 @@ private:
     static constexpr std::uint32_t kEmpty = 0xFFFFFFFFu;
     static constexpr std::uint32_t kEmptyInit = 0xFFFFFFFFu;
     /// **点は塊に分けて確保します。** 表が伸びても、返した参照が無効になりません。
+    ///
+    /// > **★ 塊は `std::vector<Entry>` です。`std::unique_ptr<Entry[]>` ではありません。**
+    /// > **前者ならコピーできるので、`PointCache` がコピー可能なままです。**
+    /// > **`std::unique_ptr` にすると move-only になり、MSVC が
+    /// > `std::vector<PointCache>` の実体化で暗黙のコピーコンストラクタを作ろうとして
+    /// > 失敗します**（2026-09-09 に CI で判明。GCC / Clang では通りました）。
+    /// >
+    /// > **`CLAUDE.md`「プラットフォーム検証は CI が正」の実例です。**
+    ///
+    /// **塊は作るときに `kChunk` 個ぶん確保して、その後は伸ばしません。**
+    /// **だから要素の番地は動きません。**
     static constexpr std::size_t kChunk = 512;
 
     static std::uint64_t hash_key(const Key& k) noexcept {
@@ -171,7 +181,7 @@ private:
     const Entry& at(std::size_t i) const noexcept { return chunks_[i / kChunk][i % kChunk]; }
 
     void push(Entry&& e) {
-        if (count_ % kChunk == 0) chunks_.push_back(std::make_unique<Entry[]>(kChunk));
+        if (count_ % kChunk == 0) chunks_.emplace_back(kChunk);
         chunks_[count_ / kChunk][count_ % kChunk] = std::move(e);
         ++count_;
     }
@@ -190,7 +200,7 @@ private:
 
     bool use_map_ = false;
     std::vector<Bucket> buckets_;
-    std::vector<std::unique_ptr<Entry[]>> chunks_;
+    std::vector<std::vector<Entry>> chunks_;
     std::size_t count_ = 0;
     std::map<Key, Entry> map_;  ///< `use_map_` のときだけ使う正解器
     std::size_t hits_ = 0;
