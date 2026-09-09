@@ -128,6 +128,10 @@ struct Row {
     std::uint64_t allocs = 0, alloc_bytes = 0;
     /// **逐次部分も含む述語の計数**（`cmp_h` は縫合の整列で効きます）。
     std::uint64_t cmp_h = 0, side_ip = 0;
+    /// **断片の生成の内訳**（§5.10.12.4。`edge` の small-array の見積もり）。
+    std::uint64_t split_calls = 0, split_early = 0, split_both = 0, make_calls = 0, make_ok = 0,
+                  clip_calls = 0;
+    std::uint64_t edge_hist[10] = {};
 };
 
 std::vector<Row> g_rows;
@@ -144,6 +148,15 @@ void run_stage(const char* name, const csg::PolySoup& X, const csg::PolySoup& Y,
 #if defined(KRISITE_COUNT_PREDICATES)
     const std::uint64_t h0 = geom::counters::cmp_h_calls.load(std::memory_order_relaxed);
     const std::uint64_t i0 = geom::counters::side_ipoint_calls.load(std::memory_order_relaxed);
+    const auto ld = [](const std::atomic<std::uint64_t>& a) {
+        return a.load(std::memory_order_relaxed);
+    };
+    const std::uint64_t f0[6] = {
+        ld(geom::counters::frag_split_calls), ld(geom::counters::frag_split_early),
+        ld(geom::counters::frag_split_both),  ld(geom::counters::frag_make_calls),
+        ld(geom::counters::frag_make_ok),     ld(geom::counters::frag_clip_calls)};
+    std::uint64_t e0[10];
+    for (int k = 0; k < 10; ++k) e0[k] = ld(geom::counters::frag_edge_hist[k]);
 #endif
     kricount::enabled.store(true, std::memory_order_relaxed);
     const auto t0 = std::chrono::steady_clock::now();
@@ -155,6 +168,13 @@ void run_stage(const char* name, const csg::PolySoup& X, const csg::PolySoup& Y,
 #if defined(KRISITE_COUNT_PREDICATES)
     r.cmp_h = geom::counters::cmp_h_calls.load(std::memory_order_relaxed) - h0;
     r.side_ip = geom::counters::side_ipoint_calls.load(std::memory_order_relaxed) - i0;
+    r.split_calls = ld(geom::counters::frag_split_calls) - f0[0];
+    r.split_early = ld(geom::counters::frag_split_early) - f0[1];
+    r.split_both = ld(geom::counters::frag_split_both) - f0[2];
+    r.make_calls = ld(geom::counters::frag_make_calls) - f0[3];
+    r.make_ok = ld(geom::counters::frag_make_ok) - f0[4];
+    r.clip_calls = ld(geom::counters::frag_clip_calls) - f0[5];
+    for (int k = 0; k < 10; ++k) r.edge_hist[k] = ld(geom::counters::frag_edge_hist[k]) - e0[k];
 #endif
     r.allocs = kricount::alloc_count.load(std::memory_order_relaxed) - a0;
     r.alloc_bytes = kricount::alloc_bytes.load(std::memory_order_relaxed) - b0;
@@ -544,6 +564,45 @@ void print_rows() {
                         ? 0.0
                         : 100.0 * static_cast<double>(r.st.cache_hits) / static_cast<double>(look),
                     r.st.cache_entries, static_cast<double>(r.st.cache_bytes) / 1048576.0);
+    }
+
+    // ---- ★★ 断片の生成の内訳と、`edge` の small-array の見積もり（§5.10.12.4）------
+    if (g_rows[0].split_calls > 0) {
+        std::printf(
+            "\n| 段 | `split` 呼び出し | 早期 return | 2 つに切った | `make` | 新 `edge` | "
+            "`clip` | **`split` 由来の確保** | 全確保 | **割合** |\n");
+        std::printf("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+        for (const Row& r : g_rows) {
+            // `s` は呼び出しごと、`keep` は make ごと、新 edge は make_ok、複製は早期 return ごと
+            const std::uint64_t due = r.split_calls + r.make_calls + r.make_ok + r.split_early;
+            std::printf(
+                "| %s | %llu | %llu | %llu | %llu | %llu | %llu | **%llu** | %llu | "
+                "**%.1f%%** |\n",
+                r.name.c_str(), (unsigned long long)r.split_calls,
+                (unsigned long long)r.split_early, (unsigned long long)r.split_both,
+                (unsigned long long)r.make_calls, (unsigned long long)r.make_ok,
+                (unsigned long long)r.clip_calls, (unsigned long long)due,
+                (unsigned long long)r.allocs,
+                r.allocs == 0 ? 0.0 : 100.0 * (double)due / (double)r.allocs);
+        }
+        std::printf("\n| 段 | 3 | 4 | 5 | 6 | 7 | 8 | ≥9 | **≤4 累積** | **≤8 累積** | 最大 |\n");
+        std::printf("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+        for (const Row& r : g_rows) {
+            std::uint64_t tot = 0;
+            for (int k = 0; k < 10; ++k) tot += r.edge_hist[k];
+            const double t = tot == 0 ? 1.0 : (double)tot;
+            const double c4 = (r.edge_hist[3] + r.edge_hist[4]) / t;
+            double c8 = 0;
+            for (int k = 3; k <= 8; ++k) c8 += r.edge_hist[k];
+            c8 /= t;
+            std::printf(
+                "| %s | %.1f%% | %.1f%% | %.1f%% | %.1f%% | %.1f%% | %.1f%% | %.2f%% | "
+                "**%.1f%%** | **%.2f%%** | %zu |\n",
+                r.name.c_str(), 100.0 * r.edge_hist[3] / t, 100.0 * r.edge_hist[4] / t,
+                100.0 * r.edge_hist[5] / t, 100.0 * r.edge_hist[6] / t, 100.0 * r.edge_hist[7] / t,
+                100.0 * r.edge_hist[8] / t, 100.0 * r.edge_hist[9] / t, 100.0 * c4, 100.0 * c8,
+                r.st.frag_edges_max);
+        }
     }
 
     // ---- ★ 分類の費用（依頼 2 の材料）--------------------------------------

@@ -21,6 +21,7 @@
 #include "krisite/csg/faces.hpp"
 #include "krisite/csg/plane_table.hpp"
 #include "krisite/csg/point_cache.hpp"
+#include "krisite/geom/counters.hpp"
 #include "krisite/geom/plane.hpp"
 #include "krisite/geom/predicates.hpp"
 
@@ -197,6 +198,7 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
     }
     const std::size_t n = f.edge.size();
     const geom::PlaneD& qp = t.at(q);
+    KRISITE_COUNT_ATOMIC(frag_split_calls);
     std::vector<int> s(n);
     bool any_pos = false, any_neg = false;
     // **切断の履歴**（実験用。上記）。**`q == f.support` の場合は追記しません** —
@@ -208,6 +210,7 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
         if (s[i] < 0) any_neg = true;
     }
     if (!any_neg) {  // すべて >= 0
+        KRISITE_COUNT_ATOMIC(frag_split_early);
         r.pos = f;
         r.has_pos = true;
         detail::push_cut(r.pos, true);
@@ -222,6 +225,7 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
         return r;
     }
     if (!any_pos) {  // すべて <= 0
+        KRISITE_COUNT_ATOMIC(frag_split_early);
         r.neg = f;
         r.has_neg = true;
         detail::push_cut(r.neg, false);
@@ -231,9 +235,15 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
         return r;
     }
 
+    KRISITE_COUNT_ATOMIC(frag_split_both);
     auto make = [&](int k, Fragment& out) {
+        KRISITE_COUNT_ATOMIC(frag_make_calls);
         std::vector<PlaneId> e = detail::clip_edges(f.edge, s, k, q);
         if (e.size() < 3) return false;
+        KRISITE_COUNT_ATOMIC(frag_make_ok);
+#if defined(KRISITE_COUNT_PREDICATES)
+        ++geom::counters::frag_edge_hist[e.size() < 9 ? e.size() : 9];
+#endif
         out.support = f.support;
         out.flipped = f.flipped;
         out.owner = f.owner;
@@ -257,6 +267,7 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
 /// 断片を半平面 `side(q, ·) * k >= 0` にクリップする（片側だけ残す）。
 inline bool clip_fragment(const PlaneTable& t, Fragment& f, PlaneId q, int k,
                           PointCache* cache = nullptr) {
+    KRISITE_COUNT_ATOMIC(frag_clip_calls);
     const SplitResult r = split_fragment(t, f, q, cache);
     if (k > 0) {
         if (!r.has_pos) return false;

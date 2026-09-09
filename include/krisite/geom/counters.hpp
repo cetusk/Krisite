@@ -88,6 +88,22 @@ inline thread_local std::uint64_t side_disp_limbreads = 0;
 inline std::atomic<std::uint64_t> cmp_h_calls{0};
 inline std::atomic<std::uint64_t> side_ipoint_calls{0};
 
+// ---- ★ 断片の生成の内訳（`SPEC-phase5.md` §5.10.12.4。`edge` の small-array の見積もり）--
+//
+// **`split_fragment` の中で作られる `std::vector` は 3 種あります**
+// （符号の作業配列 `s`、`clip_edges` の `keep`、新しい `edge`）。
+// **確保の回数を「断片の生成」に帰着させるために、それぞれ数えます。**
+// **原子的にしてあるのは、駆動が `boolean()` の前後で差分を取るためです**（計測ビルドのみ）。
+inline std::atomic<std::uint64_t> frag_split_calls{
+    0};  ///< `split_fragment` の呼び出し（`s` の確保）
+inline std::atomic<std::uint64_t> frag_split_early{0};  ///< 早期 return（`edge` の複製 1 回）
+inline std::atomic<std::uint64_t> frag_split_both{0};   ///< 2 つに切った（`make` 2 回）
+inline std::atomic<std::uint64_t> frag_make_calls{0};   ///< `make`（`keep` の確保）
+inline std::atomic<std::uint64_t> frag_make_ok{0};      ///< 新しい `edge` を作った
+inline std::atomic<std::uint64_t> frag_clip_calls{0};   ///< `clip_fragment` の呼び出し
+/// **作った `edge` の要素数の分布**（0..8 と、9 以上）。**区分は small-array の枠に合わせます。**
+inline std::atomic<std::uint64_t> frag_edge_hist[10] = {};
+
 inline void reset() noexcept {
     side_calls = 0;
     intersect3_calls = 0;
@@ -105,6 +121,13 @@ inline void reset() noexcept {
     side_disp_limbreads = 0;
     cmp_h_calls.store(0);
     side_ipoint_calls.store(0);
+    frag_split_calls.store(0);
+    frag_split_early.store(0);
+    frag_split_both.store(0);
+    frag_make_calls.store(0);
+    frag_make_ok.store(0);
+    frag_clip_calls.store(0);
+    for (auto& h : frag_edge_hist) h.store(0);
 }
 
 }  // namespace counters
