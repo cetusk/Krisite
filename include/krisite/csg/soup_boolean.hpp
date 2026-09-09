@@ -895,14 +895,20 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #endif
                 std::vector<Fragment> next;
                 next.reserve(pieces.size());
-                for (const Fragment& p : pieces) {
-                    if (q == p.support) {
-                        next.push_back(p);
-                        continue;
+                for (Fragment& p : pieces) {
+                    // **★ 既定は移動で積みます**（`split_fragment_into`。§5.10.12.4）。
+                    // **従来の形は `opt.split_legacy` で残しています**（正解器）。
+                    if (opt.split_legacy) {
+                        if (q == p.support) {
+                            next.push_back(p);
+                            continue;
+                        }
+                        const SplitResult r = split_fragment(out.table, p, q, cache);
+                        if (r.has_pos) next.push_back(r.pos);
+                        if (r.has_neg) next.push_back(r.neg);
+                    } else {
+                        split_fragment_into(out.table, std::move(p), q, cache, next);
                     }
-                    const SplitResult r = split_fragment(out.table, p, q, cache);
-                    if (r.has_pos) next.push_back(r.pos);
-                    if (r.has_neg) next.push_back(r.neg);
                 }
                 pieces.swap(next);
             }
@@ -966,14 +972,18 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                     std::vector<Fragment> pieces{local[i]};
                     for (PlaneId q : es) {
                         std::vector<Fragment> next;
-                        for (const Fragment& p : pieces) {
-                            if (q == p.support) {
-                                next.push_back(p);
-                                continue;
+                        for (Fragment& p : pieces) {
+                            if (opt.split_legacy) {
+                                if (q == p.support) {
+                                    next.push_back(p);
+                                    continue;
+                                }
+                                const SplitResult r = split_fragment(out.table, p, q, cache);
+                                if (r.has_pos) next.push_back(r.pos);
+                                if (r.has_neg) next.push_back(r.neg);
+                            } else {
+                                split_fragment_into(out.table, std::move(p), q, cache, next);
                             }
-                            const SplitResult r = split_fragment(out.table, p, q, cache);
-                            if (r.has_pos) next.push_back(r.pos);
-                            if (r.has_neg) next.push_back(r.neg);
                         }
                         pieces.swap(next);
                     }

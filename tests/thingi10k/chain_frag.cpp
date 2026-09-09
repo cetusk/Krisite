@@ -764,6 +764,44 @@ int main(int argc, char** argv) {
                     cpu[0] == 0 ? 0.0 : cpu[1] / cpu[0]);
     }
 
+    // ---- ★★ 断片の切断の A/B（`SPEC-phase5.md` §5.10.12.4。早期 return を移動に）------
+    //
+    // **同一実行の中で、従来（`SplitResult` を値で返す）と移動版を比べます。**
+    {
+        std::printf("\n### 断片の切断の A/B（同一実行）\n\n");
+        std::printf(
+            "| 実装 | 壁時計 | CPU 時間 | 確保 | 出力ハッシュ |\n|---|---:|---:|---:|---|\n");
+        unsigned long long h[2] = {0, 0};
+        double cpu[2] = {0, 0};
+        std::uint64_t al[2] = {0, 0};
+        for (int legacy = 1; legacy >= 0; --legacy) {
+            csg::BoolOptions ab = o;
+            ab.split_legacy = (legacy != 0);
+            csg::BoolStats st;
+            const std::uint64_t a0 = kricount::alloc_count.load(std::memory_order_relaxed);
+            kricount::enabled.store(true, std::memory_order_relaxed);
+            const auto t0 = std::chrono::steady_clock::now();
+            const std::clock_t c0 = std::clock();
+            const csg::PolySoup s2 = csg::boolean(A, D, csg::BoolOp::Difference, ab, &st);
+            const double cs = static_cast<double>(std::clock() - c0) / CLOCKS_PER_SEC;
+            const double ws =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            kricount::enabled.store(false, std::memory_order_relaxed);
+            al[legacy] = kricount::alloc_count.load(std::memory_order_relaxed) - a0;
+            csg::ToMeshOptions tm2;
+            tm2.split_contacts = true;
+            h[legacy] = hash_mesh(csg::to_mesh(s2, tm2));
+            cpu[legacy] = cs;
+            std::printf("| %s | %.3f s | **%.3f s** | %llu | `%016llx` |\n",
+                        legacy ? "従来（`SplitResult` を値で）" : "**移動（既定）**", ws, cs,
+                        static_cast<unsigned long long>(al[legacy]), h[legacy]);
+        }
+        std::printf("\n**出力**: %s / **CPU 時間の比**: **%.2f 倍** / 確保: %llu → %llu\n",
+                    h[0] == h[1] ? "**バイト一致**" : "**★ 食い違い（重大）**",
+                    cpu[0] == 0 ? 0.0 : cpu[1] / cpu[0], (unsigned long long)al[1],
+                    (unsigned long long)al[0]);
+    }
+
     // ---- 単発（対照）--------------------------------------------------------
     csg::PolySoup u1;
     run_stage("単発 `A＼D`", A, D, csg::BoolOp::Difference, o, &u1);
