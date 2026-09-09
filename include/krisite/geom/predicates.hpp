@@ -155,6 +155,7 @@ inline bool plane_crosses_box(const PlaneD& pl, const std::int64_t lo[3],
 
 inline int side(const PlaneD& pl, const IPoint& p) noexcept {
     KRISITE_COUNT(side_calls);
+    KRISITE_COUNT_ATOMIC(side_ipoint_calls);
     return arith::sign(side_value(pl, p));
 }
 
@@ -384,6 +385,7 @@ inline int cmp_axis_int(const HPointD& h, std::int64_t c, Axis ax) noexcept {
 ///   - x1/w1 と x2/w2 の符号が異なる  → 符号から即決
 ///   - w1 = w2                        → x1 と x2 の比較のみ（sign(w1) 倍が必要）
 inline int cmp_h(const HPointD& h1, const HPointD& h2, Axis ax) noexcept {
+    KRISITE_COUNT_ATOMIC(cmp_h_calls);
     using namespace arith;
     const auto& x1 = detail::component(h1, ax);
     const auto& x2 = detail::component(h2, ax);

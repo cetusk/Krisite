@@ -19,6 +19,7 @@
 #ifndef KRISITE_GEOM_COUNTERS_HPP
 #define KRISITE_GEOM_COUNTERS_HPP
 
+#include <atomic>
 #include <cstdint>
 
 namespace krisite::geom {
@@ -75,6 +76,18 @@ inline thread_local std::uint64_t side_mul_e2 = 0;
 /// **削減する乗算の数と、この数を並べないと見積もりになりません。**
 inline thread_local std::uint64_t side_disp_limbreads = 0;
 
+// ---- ★ 述語の内訳（`SPEC-phase5.md` §5.10.11 の「種類別」）--------------------
+//
+// **`side` と `intersect3` だけでは、述語の合計が出ません。**
+// **`cmp_h` は縫合の整列（全構成点を `lex_less` で並べる）で効きます。**
+///
+/// > **★ この 2 つだけ `std::atomic` です。**
+/// > **縫合（`lex_less` による全構成点の整列）は【逐次部分】で、
+/// > 並列区間の外にあります。** 段ごとの差分では拾えません。
+/// > **計測専用のビルドにしか存在しないので、競合の費用は本番に出ません。**
+inline std::atomic<std::uint64_t> cmp_h_calls{0};
+inline std::atomic<std::uint64_t> side_ipoint_calls{0};
+
 inline void reset() noexcept {
     side_calls = 0;
     intersect3_calls = 0;
@@ -90,15 +103,21 @@ inline void reset() noexcept {
     side_mul_now = 0;
     side_mul_e2 = 0;
     side_disp_limbreads = 0;
+    cmp_h_calls.store(0);
+    side_ipoint_calls.store(0);
 }
 
 }  // namespace counters
 
 #define KRISITE_COUNT(which) (++::krisite::geom::counters::which)
+/// **原子的な計数**（`cmp_h_calls` / `side_ipoint_calls`）。
+#define KRISITE_COUNT_ATOMIC(which) \
+    (::krisite::geom::counters::which.fetch_add(1, ::std::memory_order_relaxed))
 
 #else
 
 #define KRISITE_COUNT(which) ((void)0)
+#define KRISITE_COUNT_ATOMIC(which) ((void)0)
 
 #endif
 

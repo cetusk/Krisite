@@ -1027,6 +1027,18 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             frag_forced_known.push_back(o.forced_known);
         }
     }
+    // **★ arrange 側の構成点キャッシュの統計を集めます**（`SPEC-phase5.md` §5.10.11）。
+    //
+    // > **2026-09-09 まで、集めていたのは【分類側】（`tl_cache2`）だけでした。**
+    // > **`split_fragment` は頂点ごとに `fragment_vertex` を呼ぶので、
+    // > 探索の大半は arrange 側にあります。**
+    // > **`CLAUDE.md`「計装がどちらにあるかも確かめてください」の 3 度目です。**
+    for (unsigned k = 0; k < nthreads; ++k) {
+        tl_stats[k].cache_hits = tl_cache[k].hits();
+        tl_stats[k].cache_misses = tl_cache[k].misses();
+        tl_stats[k].cache_entries = tl_cache[k].entries();
+        tl_stats[k].cache_bytes = tl_cache[k].bytes();
+    }
     for (const BoolStats& t : tl_stats) detail::merge_stats(st, t);
     st.raw_fragments = frags.size();
 
