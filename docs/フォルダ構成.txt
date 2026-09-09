@@ -136,6 +136,9 @@ Krisite/
       新規: HANDOVER.md / CONTRACTS.md / LOG-phase5-checkpoints.md /
             IMPL-v2.md / フォルダ構成.txt
   ・tests に mesh/test_split_verify.cpp と thingi10k/exit_stages.cpp を追加
+  ・tests/thingi10k/cache_ab.cpp を追加（構成点キャッシュの実装の A/B を 40 対で）
+      使い方: ./build/cache_ab data/thingi10k/ember_o3 [depth] [threads]
+      同一プロセスで旗を切り替え、演算ごとに先攻を入れ替えます
   ・tests/thingi10k/chain_frag.cpp を追加（連鎖で断片数がどう増えるか。依頼 3）
       使い方: ./build/chain_frag <idA> <idB> <idD> [depth] [threads] [adaptive:0/1]
       単発 A＼D / 冪等 (A＼D)＼D / 連鎖 (A∪B)＼D を同じ実行で比べます

@@ -141,6 +141,22 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.side_calls_classify += b.side_calls_classify;
     a.intersect3_arrange += b.intersect3_arrange;
     a.intersect3_classify += b.intersect3_classify;
+    a.side_w64_arrange += b.side_w64_arrange;
+    a.side_w128_arrange += b.side_w128_arrange;
+    a.side_w192_arrange += b.side_w192_arrange;
+    a.side_wmore_arrange += b.side_wmore_arrange;
+    a.side_w64_classify += b.side_w64_classify;
+    a.side_w128_classify += b.side_w128_classify;
+    a.side_w192_classify += b.side_w192_classify;
+    a.side_wmore_classify += b.side_wmore_classify;
+    a.side_wmax = std::max(a.side_wmax, b.side_wmax);
+    a.side_disp1 += b.side_disp1;
+    a.side_disp2 += b.side_disp2;
+    a.side_disp3 += b.side_disp3;
+    a.side_disp4 += b.side_disp4;
+    a.side_mul_now += b.side_mul_now;
+    a.side_mul_e2 += b.side_mul_e2;
+    a.side_disp_limbreads += b.side_disp_limbreads;
     a.cache_hits += b.cache_hits;
     a.cache_misses += b.cache_misses;
     a.cache_entries += b.cache_entries;
@@ -494,7 +510,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     par::ThreadPool local_pool(opt.pool != nullptr ? 1u : nthreads);
     par::ThreadPool& pool = (opt.pool != nullptr) ? *opt.pool : local_pool;
     // **可変な器はスレッド局所に持ちます**（§1.1）。共有した瞬間に競合が入ります
-    std::vector<PointCache> tl_cache(nthreads);
+    std::vector<PointCache> tl_cache(nthreads, PointCache(opt.point_cache_map));
     std::vector<BoolStats> tl_stats(nthreads);
 
     pool.run(leaves.size(), [&](std::size_t li, unsigned tid) {
@@ -519,14 +535,34 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #if defined(KRISITE_COUNT_PREDICATES)
         const std::uint64_t pc_side0 = geom::counters::side_calls;
         const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
+        const std::uint64_t pc_w0[11] = {
+            geom::counters::side_w64,           geom::counters::side_w128,
+            geom::counters::side_w192,          geom::counters::side_wmore,
+            geom::counters::side_disp1,         geom::counters::side_disp2,
+            geom::counters::side_disp3,         geom::counters::side_disp4,
+            geom::counters::side_mul_now,       geom::counters::side_mul_e2,
+            geom::counters::side_disp_limbreads};
         struct PredGuard {
             BoolStats& s;
             std::uint64_t s0, i0;
+            const std::uint64_t* w0;
             ~PredGuard() {
                 s.side_calls_arrange += geom::counters::side_calls - s0;
                 s.intersect3_arrange += geom::counters::intersect3_calls - i0;
+                s.side_w64_arrange += geom::counters::side_w64 - w0[0];
+                s.side_w128_arrange += geom::counters::side_w128 - w0[1];
+                s.side_w192_arrange += geom::counters::side_w192 - w0[2];
+                s.side_wmore_arrange += geom::counters::side_wmore - w0[3];
+                s.side_wmax = std::max(s.side_wmax, geom::counters::side_wmax);
+                s.side_disp1 += geom::counters::side_disp1 - w0[4];
+                s.side_disp2 += geom::counters::side_disp2 - w0[5];
+                s.side_disp3 += geom::counters::side_disp3 - w0[6];
+                s.side_disp4 += geom::counters::side_disp4 - w0[7];
+                s.side_mul_now += geom::counters::side_mul_now - w0[8];
+                s.side_mul_e2 += geom::counters::side_mul_e2 - w0[9];
+                s.side_disp_limbreads += geom::counters::side_disp_limbreads - w0[10];
             }
-        } pred_guard{st, pc_side0, pc_i30};
+        } pred_guard{st, pc_side0, pc_i30, pc_w0};
 #endif
         std::vector<Fragment> local;
         std::vector<std::uint32_t> local_src, local_tag;
@@ -991,6 +1027,18 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             frag_forced_known.push_back(o.forced_known);
         }
     }
+    // **★ arrange 側の構成点キャッシュの統計を集めます**（`SPEC-phase5.md` §5.10.11）。
+    //
+    // > **2026-09-09 まで、集めていたのは【分類側】（`tl_cache2`）だけでした。**
+    // > **`split_fragment` は頂点ごとに `fragment_vertex` を呼ぶので、
+    // > 探索の大半は arrange 側にあります。**
+    // > **`CLAUDE.md`「計装がどちらにあるかも確かめてください」の 3 度目です。**
+    for (unsigned k = 0; k < nthreads; ++k) {
+        tl_stats[k].cache_hits = tl_cache[k].hits();
+        tl_stats[k].cache_misses = tl_cache[k].misses();
+        tl_stats[k].cache_entries = tl_cache[k].entries();
+        tl_stats[k].cache_bytes = tl_cache[k].bytes();
+    }
     for (const BoolStats& t : tl_stats) detail::merge_stats(st, t);
     st.raw_fragments = frags.size();
 
@@ -1016,9 +1064,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **既定は偽です。** この段は実測で中核の 29.2% を占めていました。
     // **既定では従来どおり縫合します**（`opt.region_key_cuts` が偽）。
     // **真にすると新しい鍵（切断の符号列）で仕分け、従来の鍵とも突き合わせます。**
-    const bool use_cuts = opt.region_key_cuts;
+#if defined(KRISITE_FRAGMENT_CUTBITS)
+    constexpr bool kFragmentCutbits = true;
+#else
+    constexpr bool kFragmentCutbits = false;
+#endif
+    const bool use_cuts = opt.region_key_cuts && kFragmentCutbits;
     const bool do_stitch = !use_cuts || opt.verify_region_key;
-    PointCache stitch_cache;
+    PointCache stitch_cache(opt.point_cache_map);
     PointCache* const cache = opt.cache_points ? &stitch_cache : nullptr;
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
     std::vector<geom::HPointD> points;
@@ -1092,12 +1145,16 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **頂点 ID の列を `cutbits` の位置に詰めて**表します（型を 2 つ持たないため）。
     std::map<detail::RegionKey2, std::vector<std::size_t>> regions;
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+#if defined(KRISITE_FRAGMENT_CUTBITS)
         if (use_cuts) {
             if (vertex_count(frags[fi]) < 3) continue;
             regions[detail::RegionKey2{detail::cell_key(frag_cell[fi]), frags[fi].support,
                                        frags[fi].cutbits, frags[fi].ncuts}]
                 .push_back(fi);
         } else {
+#else
+        {
+#endif
             if (raw[fi].size() < 3) continue;
             std::vector<std::uint32_t> ids;
             ids.reserve(raw[fi].size());
@@ -1118,6 +1175,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     //
     // **検査は「群の対応が両方向とも関数か」で行います。**
     // **群の数の一致では足りません**（違う断片が同じ群に入り得ます）。
+    // **★ 突き合わせは `KRISITE_FRAGMENT_CUTBITS` のビルドでだけ走ります**（§5.10.5）。
+    // **旗が無ければ符号列そのものが存在しないので、比較の材料がありません。**
+    // **★ 突き合わせのうち、符号列を要するのは【食い違いの判定】だけです**（§5.10.5）。
+    //
+    // > **セルまたぎの計数（`region_cross_cell`）は頂点 ID の群とセルだけで決まるので、
+    // > `KRISITE_FRAGMENT_CUTBITS` が無くても走ります。**
+    // > **`SPEC-phase5.md` §5.10.6 の論証（箱を狭めるとまたぎが消える）の対偶は、
+    // > 既定のビルドで守り続けます。**
     if (use_cuts || opt.verify_region_key) {
         std::map<detail::RegionKey, std::vector<std::size_t>> old_regions;
         for (std::size_t fi = 0; fi < frags.size(); ++fi) {
@@ -1136,6 +1201,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // **`use_cuts` なら `regions` が既に新しい鍵。**
         // **そうでなければ、突き合わせのために新しい鍵を別に作ります。**
         std::map<detail::RegionKey2, std::vector<std::size_t>> cut_regions;
+#if defined(KRISITE_FRAGMENT_CUTBITS)
         if (!use_cuts) {
             for (std::size_t fi = 0; fi < frags.size(); ++fi) {
                 if (vertex_count(frags[fi]) < 3) continue;
@@ -1144,12 +1210,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                     .push_back(fi);
             }
         }
+#endif
         const auto& new_regions = use_cuts ? regions : cut_regions;
         std::size_t kn = 1;
         for (const auto& kv : new_regions) {
             for (std::size_t fi : kv.second) g_new[fi] = kn;
             ++kn;
         }
+#if defined(KRISITE_FRAGMENT_CUTBITS)
         std::vector<std::size_t> o2n(old_regions.size() + 1, 0), n2o(new_regions.size() + 1, 0);
         std::vector<char> bad(old_regions.size() + 1, 0);
         for (std::size_t fi = 0; fi < frags.size(); ++fi) {
@@ -1171,6 +1239,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             if (kv.second.size() >= 2) ++st.region_cmp_multi;
             if (bad[g_old[kv.second.front()]] != 0) ++st.region_cmp_mismatch;
         }
+#else
+        (void)g_new;
+        (void)new_regions;
+#endif
         // **群がセルをまたいでいないこと**（またぐと、新しい鍵で 2 つに割れます）
         //
         // **★ またいだ群については、【なぜまたぐか】まで降ります**
@@ -1210,9 +1282,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
         st.region_hist_count = frags.size();
         for (const Fragment& f : frags) {
+#if defined(KRISITE_FRAGMENT_CUTBITS)
             st.region_hist_total += f.ncuts;
             st.region_hist_max = std::max(st.region_hist_max, std::size_t{f.ncuts});
             if (f.ncuts > 256) ++st.region_bits_overflow;
+#else
+            (void)f;
+#endif
         }
     }
 
@@ -1261,7 +1337,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **メモ化（`PointCache`）はスレッド局所に持ちます**（§1.1）。
     // 命中率のために共有した瞬間に競合が入ります。**出力は 1 ビットも変わりません**
     // （キャッシュの有無で結果が変わらないことは Phase 2 で確かめてあります）。
-    std::vector<PointCache> tl_cache2(nthreads);
+    std::vector<PointCache> tl_cache2(nthreads, PointCache(opt.point_cache_map));
     std::vector<BoolStats> tl_stats2(nthreads);
     // **領域ごとのスロット。** 結合は `region_order` の順で行うので、
     // スレッド数に依らず出力はビット単位で同一になります（§4.2）
@@ -1295,14 +1371,34 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #if defined(KRISITE_COUNT_PREDICATES)
         const std::uint64_t pc_side0 = geom::counters::side_calls;
         const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
+        const std::uint64_t pc_w0[11] = {
+            geom::counters::side_w64,           geom::counters::side_w128,
+            geom::counters::side_w192,          geom::counters::side_wmore,
+            geom::counters::side_disp1,         geom::counters::side_disp2,
+            geom::counters::side_disp3,         geom::counters::side_disp4,
+            geom::counters::side_mul_now,       geom::counters::side_mul_e2,
+            geom::counters::side_disp_limbreads};
         struct PredGuard {
             BoolStats& s;
             std::uint64_t s0, i0;
+            const std::uint64_t* w0;
             ~PredGuard() {
                 s.side_calls_classify += geom::counters::side_calls - s0;
                 s.intersect3_classify += geom::counters::intersect3_calls - i0;
+                s.side_w64_classify += geom::counters::side_w64 - w0[0];
+                s.side_w128_classify += geom::counters::side_w128 - w0[1];
+                s.side_w192_classify += geom::counters::side_w192 - w0[2];
+                s.side_wmore_classify += geom::counters::side_wmore - w0[3];
+                s.side_wmax = std::max(s.side_wmax, geom::counters::side_wmax);
+                s.side_disp1 += geom::counters::side_disp1 - w0[4];
+                s.side_disp2 += geom::counters::side_disp2 - w0[5];
+                s.side_disp3 += geom::counters::side_disp3 - w0[6];
+                s.side_disp4 += geom::counters::side_disp4 - w0[7];
+                s.side_mul_now += geom::counters::side_mul_now - w0[8];
+                s.side_mul_e2 += geom::counters::side_mul_e2 - w0[9];
+                s.side_disp_limbreads += geom::counters::side_disp_limbreads - w0[10];
             }
-        } pred_guard{st, pc_side0, pc_i30};
+        } pred_guard{st, pc_side0, pc_i30, pc_w0};
 #endif
         const auto& kv = *kvp;
         // 同じ領域に複数の断片が載っていても、出力するのは 1 枚です（§5.4.1）。
@@ -1410,8 +1506,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // 同じ領域が違う鍵になります**（実測: `(A∪B)\D` で $\chi$ が 2 → 12）。
         //
         // **出力を作るときに捨てます。** 次の段は空から積み直します。
+#if defined(KRISITE_FRAGMENT_CUTBITS)
         q.frag.cutbits.clear();
         q.frag.ncuts = 0;
+#endif
         // **★ 外接箱は「元の多角形の箱 ∩ セル箱」です**（`SPEC-phase5.md` §5.10.6）。
         //
         // **以前はセル箱をそのまま入れていました。** それは保守的ですが緩すぎて、

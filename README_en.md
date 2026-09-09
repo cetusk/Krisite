@@ -163,10 +163,17 @@ benchmarks. The operational policy lives in [`docs/ROADMAP.md`](docs/ROADMAP.md)
 | File | Contents |
 |---|---|
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | **Where the project stands. Read this first** |
+| [`docs/CONTRACTS.md`](docs/CONTRACTS.md) | **Index of the settled contracts** — one page instead of five specs |
+| [`docs/HANDOVER.md`](docs/HANDOVER.md) | **Hand-over summary**: how to read the records, and what is awaiting a decision |
 | `docs/SPEC-phase<N>.md` | Per-phase specification (**the spec is authoritative**) |
 | `docs/IMPL-phase<N>.md` | Per-phase implementation notes (decisions, and hypotheses that were ruled out) |
+| [`docs/IMPL-v2.md`](docs/IMPL-v2.md) | **Notes of the second implementer** (from 2026-09-07) |
 | [`docs/DESIGN-phase5-hotspots.md`](docs/DESIGN-phase5-hotspots.md) | Phase 5 performance deliberation log |
+| [`docs/RESEARCH-perf.md`](docs/RESEARCH-perf.md) | Performance claims from the literature, and whether their premises hold for Krisite |
+| [`docs/PERF.md`](docs/PERF.md) | The cost model, and how measurements are to be taken |
 | [`docs/DECISION-core-contract.md`](docs/DECISION-core-contract.md) | How the core contract ($n$-ary, WNV, core/post-processing split) was decided |
+| [`docs/LOG-phase3-design.md`](docs/LOG-phase3-design.md) | The deliberation log behind the Phase 3 spec |
+| [`docs/LOG-phase5-checkpoints.md`](docs/LOG-phase5-checkpoints.md) | The Phase 5 checkpoint records |
 | [`docs/BENCH.md`](docs/BENCH.md) | **Benchmarks and measurements** (numbers are authoritative here) |
 | [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md) | Third-party components and the machinery that enforces their constraints |
 | [`docs/STYLE.md`](docs/STYLE.md) | Coding conventions |
@@ -234,9 +241,33 @@ merge the fans around a vertex, so the vertex cannot be duplicated.**
 > **CP1 and CP2 have not been re-run with this fix in place.**
 > **Performance work comes first; then a single re-run.**
 
+### Performance work (2026-09-07 to 09-08)
+
+**Every one of these is guarded by a check that the output does not change.**
+**Effects are measured in operation counts**, because wall-clock time moves by
+±15% between runs on the same binary.
+
+| Mechanism | Effect | Output |
+|---|---|---|
+| Split verification replaced by an equivalent incremental computation | Exit **1.8–2.4×**; the verification alone 11.9–36.4× | Byte-identical |
+| T-junction matching done once per polygon, with a binary search over an interval | **7.3–26×** fewer `side` evaluations | Byte-identical |
+| Output AABB narrowed to "the source polygon's box $\cap$ the cell box" | Leaves **−19 to −50%**; corner ray casts **−74 to −98.6%** | Byte-identical for a single operation (chains match in topology and volume) |
+| Reachability-based early-out (EMBER §4.5.2) | Fragments built **−0.5 to −40.8%** (effective for $\setminus$ and $\cap$, not for $\cup$) | Byte-identical |
+| **Fixing a defect in the float hint for representative points** | **Primary-path success rate 2.5–25.9% → 70.5–86.2%** | Byte-identical |
+
+**The last of these had been broken since Phase 3.**
+**The helper that converts a fixed-width integer to a `double` returned $2^{128}$
+for _every negative value_.**
+
+> **Exactness was never affected.** The hint only proposes a candidate; every decision
+> is made in exact arithmetic. **A broken hint still gives the right answer — just slower.**
+> **That is why no correctness test could find it.**
+> The full account is in
+> [`docs/DESIGN-phase5-hotspots.md`](docs/DESIGN-phase5-hotspots.md) §20.
 
 Measurements are in [`docs/BENCH.md`](docs/BENCH.md); the reasoning behind each
-decision is in [`docs/IMPL-phase5.md`](docs/IMPL-phase5.md).
+decision is in [`docs/IMPL-phase5.md`](docs/IMPL-phase5.md) and
+[`docs/IMPL-v2.md`](docs/IMPL-v2.md).
 **A summary of where things stand is in [`docs/HANDOVER.md`](docs/HANDOVER.md).**
 
 ## References

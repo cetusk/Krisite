@@ -238,6 +238,24 @@ struct BoolStats {
     std::uint64_t side_calls_classify = 0;
     std::uint64_t intersect3_arrange = 0;
     std::uint64_t intersect3_classify = 0;
+    // ---- ★ `side` の被符号値の【実際の】幅（`SPEC-phase5.md` §5.10.10 の案 E）------
+    //
+    // **区分は 64 / 128 / 192 / それ以上の 4 つ**（リム数の段が 64 ビットごとなので、
+    // **192 ビットで済めば 4 リムから 1 リム減ります**）。
+    // **`KRISITE_COUNT_PREDICATES` のときだけ非零です。**
+    std::uint64_t side_w64_arrange = 0, side_w128_arrange = 0;
+    std::uint64_t side_w192_arrange = 0, side_wmore_arrange = 0;
+    std::uint64_t side_w64_classify = 0, side_w128_classify = 0;
+    std::uint64_t side_w192_classify = 0, side_wmore_classify = 0;
+    /// **観測した最大幅**（上界 `bits::kSide` と並べるために要ります）。
+    std::uint64_t side_wmax = 0;
+    /// **★ E2 の判定が選ぶリム数**（1 / 2 / 3 / 4）。段は分けず、全体で数えます。
+    /// **被符号値の実際の幅（上の 4 区分）と並べると、判定の保守性が分かります。**
+    std::uint64_t side_disp1 = 0, side_disp2 = 0, side_disp3 = 0, side_disp4 = 0;
+    /// **★ 見積もり用のリム乗算の回数**（いま / E2）。**比が乗算の削減の見積もりです。**
+    std::uint64_t side_mul_now = 0, side_mul_e2 = 0;
+    /// **判定が読んだリムの数**（前判定の費用）。
+    std::uint64_t side_disp_limbreads = 0;
 
     /// §2.3 の絞り込み（SPEC-phase2）。
     ///
@@ -651,6 +669,14 @@ struct BoolOptions {
     /// > **偽にすると完全に外れます**（`CLAUDE.md`「正しさの検査では、
     /// > 性能のための機構を無効化できること」）。**比較の正解器側です。**
     bool early_out_reachability = true;
+    /// **★ 構成点キャッシュを `std::map` に戻す**（`SPEC-phase5.md` §5.10.12）。**既定は偽。**
+    ///
+    /// **既定は開番地法のハッシュ表です。** 真にすると従来の `std::map` に戻ります。
+    ///
+    /// > **正解器として残しています**（`CLAUDE.md`「従来の経路を旗で残し、
+    /// > 両者が一致することを検査してください」）。
+    /// > **同一実行の中で A/B を取れるので、時間の比較が時間帯の交絡を受けません。**
+    bool point_cache_map = false;
     bool tight_out_aabb = true;
     bool region_key_cuts = false;
     /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。
@@ -734,7 +760,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     BoolStats st;
     // §4.2: **キャッシュはグローバルに持ちません。** ここが「CSG の文脈オブジェクト」で、
     // 以下すべての呼び出しに明示的に引き回します（`STYLE.md` と Phase 3 の並列化のため）。
-    PointCache point_cache;
+    PointCache point_cache(opt.point_cache_map);
     PointCache* const cache = opt.cache_points ? &point_cache : nullptr;
 #if defined(KRISITE_COUNT_PREDICATES)
     geom::counters::reset();

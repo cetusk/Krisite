@@ -140,6 +140,74 @@ void run_case(const kritest::Case& c) {
 }
 
 /// **空回りの番人。** ヒットが 0 なら、この検査は何も検証していません。
+/// **★ 構成点キャッシュの実装の A/B**（`SPEC-phase5.md` §5.10.12）。
+///
+/// **既定は開番地法のハッシュ表、`point_cache_map` で `std::map` に戻せます。**
+///
+/// **見るのは 4 つです**（仕様側の指定）。
+///
+///   1. **出力**: 旗の ON / OFF でバイト一致
+///   2. **同値性**: 探索の回数と命中率が変わらないこと（同じ鍵で同じ結果）
+///   3. **番人**: 探索の回数が 0 なら落とす
+///   4. **決定性**: スレッド数を変えてバイト一致
+///
+/// > **4 が要るのは、ハッシュ表が【走査順を持ち得る】からです。**
+/// > `PointCache` は走査する箇所を持ちませんが、**持たないことを検査で守ります。**
+/// > `SPEC-phase4.md` §4「スレッド数に依らずバイト一致」と同じ形の要求です。
+struct AbTotals {
+    std::size_t configs = 0;
+    std::size_t lookups_hash = 0, lookups_map = 0;
+    std::size_t hits_hash = 0, hits_map = 0;
+    std::size_t thread_checks = 0;
+};
+AbTotals gab;
+
+void run_point_cache_ab(const kritest::Case& c) {
+    const TriMesh a = c.make_a(), b = c.make_b();
+    for (BoolOp op : {BoolOp::Union, BoolOp::Intersection, BoolOp::Difference}) {
+        for (unsigned d = 0; d <= kMaxDepth; ++d) {
+            BoolMesh m[2];
+            BoolStats st[2];
+            for (int use_map = 1; use_map >= 0; --use_map) {
+                BoolOptions o = kritest::corpus_options(d);
+                // **`corpus_options` は `cache_points = false`** です（`phase1_options` 由来）。
+                // **キャッシュを切ったままでは、実装の A/B が空回りします**（実際に踏みました）。
+                o.cache_points = true;
+                o.point_cache_map = (use_map != 0);
+                m[use_map] = boolean_op(a, b, op, o, &st[use_map]);
+            }
+            const std::string tag = std::string(c.id) + " 深度 " + std::to_string(d) + " 演算 " +
+                                    std::to_string(static_cast<int>(op));
+            std::string why;
+            // 1. 出力がバイト一致
+            KRI_CHECK_MSG(same_mesh(m[0], m[1], &why),
+                          tag + ": 構成点キャッシュの実装で出力が変わった（" + why + "）");
+            // 2. 同値性（同じ鍵で同じ結果 → 探索の回数も命中数も同じ）
+            KRI_CHECK_MSG(st[0].cache_hits == st[1].cache_hits,
+                          tag + ": 命中数が違う。**同じ鍵で同じ結果になっていません**" +
+                              kritest::pair_msg(st[1].cache_hits, st[0].cache_hits));
+            KRI_CHECK_MSG(
+                st[0].cache_misses == st[1].cache_misses,
+                tag + ": 失敗数が違う" + kritest::pair_msg(st[1].cache_misses, st[0].cache_misses));
+            gab.lookups_hash += st[0].cache_hits + st[0].cache_misses;
+            gab.lookups_map += st[1].cache_hits + st[1].cache_misses;
+            gab.hits_hash += st[0].cache_hits;
+            gab.hits_map += st[1].cache_hits;
+            ++gab.configs;
+            // 4. 決定性（スレッド数を変えてバイト一致）。**深度 0 でだけ回します**
+            if (d == 0) {
+                BoolOptions o4 = kritest::corpus_options(d);
+                o4.cache_points = true;
+                o4.threads = 4;
+                const BoolMesh m4 = boolean_op(a, b, op, o4);
+                KRI_CHECK_MSG(same_mesh(m[0], m4, &why),
+                              tag + ": **スレッド数を変えると出力が変わった**（" + why + "）");
+                ++gab.thread_checks;
+            }
+        }
+    }
+}
+
 void check_not_vacuous() {
     const std::size_t refs = g.hits + g.misses;
     const double hit = refs ? 100.0 * static_cast<double>(g.hits) / static_cast<double>(refs) : 0.0;
@@ -156,6 +224,19 @@ void check_not_vacuous() {
     KRI_CHECK_MSG(g.merged_by_value > 0,
                   "第2段の値併合が 0 件。**異なる3つ組が同じ値を持つ配置がコーパスに"
                   "ありません**（§4.3 の分担が検証されない）");
+
+    // ---- ★ 構成点キャッシュの実装の A/B（§5.10.12）------------------------------
+    std::printf(
+        "    実装の A/B: %zu 構成、探索 ハッシュ %zu / `std::map` %zu、"
+        "命中 %zu / %zu、スレッド数の検査 %zu\n",
+        gab.configs, gab.lookups_hash, gab.lookups_map, gab.hits_hash, gab.hits_map,
+        gab.thread_checks);
+    // 3. **番人**: 探索が 0 なら、バイト一致の検査は何も言っていません
+    KRI_CHECK_MSG(gab.lookups_hash > 0,
+                  "**構成点キャッシュの探索が 0 件です。** A/B の比較が空回りしています");
+    KRI_CHECK_MSG(gab.lookups_hash == gab.lookups_map,
+                  "**実装で探索の回数が変わりました。** 同じ鍵で同じ結果になっていません");
+    KRI_CHECK_MSG(gab.thread_checks > 0, "**決定性の検査が 1 度も回っていません**");
 }
 
 }  // namespace
@@ -164,6 +245,7 @@ int main() {
     std::printf("\n  構成点の保持 — SPEC-phase2 §4 / CP3\n");
     KRI_CHECK_MSG(!kritest::corpus().empty(), "コーパスが空");
     for (const kritest::Case& c : kritest::corpus()) run_case(c);
+    for (const kritest::Case& c : kritest::corpus()) run_point_cache_ab(c);
     check_not_vacuous();
     std::printf("\n");
     return kritest::finish("csg/cache");
