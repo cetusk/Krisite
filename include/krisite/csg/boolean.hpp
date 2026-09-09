@@ -669,6 +669,14 @@ struct BoolOptions {
     /// > **偽にすると完全に外れます**（`CLAUDE.md`「正しさの検査では、
     /// > 性能のための機構を無効化できること」）。**比較の正解器側です。**
     bool early_out_reachability = true;
+    /// **★ 構成点キャッシュを `std::map` に戻す**（`SPEC-phase5.md` §5.10.12）。**既定は偽。**
+    ///
+    /// **既定は開番地法のハッシュ表です。** 真にすると従来の `std::map` に戻ります。
+    ///
+    /// > **正解器として残しています**（`CLAUDE.md`「従来の経路を旗で残し、
+    /// > 両者が一致することを検査してください」）。
+    /// > **同一実行の中で A/B を取れるので、時間の比較が時間帯の交絡を受けません。**
+    bool point_cache_map = false;
     bool tight_out_aabb = true;
     bool region_key_cuts = false;
     /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。
@@ -752,7 +760,7 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
     BoolStats st;
     // §4.2: **キャッシュはグローバルに持ちません。** ここが「CSG の文脈オブジェクト」で、
     // 以下すべての呼び出しに明示的に引き回します（`STYLE.md` と Phase 3 の並列化のため）。
-    PointCache point_cache;
+    PointCache point_cache(opt.point_cache_map);
     PointCache* const cache = opt.cache_points ? &point_cache : nullptr;
 #if defined(KRISITE_COUNT_PREDICATES)
     geom::counters::reset();

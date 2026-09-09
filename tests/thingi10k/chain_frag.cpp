@@ -668,6 +668,43 @@ int main(int argc, char** argv) {
     const csg::PolySoup B = csg::from_mesh(qb.mesh);
     const csg::PolySoup D = csg::from_mesh(qd.mesh);
 
+    // ---- ★★ 構成点キャッシュの A/B（`SPEC-phase5.md` §5.10.12）------------------
+    //
+    // **同一実行の中で `std::map` と開番地法を比べます。**
+    // **時間帯の交絡（`BENCH.md` の 1.5〜1.6 倍）を受けません。**
+    {
+        std::printf("\n### 構成点キャッシュの A/B（同一実行）\n\n");
+        std::printf("| 実装 | 壁時計 | CPU 時間 | 探索 | 命中率 | 出力ハッシュ |\n");
+        std::printf("|---|---:|---:|---:|---:|---|\n");
+        unsigned long long h[2] = {0, 0};
+        double cpu[2] = {0, 0};
+        for (int use_map = 1; use_map >= 0; --use_map) {
+            csg::BoolOptions ab = o;
+            ab.point_cache_map = (use_map != 0);
+            csg::BoolStats st;
+            const auto t0 = std::chrono::steady_clock::now();
+            const std::clock_t c0 = std::clock();
+            const csg::PolySoup s2 = csg::boolean(A, D, csg::BoolOp::Difference, ab, &st);
+            const double cs = static_cast<double>(std::clock() - c0) / CLOCKS_PER_SEC;
+            const double ws =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            csg::ToMeshOptions tm2;
+            tm2.split_contacts = true;
+            h[use_map] = hash_mesh(csg::to_mesh(s2, tm2));
+            cpu[use_map] = cs;
+            const std::size_t look = st.cache_hits + st.cache_misses;
+            std::printf(
+                "| %s | %.3f s | **%.3f s** | %zu | %.1f%% | `%016llx` |\n",
+                use_map ? "`std::map`（従来）" : "**開番地法（既定）**", ws, cs, look,
+                look == 0 ? 0.0
+                          : 100.0 * static_cast<double>(st.cache_hits) / static_cast<double>(look),
+                h[use_map]);
+        }
+        std::printf("\n**出力**: %s / **CPU 時間の比**: **%.2f 倍**\n",
+                    h[0] == h[1] ? "**バイト一致**" : "**★ 食い違い（重大）**",
+                    cpu[0] == 0 ? 0.0 : cpu[1] / cpu[0]);
+    }
+
     // ---- 単発（対照）--------------------------------------------------------
     csg::PolySoup u1;
     run_stage("単発 `A＼D`", A, D, csg::BoolOp::Difference, o, &u1);

@@ -510,7 +510,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     par::ThreadPool local_pool(opt.pool != nullptr ? 1u : nthreads);
     par::ThreadPool& pool = (opt.pool != nullptr) ? *opt.pool : local_pool;
     // **可変な器はスレッド局所に持ちます**（§1.1）。共有した瞬間に競合が入ります
-    std::vector<PointCache> tl_cache(nthreads);
+    // **`PointCache` は移動専用です**（塊の所有権を持つため）。**予約してから作ります。**
+    std::vector<PointCache> tl_cache;
+    tl_cache.reserve(nthreads);
+    for (unsigned i = 0; i < nthreads; ++i) tl_cache.emplace_back(opt.point_cache_map);
     std::vector<BoolStats> tl_stats(nthreads);
 
     pool.run(leaves.size(), [&](std::size_t li, unsigned tid) {
@@ -1066,7 +1069,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **真にすると新しい鍵（切断の符号列）で仕分け、従来の鍵とも突き合わせます。**
     const bool use_cuts = opt.region_key_cuts;
     const bool do_stitch = !use_cuts || opt.verify_region_key;
-    PointCache stitch_cache;
+    PointCache stitch_cache(opt.point_cache_map);
     PointCache* const cache = opt.cache_points ? &stitch_cache : nullptr;
     std::map<std::array<PlaneId, 3>, std::uint32_t> by_key;
     std::vector<geom::HPointD> points;
@@ -1309,7 +1312,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **メモ化（`PointCache`）はスレッド局所に持ちます**（§1.1）。
     // 命中率のために共有した瞬間に競合が入ります。**出力は 1 ビットも変わりません**
     // （キャッシュの有無で結果が変わらないことは Phase 2 で確かめてあります）。
-    std::vector<PointCache> tl_cache2(nthreads);
+    std::vector<PointCache> tl_cache2;
+    tl_cache2.reserve(nthreads);
+    for (unsigned i = 0; i < nthreads; ++i) tl_cache2.emplace_back(opt.point_cache_map);
     std::vector<BoolStats> tl_stats2(nthreads);
     // **領域ごとのスロット。** 結合は `region_order` の順で行うので、
     // スレッド数に依らず出力はビット単位で同一になります（§4.2）
