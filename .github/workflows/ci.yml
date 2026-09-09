@@ -291,6 +291,46 @@ jobs:
           echo "$out2" | grep -F "局所 BSP"
           echo "$out2" | grep -F "順序非依存"
 
+  # ---- ★ 取り下げた実験の別ビルド（`SPEC-phase5.md` §5.10.5）------------------
+  #
+  # **共平面重複の鍵を「切断の符号列」にする実験は「採りません」と決まりました。**
+  # **既定の経路から `Fragment::cutbits` / `ncuts` を外したので**（2026-09-09。F1）、
+  # **「連鎖では成立しない」ことを固定する検査は、この別ビルドが受け持ちます。**
+  #
+  # > **手元だけで回す形にすると忘れられます**（仕様側の条件 1）。
+  # > **だから CI に置きます。**
+  cutbits:
+    name: 切断の符号列の別ビルド (§5.10.5, b=21)
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - uses: ./.github/actions/ccache
+        with:
+          key: cutbits-21
+      - run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_COORD_BITS=21 \
+            -DKRISITE_CHECKED_ARITH=ON \
+            -DCMAKE_CXX_FLAGS=-DKRISITE_FRAGMENT_CUTBITS \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - run: cmake --build build --target cp5n soup
+      - name: 符号列の鍵の検査
+        run: |
+          ctest --test-dir build --no-tests=error -R '^(cp5n|soup)$' \
+            --output-on-failure --parallel 2
+      - name: 検査が実際に走ったことを記録する
+        run: |
+          # **★ 番人が 0 なら `cp5n` 自身が落ちます。** ここで見るのは
+          # 「この別ビルドで【符号列の検査が回っている】か」です。
+          # **要約行が出なければ、旗が効いていません。**
+          out=$(ctest --test-dir build --no-tests=error -R '^cp5n$' -V)
+          echo "$out" | grep -F "仕分けの鍵"
+          echo "$out" | grep -F "連鎖では成立しません"
+          echo "$out" | grep -F "符号列:"
+
   # ---- 検査ビルド（Debug では KRISITE_CHECKED_ARITH が自動で ON）--------------
   # **Debug が固有に検証するのは「検査が自動で ON になる」ことだけです。**
   # 検査そのものは build 行列（RelWithDebInfo + CHECKED_ARITH=ON）が回しています。

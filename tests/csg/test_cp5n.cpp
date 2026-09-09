@@ -547,6 +547,13 @@ void check_not_vacuous() {
     // **鍵は (セル, 支持平面, 切断の符号列) です。**
     // **置き換えが正しいことを示すのは、この突き合わせだけです。**
     // **単発の演算では成立します**（3 入力で実測。§14.7）
+#if defined(KRISITE_FRAGMENT_CUTBITS)
+    // **★ 符号列の検査は `KRISITE_FRAGMENT_CUTBITS` のビルドでだけ回ります**（§5.10.5）。
+    //
+    // > **仕様側の判断で「採りません」と決まった実験なので、
+    // > 既定の経路から外しました**（2026-09-09。F1）。
+    // > **「連鎖では成立しない」ことの固定は、この別ビルドが受け持ちます。**
+    // > **CI に専用のジョブがあります**（`.github/workflows/ci.yml`）。
     KRI_CHECK_MSG(g.rk_mismatch == 0,
                   "**単発の演算で、新しい鍵（セル, 支持平面, 符号列）が"
                   "頂点 ID による仕分けと食い違いました**" +
@@ -594,7 +601,10 @@ void check_not_vacuous() {
     KRI_CHECK_MSG(g.rk_multi > 0,
                   "**断片が 2 個以上の群が 1 つもありません。**"
                   "共平面重複の無い入力だけで比較しており、一致は何も言っていません");
+#endif
+#if defined(KRISITE_FRAGMENT_CUTBITS)
     KRI_CHECK_MSG(g.rk_groups > 0, "**突き合わせを 1 度も回していません。空回りです**");
+#endif
     std::printf(
         "    ★ 仕分けの鍵: 群 %zu / **重なりのある群 %zu** / **食い違い %zu** / "
         "セルまたぎ %zu\n",

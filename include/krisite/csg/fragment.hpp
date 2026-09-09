@@ -42,10 +42,20 @@ struct Fragment {
     /// **符号だけでは違うセルの領域が混ざります**（実測で「粗すぎ」が全件）。
     ///
     /// **1 切断 = 1 ビット。** 実測で断片あたり 13〜117 ビット（最大 328）。
+#if defined(KRISITE_FRAGMENT_CUTBITS)
+    // **★ 取り下げた実験の名残です**（`SPEC-phase5.md` §5.10.5）。
+    //
+    // **仕様側の判断で「採りません」と決まった機構ですが、
+    // 旗が制御していたのは【読む側】だけで、【書いて複製する側】は無条件でした。**
+    // **既定の経路で、断片を作るたびに `std::vector` の確保と複製を払っていました。**
+    //
+    // **2026-09-09 に既定の経路から外しました**（F1）。
+    // **`KRISITE_FRAGMENT_CUTBITS` を定義したビルドでだけ存在します。**
     std::vector<std::uint64_t> cutbits;
     /// **符号列のビット数。** `cutbits` の長さだけでは区別できません
     /// （65 ビットと 128 ビットは、どちらも 2 ワード）
     std::uint32_t ncuts = 0;
+#endif
 #if defined(KRISITE_EXPERIMENT_REGION_HIST)
     /// **切断の履歴**（`RESEARCH-perf.md` §S3.5 の実験。**実験用です**）。
     ///
@@ -94,9 +104,15 @@ namespace detail {
 /// 全頂点が片側にある場合も符号を記録しないと、
 /// **相手の多角形が切られたときに、同じ領域が違う鍵になります。**
 inline void push_cut(Fragment& f, bool positive) noexcept {
+#if defined(KRISITE_FRAGMENT_CUTBITS)
     const std::uint32_t i = f.ncuts++;
     if ((i >> 6) >= f.cutbits.size()) f.cutbits.push_back(0);
     if (positive) f.cutbits[i >> 6] |= (std::uint64_t{1} << (i & 63));
+#else
+    // **既定では何もしません**（`SPEC-phase5.md` §5.10.5 の実験は採りませんでした）。
+    (void)f;
+    (void)positive;
+#endif
 }
 
 }  // namespace detail
@@ -222,8 +238,10 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
         out.flipped = f.flipped;
         out.owner = f.owner;
         out.edge = std::move(e);
+#if defined(KRISITE_FRAGMENT_CUTBITS)
         out.cutbits = f.cutbits;
         out.ncuts = f.ncuts;
+#endif
         detail::push_cut(out, k > 0);
 #if defined(KRISITE_EXPERIMENT_REGION_HIST)
         out.hist = f.hist;

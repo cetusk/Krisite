@@ -1064,7 +1064,12 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **既定は偽です。** この段は実測で中核の 29.2% を占めていました。
     // **既定では従来どおり縫合します**（`opt.region_key_cuts` が偽）。
     // **真にすると新しい鍵（切断の符号列）で仕分け、従来の鍵とも突き合わせます。**
-    const bool use_cuts = opt.region_key_cuts;
+#if defined(KRISITE_FRAGMENT_CUTBITS)
+    constexpr bool kFragmentCutbits = true;
+#else
+    constexpr bool kFragmentCutbits = false;
+#endif
+    const bool use_cuts = opt.region_key_cuts && kFragmentCutbits;
     const bool do_stitch = !use_cuts || opt.verify_region_key;
     PointCache stitch_cache(opt.point_cache_map);
     PointCache* const cache = opt.cache_points ? &stitch_cache : nullptr;
@@ -1140,12 +1145,16 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **頂点 ID の列を `cutbits` の位置に詰めて**表します（型を 2 つ持たないため）。
     std::map<detail::RegionKey2, std::vector<std::size_t>> regions;
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+#if defined(KRISITE_FRAGMENT_CUTBITS)
         if (use_cuts) {
             if (vertex_count(frags[fi]) < 3) continue;
             regions[detail::RegionKey2{detail::cell_key(frag_cell[fi]), frags[fi].support,
                                        frags[fi].cutbits, frags[fi].ncuts}]
                 .push_back(fi);
         } else {
+#else
+        {
+#endif
             if (raw[fi].size() < 3) continue;
             std::vector<std::uint32_t> ids;
             ids.reserve(raw[fi].size());
@@ -1166,6 +1175,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     //
     // **検査は「群の対応が両方向とも関数か」で行います。**
     // **群の数の一致では足りません**（違う断片が同じ群に入り得ます）。
+    // **★ 突き合わせは `KRISITE_FRAGMENT_CUTBITS` のビルドでだけ走ります**（§5.10.5）。
+    // **旗が無ければ符号列そのものが存在しないので、比較の材料がありません。**
+    // **★ 突き合わせのうち、符号列を要するのは【食い違いの判定】だけです**（§5.10.5）。
+    //
+    // > **セルまたぎの計数（`region_cross_cell`）は頂点 ID の群とセルだけで決まるので、
+    // > `KRISITE_FRAGMENT_CUTBITS` が無くても走ります。**
+    // > **`SPEC-phase5.md` §5.10.6 の論証（箱を狭めるとまたぎが消える）の対偶は、
+    // > 既定のビルドで守り続けます。**
     if (use_cuts || opt.verify_region_key) {
         std::map<detail::RegionKey, std::vector<std::size_t>> old_regions;
         for (std::size_t fi = 0; fi < frags.size(); ++fi) {
@@ -1184,6 +1201,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // **`use_cuts` なら `regions` が既に新しい鍵。**
         // **そうでなければ、突き合わせのために新しい鍵を別に作ります。**
         std::map<detail::RegionKey2, std::vector<std::size_t>> cut_regions;
+#if defined(KRISITE_FRAGMENT_CUTBITS)
         if (!use_cuts) {
             for (std::size_t fi = 0; fi < frags.size(); ++fi) {
                 if (vertex_count(frags[fi]) < 3) continue;
@@ -1192,12 +1210,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                     .push_back(fi);
             }
         }
+#endif
         const auto& new_regions = use_cuts ? regions : cut_regions;
         std::size_t kn = 1;
         for (const auto& kv : new_regions) {
             for (std::size_t fi : kv.second) g_new[fi] = kn;
             ++kn;
         }
+#if defined(KRISITE_FRAGMENT_CUTBITS)
         std::vector<std::size_t> o2n(old_regions.size() + 1, 0), n2o(new_regions.size() + 1, 0);
         std::vector<char> bad(old_regions.size() + 1, 0);
         for (std::size_t fi = 0; fi < frags.size(); ++fi) {
@@ -1219,6 +1239,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             if (kv.second.size() >= 2) ++st.region_cmp_multi;
             if (bad[g_old[kv.second.front()]] != 0) ++st.region_cmp_mismatch;
         }
+#else
+        (void)g_new;
+        (void)new_regions;
+#endif
         // **群がセルをまたいでいないこと**（またぐと、新しい鍵で 2 つに割れます）
         //
         // **★ またいだ群については、【なぜまたぐか】まで降ります**
@@ -1258,9 +1282,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
         st.region_hist_count = frags.size();
         for (const Fragment& f : frags) {
+#if defined(KRISITE_FRAGMENT_CUTBITS)
             st.region_hist_total += f.ncuts;
             st.region_hist_max = std::max(st.region_hist_max, std::size_t{f.ncuts});
             if (f.ncuts > 256) ++st.region_bits_overflow;
+#else
+            (void)f;
+#endif
         }
     }
 
@@ -1478,8 +1506,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // 同じ領域が違う鍵になります**（実測: `(A∪B)\D` で $\chi$ が 2 → 12）。
         //
         // **出力を作るときに捨てます。** 次の段は空から積み直します。
+#if defined(KRISITE_FRAGMENT_CUTBITS)
         q.frag.cutbits.clear();
         q.frag.ncuts = 0;
+#endif
         // **★ 外接箱は「元の多角形の箱 ∩ セル箱」です**（`SPEC-phase5.md` §5.10.6）。
         //
         // **以前はセル箱をそのまま入れていました。** それは保守的ですが緩すぎて、
