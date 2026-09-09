@@ -196,6 +196,9 @@ inline std::vector<PlaneId> clip_edges(const std::vector<PlaneId>& edge, const i
     if (start == n) return {};  // 保持なし（全部落ちた）
 
     std::vector<PlaneId> out;
+    // **多くて n + 1 個**（保持する辺 + 切断平面 1 枚）。**予約しないと `push_back` の
+    // 伸長で 1 個の結果に 2〜3 回確保します**（§5.10.12.4 の刻みで判明）。
+    out.reserve(n + 1);
     for (std::size_t j = 0; j < n; ++j) {
         const std::size_t i = (start + j) % n;
         if (!keep[i]) break;

@@ -88,6 +88,24 @@ inline thread_local std::uint64_t side_disp_limbreads = 0;
 inline std::atomic<std::uint64_t> cmp_h_calls{0};
 inline std::atomic<std::uint64_t> side_ipoint_calls{0};
 
+// ---- ★ 確保の【発生箇所】の印（`SPEC-phase5.md` §5.10.12.4。残る 93.4% を刻む）----
+//
+// **プロファイラが無いので、確保を「どの段で起きたか」で分けます。**
+// **スレッド局所の印を段の入口で立て、駆動の `operator new` が印ごとに数えます。**
+// **印の無い確保は「その他」に落ちるので、和は必ず 100% になります。**
+//
+// > **計測ビルドにしか存在しません。** 既定では印を立てる場所は空の文になります。
+inline thread_local int alloc_tag = 0;
+
+/// 段の入口で印を立て、出口で戻す（RAII）。
+struct AllocTagScope {
+    int prev;
+    explicit AllocTagScope(int t) noexcept : prev(alloc_tag) { alloc_tag = t; }
+    ~AllocTagScope() { alloc_tag = prev; }
+    AllocTagScope(const AllocTagScope&) = delete;
+    AllocTagScope& operator=(const AllocTagScope&) = delete;
+};
+
 // ---- ★ 断片の生成の内訳（`SPEC-phase5.md` §5.10.12.4。`edge` の small-array の見積もり）--
 //
 // **`split_fragment` の中で作られる `std::vector` は 3 種あります**
@@ -133,6 +151,9 @@ inline void reset() noexcept {
 }  // namespace counters
 
 #define KRISITE_COUNT(which) (++::krisite::geom::counters::which)
+/// **確保の印を立てる**（スコープの終わりまで）。
+#define KRISITE_ALLOC_TAG(t) \
+    const ::krisite::geom::counters::AllocTagScope krisite_alloc_tag_scope_##t(t)
 /// **原子的な計数**（`cmp_h_calls` / `side_ipoint_calls`）。
 #define KRISITE_COUNT_ATOMIC(which) \
     (::krisite::geom::counters::which.fetch_add(1, ::std::memory_order_relaxed))
@@ -141,6 +162,7 @@ inline void reset() noexcept {
 
 #define KRISITE_COUNT(which) ((void)0)
 #define KRISITE_COUNT_ATOMIC(which) ((void)0)
+#define KRISITE_ALLOC_TAG(t) ((void)0)
 
 #endif
 
