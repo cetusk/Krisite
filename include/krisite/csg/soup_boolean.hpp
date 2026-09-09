@@ -827,6 +827,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         st.ms_arr_prep += a_lap();
 
         KRISITE_ALLOC_TAG(4);  // 断片の生成（クリップ + 局所 BSP）
+        // **★ G1: 切断ループの器を葉の外で持ち、`clear()` で容量を使い回します**（§5.10.12.4）。
+        // **従来は多角形 × 切断ごとに `next` を新しく作っていました**（確保の 17.7%）。
+        // **`opt.alloc_reuse & 1` が偽なら従来どおり**（正解器）。
+        const bool reuse_pieces = (opt.alloc_reuse & 1u) != 0;
+        std::vector<Fragment> pieces_buf, next_buf;
         for (std::size_t idx : here) {
             Fragment frag = polys[idx].frag;
             bool alive = true;
@@ -865,7 +870,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #if defined(KRISITE_MUTATION_BSP_DROP_ONE_CUT)
             if (opt.local_bsp && !cut_planes.empty()) cut_begin = 1;
 #endif
-            std::vector<Fragment> pieces{frag};
+            std::vector<Fragment> pieces_own;
+            std::vector<Fragment>& pieces = reuse_pieces ? pieces_buf : pieces_own;
+            pieces.clear();
+#if defined(KRISITE_EXPERIMENT_BSP_SKIP_DISJOINT)
+            pieces.push_back(frag);  // 実験は `frag` をこの後も読みます
+#else
+            pieces.push_back(std::move(frag));
+#endif
             KRISITE_ALLOC_TAG(14);  // 切断ループ（切断ごとの next と、split の中身）
             for (std::size_t ci = cut_begin; ci < cut_planes.size(); ++ci) {
                 const PlaneId q = cut_planes[ci];
@@ -899,7 +911,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                     }
                 }
 #endif
-                std::vector<Fragment> next;
+                std::vector<Fragment> next_own;
+                std::vector<Fragment>& next = reuse_pieces ? next_buf : next_own;
+                next.clear();
                 // **切ると 1 個が 2 個になるので、`pieces.size()` の予約では溢れます**
                 // （§5.10.12.4 の刻みで、`next` の伸長が新 `edge` より多いと分かりました）。
                 next.reserve(2 * pieces.size());
@@ -978,10 +992,17 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 std::sort(es.begin(), es.end());
                 es.erase(std::unique(es.begin(), es.end()), es.end());
 
+                std::vector<Fragment> pieces_buf2, next_buf2;  // G1（共平面の揃えでも使い回す）
                 for (std::size_t i : g.second) {
-                    std::vector<Fragment> pieces{local[i]};
+                    std::vector<Fragment> pieces_own;
+                    std::vector<Fragment>& pieces = reuse_pieces ? pieces_buf2 : pieces_own;
+                    pieces.clear();
+                    pieces.push_back(local[i]);
                     for (PlaneId q : es) {
-                        std::vector<Fragment> next;
+                        std::vector<Fragment> next_own;
+                        std::vector<Fragment>& next = reuse_pieces ? next_buf2 : next_own;
+                        next.clear();
+                        next.reserve(2 * pieces.size());
                         for (Fragment& p : pieces) {
                             if (opt.split_legacy) {
                                 if (q == p.support) {
@@ -1107,11 +1128,28 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // 点ごとに、その点を参照した断片のセル添字（最大深度に正規化）の範囲を持ちます。
     std::vector<std::array<std::uint32_t, 3>> pt_lo, pt_hi;
     KRISITE_ALLOC_TAG(7);  // 縫合（構成点・by_key・整列・remap）
-    std::vector<std::vector<std::uint32_t>> raw(do_stitch ? frags.size() : 0);
+    // **★ G3: 断片ごとの頂点 ID 列を【平坦な配列 + 区切り】で持ちます**（§5.10.12.4）。
+    // **従来は `std::vector<std::vector<>>` で、断片ごとに 1 回確保していました**（確保の 9.7%）。
+    // **縫合は逐次部分なので、壁時計に直に効きます。** `opt.alloc_reuse & 4` が偽なら従来どおり。
+    const bool raw_flat = (opt.alloc_reuse & 4u) != 0;
+    std::vector<std::vector<std::uint32_t>> raw_nested((do_stitch && !raw_flat) ? frags.size() : 0);
+    std::vector<std::uint32_t> raw_items;
+    std::vector<std::uint32_t> raw_off((do_stitch && raw_flat) ? frags.size() + 1 : 0, 0);
+    if (do_stitch && raw_flat) raw_items.reserve(st.frag_edges_total);
+    const auto raw_size = [&](std::size_t fi) -> std::size_t {
+        return raw_flat ? (raw_off[fi + 1] - raw_off[fi]) : raw_nested[fi].size();
+    };
+    const auto raw_begin = [&](std::size_t fi) -> const std::uint32_t* {
+        return raw_flat ? raw_items.data() + raw_off[fi] : raw_nested[fi].data();
+    };
     for (std::size_t fi = 0; do_stitch && fi < frags.size(); ++fi) {
         const Fragment& f = frags[fi];
         const std::size_t n = vertex_count(f);
-        raw[fi].reserve(n);
+        if (raw_flat) {
+            raw_off[fi] = static_cast<std::uint32_t>(raw_items.size());
+        } else {
+            raw_nested[fi].reserve(n);
+        }
         for (std::size_t i = 0; i < n; ++i) {
             const auto k = detail::vertex_key(f, i);
             std::uint32_t cix[3];
@@ -1124,7 +1162,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 pt_hi.push_back({cix[0], cix[1], cix[2]});
                 it = by_key.emplace(k, id).first;
             }
-            raw[fi].push_back(it->second);
+            if (raw_flat) {
+                raw_items.push_back(it->second);
+            } else {
+                raw_nested[fi].push_back(it->second);
+            }
             {
                 const std::uint32_t id2 = it->second;
                 for (int t = 0; t < 3; ++t) {
@@ -1134,6 +1176,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
         }
     }
+    if (do_stitch && raw_flat) raw_off[frags.size()] = static_cast<std::uint32_t>(raw_items.size());
     st.constructed_points = points.size();
     std::vector<std::uint32_t> order(points.size());
     (void)cache;
@@ -1179,10 +1222,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #else
         {
 #endif
-            if (raw[fi].size() < 3) continue;
+            if (raw_size(fi) < 3) continue;
             std::vector<std::uint32_t> ids;
-            ids.reserve(raw[fi].size());
-            for (std::uint32_t v : raw[fi]) ids.push_back(remap[v]);
+            ids.reserve(raw_size(fi));
+            for (const std::uint32_t* pv = raw_begin(fi); pv != raw_begin(fi) + raw_size(fi);
+                 ++pv) {
+                ids.push_back(remap[*pv]);
+            }
             std::sort(ids.begin(), ids.end());
             ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
             std::vector<std::uint64_t> packed(ids.begin(), ids.end());
@@ -1215,8 +1261,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         for (std::size_t fi = 0; fi < frags.size(); ++fi) {
             if (vertex_count(frags[fi]) < 3) continue;
             std::vector<std::uint32_t> ids;
-            ids.reserve(raw[fi].size());
-            for (std::uint32_t v : raw[fi]) ids.push_back(remap[v]);
+            ids.reserve(raw_size(fi));
+            for (const std::uint32_t* pv = raw_begin(fi); pv != raw_begin(fi) + raw_size(fi);
+                 ++pv) {
+                ids.push_back(remap[*pv]);
+            }
             old_regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
         }
         std::vector<std::size_t> g_old(frags.size(), 0), g_new(frags.size(), 0);
@@ -1450,7 +1499,23 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
         KRISITE_ALLOC_TAG(11);  // 分類のレイキャスト
 
-        std::vector<std::int32_t> w_front(n_src, 0), w_back(n_src, 0);
+        // **★ G2: 巻き数の器をその場に**（§5.10.12.4。領域ごとに 2 回の確保が消えます）。
+        // **`opt.alloc_reuse & 2` が偽なら従来どおり `std::vector`**（正解器）。
+        const bool wscratch = (opt.alloc_reuse & 2u) != 0;
+        std::vector<std::int32_t> wf_own, wb_own;
+        detail::Scratch<std::int32_t> wf_s, wb_s;
+        std::int32_t* w_front;
+        std::int32_t* w_back;
+        if (wscratch) {
+            w_front = wf_s.get(n_src);
+            w_back = wb_s.get(n_src);
+            for (std::size_t i2 = 0; i2 < n_src; ++i2) w_front[i2] = w_back[i2] = 0;
+        } else {
+            wf_own.assign(n_src, 0);
+            wb_own.assign(n_src, 0);
+            w_front = wf_own.data();
+            w_back = wb_own.data();
+        }
         for (std::size_t i2 = 0; i2 < n_src; ++i2) {
             if (frag_forced_known[pick][i2] != 0) {
                 // セルに曲面が無い source。隅で決めた巻き数が全体で一定
@@ -1495,15 +1560,15 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             if (ge2) ++st.regions_w_ge2;
         }
 
-        const bool in_front = out.indicator.eval(w_front);
-        const bool in_back = out.indicator.eval(w_back);
+        const bool in_front = out.indicator.eval(w_front, n_src);
+        const bool in_back = out.indicator.eval(w_back, n_src);
 #if defined(KRISITE_DEBUG_SOUP)
         {
             std::fprintf(stderr, "region src=%u tag=%u n=%zu wF=[", frag_src[pick], frag_tag[pick],
                          kv.second.size());
-            for (std::int32_t v : w_front) std::fprintf(stderr, "%d ", v);
+            for (std::size_t i2 = 0; i2 < n_src; ++i2) std::fprintf(stderr, "%d ", w_front[i2]);
             std::fprintf(stderr, "] wB=[");
-            for (std::int32_t v : w_back) std::fprintf(stderr, "%d ", v);
+            for (std::size_t i2 = 0; i2 < n_src; ++i2) std::fprintf(stderr, "%d ", w_back[i2]);
             std::fprintf(stderr, "] → %d/%d %s\n", (int)in_front, (int)in_back,
                          in_front == in_back ? "捨てる" : "出力");
         }
@@ -1587,8 +1652,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         region_emit[ri] = 1;
         // **診断の旗が立っているときだけ、領域の巻き数を控えます**（§52）
         if (opt.record_winding) {
-            region_wf[ri] = w_front;
-            region_wb[ri] = w_back;
+            region_wf[ri].assign(w_front, w_front + n_src);
+            region_wb[ri].assign(w_back, w_back + n_src);
         }
 #endif
     });
