@@ -1,23 +1,38 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="Krisite">
-  <title>Krisite</title>
-  <g>
-    <g stroke="#161A1F" stroke-width="1.3" stroke-linejoin="round">
-    <polygon points="116.4,29.7 170.8,83.2 144.0,54.0" fill="#242A31"/>
-    <polygon points="56.0,146.0 126.9,129.2 154.4,153.5 83.6,170.3" fill="#1E2329"/>
-    <polygon points="29.2,116.8 45.6,46.5 72.4,75.7 56.0,146.0" fill="#2DD4BF"/>
-    <polygon points="126.9,129.2 154.4,153.5 170.8,83.2" fill="#1E2329"/>
-    <polygon points="126.9,129.2 170.8,83.2 116.4,29.7 72.4,75.7" fill="#39424C"/>
-    <polygon points="56.0,146.0 72.4,75.7 126.9,129.2" fill="#2E353D"/>
-      <!-- 貼り付け先の開口部：まだ面が置かれていない -->
-      <polygon points="72.4,75.7 45.6,46.5 116.4,29.7" fill="#12161A" stroke="#2DD4BF"
-               stroke-width="1.3" stroke-dasharray="3.5 3" opacity="0.9"/>
-    </g>
-    <line x1="66.0" y1="61.2" x2="72.4" y2="75.7" stroke="#2DD4BF" stroke-width="1.3" stroke-dasharray="2.5 3.5" opacity="0.55"/>
-    <line x1="39.2" y1="32.0" x2="45.6" y2="46.5" stroke="#2DD4BF" stroke-width="1.3" stroke-dasharray="2.5 3.5" opacity="0.55"/>
-    <line x1="110.0" y1="15.2" x2="116.4" y2="29.7" stroke="#2DD4BF" stroke-width="1.3" stroke-dasharray="2.5 3.5" opacity="0.55"/>
-    <!-- 貼り付け中の面：鉋で削り出された一枚 -->
-    <polygon points="66.0,61.2 39.2,32.0 110.0,15.2" fill="#2DD4BF" stroke="#5EEAD4"
-             stroke-width="1.4" stroke-linejoin="round"/>
-    <polygon points="66.0,61.2 39.2,32.0 110.0,15.2" fill="#5EEAD4" opacity="0.28"/>
-  </g>
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-labelledby="title desc">
+<title id="title">Krisite mark</title>
+<desc id="desc">A translucent cuboctahedron with seven scattered turquoise surface fragments. No connecting guides. </desc>
+<defs><linearGradient id="front" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#e8f0f3"/><stop offset="1" stop-color="#ccdae1"/></linearGradient><linearGradient id="rear" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d9e5eb"/><stop offset="1" stop-color="#bccdd8"/></linearGradient><linearGradient id="lower" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#cbdbe3"/><stop offset="1" stop-color="#a2b9c7"/></linearGradient><linearGradient id="right" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#c4d6e1"/><stop offset="1" stop-color="#adc3d1"/></linearGradient><linearGradient id="bottom" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#c4d5df"/><stop offset="1" stop-color="#9bb3c4"/></linearGradient><linearGradient id="mint" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#6aeee0"/><stop offset="1" stop-color="#2ccbc3"/></linearGradient><linearGradient id="shard" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#65ecdf"/><stop offset="1" stop-color="#27d1c4"/></linearGradient></defs><g id="original-size-layout" transform="translate(0 0) scale(0.15949)"><g id="symbol" stroke-linejoin="round">
+ <!-- Connected rear surfaces visible through the open front triangular region. -->
+ <g id="rear-surfaces"><polygon points="272,340 720,202 462,512" fill="url(#rear)" /><polygon points="272,340 402,340 462,512" fill="#dce8ef" opacity="0.32"/><path d="M272 340 L402 340 L562 393" fill="none" stroke="#92adbd" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" /><path d="M272 340 L720 202" fill="none" stroke="#657f94" stroke-width="5" stroke-linejoin="round" stroke-linecap="round" /></g>
+ <g id="body-faces">
+ <polygon points="462,512 720,202 1064,560 770,848" fill="url(#front)" />
+ <polygon points="350,950 462,512 770,848" fill="url(#lower)" />
+ <polygon points="770,848 1064,560 936,1027" fill="url(#right)" />
+ <polygon points="350,950 770,848 936,1027 517,1129" fill="url(#bottom)" />
+ <polygon points="272,340 462,512 350,950 170,726" fill="url(#mint)" />
+ </g>
+ <g id="transmitted-planes">
+ <polygon points="720,202 770,372 1064,560" fill="#afc4d1" opacity="0.30"/>
+ <polygon points="720,202 933,704 1064,560" fill="#f4f8fa" opacity="0.27"/>
+ <polygon points="462,512 543,646 350,950" fill="#f3f8fa" opacity="0.24"/>
+ <polygon points="350,950 770,848 517,1129" fill="#889faf" opacity="0.24"/>
+ <polygon points="770,848 1064,560 994,788" fill="#edf5f9" opacity="0.24"/>
+ <polygon points="272,340 462,512 436,618" fill="#14b5b0" opacity="0.20"/>
+ <polygon points="170,726 436,618 350,950" fill="#90f4e8" opacity="0.28"/>
+ <polygon points="272,340 462,512 436,618 235,449" fill="#74f0e1" opacity="0.22"/>
+ </g>
+ <g id="body-edges"><path d="M272 340 L170 726 L350 950 L517 1129 L936 1027 L1064 560 L720 202 L462 512 Z" fill="none" stroke="#657f94" stroke-width="5.5" stroke-linejoin="round" stroke-linecap="round" /><path d="M462 512 L350 950 L770 848 L1064 560 M462 512 L770 848 L936 1027 M770 848 L517 1129" fill="none" stroke="#657f94" stroke-width="5" stroke-linejoin="round" stroke-linecap="round" /><path d="M272 345 L182 724 L346 939" fill="none" stroke="#21ada9" stroke-width="4" stroke-linejoin="round" stroke-linecap="round" opacity="0.55"/></g>
+ <!-- Seven free floating polygon patches. No connector lines or endpoint nodes. -->
+ <g id="fragments" fill="url(#shard)" stroke="#229f9d" stroke-width="4" stroke-linejoin="round">
+ <polygon id="fragment-1" points="514,77 695,31 570,211"/>
+ <polygon id="fragment-2" points="197,146 315,112 269,186"/>
+ <polygon id="fragment-3" points="402,99 472,112 493,173 380,131"/>
+ <polygon id="fragment-4" points="361,178 476,204 318,255 297,232"/>
+ <polygon id="fragment-5" points="163,198 200,216 201,282"/>
+ <polygon id="fragment-6" points="242,255 270,305 227,323"/>
+ <polygon id="fragment-7" points="360,292 494,234 510,288 462,398"/>
+ </g>
+ <g id="fragment-tones" fill="#099f9d" opacity="0.16"><polygon points="494,234 510,288 462,398" fill="#099f9d" /><polygon points="402,99 493,173 380,131" fill="#099f9d" /><polygon points="163,198 200,216 201,282" fill="#099f9d" /></g>
+ </g></g>
 </svg>

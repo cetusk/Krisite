@@ -21,6 +21,7 @@
 #include "krisite/csg/faces.hpp"
 #include "krisite/csg/plane_table.hpp"
 #include "krisite/csg/point_cache.hpp"
+#include "krisite/geom/counters.hpp"
 #include "krisite/geom/plane.hpp"
 #include "krisite/geom/predicates.hpp"
 
@@ -144,10 +145,30 @@ namespace detail {
 ///
 /// そこで開始位置を、**脱出辺**（内側から切断線へ出る辺。凸多角形では一意）の
 /// 次にある最初の保持辺として求めます。全辺が保持される場合も含めて一様に決まります。
-inline std::vector<PlaneId> clip_edges(const std::vector<PlaneId>& edge, const std::vector<int>& s,
-                                       int k, PlaneId q) {
+/// **符号や保持印の作業配列の、その場の器の大きさ**（`SPEC-phase5.md` §5.10.12.4）。
+///
+/// **断片の辺数は実測で最大 21**（`425318＼73464`、深度 6）。**32 を超えたらヒープに落ちます。**
+/// **落ちても正しさは変わりません**（同じ配列を別の場所に置くだけ）。
+inline constexpr std::size_t kScratch = 32;
+
+/// **作業配列の器。** `kScratch` 以下ならその場、超えたらヒープ。
+template <class T>
+struct Scratch {
+    T inline_buf[kScratch];
+    std::vector<T> heap;
+    T* get(std::size_t n) {
+        if (n <= kScratch) return inline_buf;
+        heap.assign(n, T{});
+        return heap.data();
+    }
+};
+
+inline std::vector<PlaneId> clip_edges(const std::vector<PlaneId>& edge, const int* s, int k,
+                                       PlaneId q) {
     const std::size_t n = edge.size();
-    std::vector<char> keep(n, 0);
+    Scratch<char> keep_buf;
+    char* const keep = keep_buf.get(n);
+    for (std::size_t i = 0; i < n; ++i) keep[i] = 0;
     for (std::size_t i = 0; i < n; ++i) {
         const int a = s[i] * k, b = s[(i + 1) % n] * k;
         // 辺の保持部分が正の長さを持つのは、端点の少なくとも一方が真に内側のとき
@@ -175,6 +196,9 @@ inline std::vector<PlaneId> clip_edges(const std::vector<PlaneId>& edge, const s
     if (start == n) return {};  // 保持なし（全部落ちた）
 
     std::vector<PlaneId> out;
+    // **多くて n + 1 個**（保持する辺 + 切断平面 1 枚）。**予約しないと `push_back` の
+    // 伸長で 1 個の結果に 2〜3 回確保します**（§5.10.12.4 の刻みで判明）。
+    out.reserve(n + 1);
     for (std::size_t j = 0; j < n; ++j) {
         const std::size_t i = (start + j) % n;
         if (!keep[i]) break;
@@ -197,7 +221,9 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
     }
     const std::size_t n = f.edge.size();
     const geom::PlaneD& qp = t.at(q);
-    std::vector<int> s(n);
+    KRISITE_COUNT_ATOMIC(frag_split_calls);
+    detail::Scratch<int> s_buf;
+    int* const s = s_buf.get(n);
     bool any_pos = false, any_neg = false;
     // **切断の履歴**（実験用。上記）。**`q == f.support` の場合は追記しません** —
     // その分岐は上で早期に返しており、**共平面の 2 つの多角形で同じ扱い**なので、
@@ -208,6 +234,7 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
         if (s[i] < 0) any_neg = true;
     }
     if (!any_neg) {  // すべて >= 0
+        KRISITE_COUNT_ATOMIC(frag_split_early);
         r.pos = f;
         r.has_pos = true;
         detail::push_cut(r.pos, true);
@@ -222,6 +249,7 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
         return r;
     }
     if (!any_pos) {  // すべて <= 0
+        KRISITE_COUNT_ATOMIC(frag_split_early);
         r.neg = f;
         r.has_neg = true;
         detail::push_cut(r.neg, false);
@@ -231,9 +259,15 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
         return r;
     }
 
+    KRISITE_COUNT_ATOMIC(frag_split_both);
     auto make = [&](int k, Fragment& out) {
+        KRISITE_COUNT_ATOMIC(frag_make_calls);
         std::vector<PlaneId> e = detail::clip_edges(f.edge, s, k, q);
         if (e.size() < 3) return false;
+        KRISITE_COUNT_ATOMIC(frag_make_ok);
+#if defined(KRISITE_COUNT_PREDICATES)
+        ++geom::counters::frag_edge_hist[e.size() < 9 ? e.size() : 9];
+#endif
         out.support = f.support;
         out.flipped = f.flipped;
         out.owner = f.owner;
@@ -254,17 +288,117 @@ inline SplitResult split_fragment(const PlaneTable& t, const Fragment& f, PlaneI
     return r;
 }
 
+/// **★ 断片を平面 `q` で切り、結果を `out` に【移動で】積む**（`SPEC-phase5.md` §5.10.12.4）。
+///
+/// **`split_fragment` と同じ結果を、同じ順（pos → neg）で `out` に足します。**
+/// **違いは費用だけです。**
+///
+/// > **実測で `split_fragment` の 91〜95% は早期 return です**（全頂点が片側）。
+/// > **それでも従来は `std::vector<int> s(n)` の確保、`r.pos = f` の複製、
+/// > 呼び出し側の `next.push_back(r.pos)` の複製、と【3 回の確保】を払っていました。**
+/// >
+/// > **ここでは、符号を器（その場）に取り、切らないなら入力を【移動】します。確保は 0 回です。**
+/// > **切るときも、新しい `edge` の確保だけです**（`keep` も器）。
+///
+/// **入力 `f` は呼び出し側で使えなくなります**（移動するため）。
+/// **4 箇所の呼び出し側はすべて `pieces` を走査して `next` と swap する形で、
+/// `f` を後で使いません**（2026-09-09 にソースで確認）。
+inline void split_fragment_into(const PlaneTable& t, Fragment&& f, PlaneId q, PointCache* cache,
+                                std::vector<Fragment>& out) {
+    if (q == f.support) {
+        out.push_back(std::move(f));
+        return;
+    }
+    const std::size_t n = f.edge.size();
+    const geom::PlaneD& qp = t.at(q);
+    KRISITE_COUNT_ATOMIC(frag_split_calls);
+    detail::Scratch<int> s_buf;
+    int* const s = s_buf.get(n);
+    bool any_pos = false, any_neg = false;
+    for (std::size_t i = 0; i < n; ++i) {
+        s[i] = geom::side(qp, fragment_vertex(t, f, i, cache));
+        if (s[i] > 0) any_pos = true;
+        if (s[i] < 0) any_neg = true;
+    }
+    // **判定の順序は `split_fragment` と同じです**（全頂点が 0 なら pos 側）。
+    if (!any_neg) {
+        KRISITE_COUNT_ATOMIC(frag_split_early);
+        detail::push_cut(f, true);
+        out.push_back(std::move(f));
+        return;
+    }
+    if (!any_pos) {
+        KRISITE_COUNT_ATOMIC(frag_split_early);
+        detail::push_cut(f, false);
+        out.push_back(std::move(f));
+        return;
+    }
+    KRISITE_COUNT_ATOMIC(frag_split_both);
+    for (int k : {+1, -1}) {
+        KRISITE_COUNT_ATOMIC(frag_make_calls);
+        std::vector<PlaneId> e = detail::clip_edges(f.edge, s, k, q);
+        if (e.size() < 3) continue;
+        KRISITE_COUNT_ATOMIC(frag_make_ok);
+#if defined(KRISITE_COUNT_PREDICATES)
+        ++geom::counters::frag_edge_hist[e.size() < 9 ? e.size() : 9];
+#endif
+        Fragment piece;
+        piece.support = f.support;
+        piece.flipped = f.flipped;
+        piece.owner = f.owner;
+        piece.edge = std::move(e);
+#if defined(KRISITE_FRAGMENT_CUTBITS)
+        piece.cutbits = f.cutbits;
+        piece.ncuts = f.ncuts;
+#endif
+        detail::push_cut(piece, k > 0);
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+        piece.hist = f.hist;
+        piece.hist.emplace_back(q, static_cast<std::int8_t>(k));
+#endif
+        out.push_back(std::move(piece));
+    }
+}
+
 /// 断片を半平面 `side(q, ·) * k >= 0` にクリップする（片側だけ残す）。
+///
+/// **その場で切ります。** 全頂点が残る側なら `f` に触れず、
+/// 全頂点が捨てる側なら偽を返し、跨ぐときだけ `edge` を作り直します。
+/// **`split_fragment` を経由していたときの 3 回の確保が、多くて 1 回になります。**
 inline bool clip_fragment(const PlaneTable& t, Fragment& f, PlaneId q, int k,
                           PointCache* cache = nullptr) {
-    const SplitResult r = split_fragment(t, f, q, cache);
-    if (k > 0) {
-        if (!r.has_pos) return false;
-        f = r.pos;
-    } else {
-        if (!r.has_neg) return false;
-        f = r.neg;
+    KRISITE_COUNT_ATOMIC(frag_clip_calls);
+    // **`split_fragment` 経由と同じ意味論**: 支持平面と同じ平面なら pos 側だけが存在する。
+    // したがって `k > 0` なら残り、`k < 0` なら落ちます（バイト一致のため、変えません）。
+    if (q == f.support) return k > 0;
+    const std::size_t n = f.edge.size();
+    const geom::PlaneD& qp = t.at(q);
+    detail::Scratch<int> s_buf;
+    int* const s = s_buf.get(n);
+    bool any_pos = false, any_neg = false;
+    for (std::size_t i = 0; i < n; ++i) {
+        s[i] = geom::side(qp, fragment_vertex(t, f, i, cache));
+        if (s[i] > 0) any_pos = true;
+        if (s[i] < 0) any_neg = true;
     }
+    // **`split_fragment` と同じ順序で判定します**（全頂点が 0 なら pos 側だけが存在する）。
+    if (!any_neg) {
+        if (k < 0) return false;
+        detail::push_cut(f, true);
+        return true;
+    }
+    if (!any_pos) {
+        if (k > 0) return false;
+        detail::push_cut(f, false);
+        return true;
+    }
+    std::vector<PlaneId> e = detail::clip_edges(f.edge, s, k, q);
+    if (e.size() < 3) return false;
+    f.edge = std::move(e);
+    detail::push_cut(f, k > 0);
+#if defined(KRISITE_EXPERIMENT_REGION_HIST)
+    f.hist.emplace_back(q, static_cast<std::int8_t>(k));
+#endif
     return true;
 }
 

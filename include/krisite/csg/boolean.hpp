@@ -677,6 +677,11 @@ struct BoolOptions {
     /// > 両者が一致することを検査してください」）。
     /// > **同一実行の中で A/B を取れるので、時間の比較が時間帯の交絡を受けません。**
     bool point_cache_map = false;
+    /// **★ 断片の切断を従来の形（`SplitResult` を値で返す）に戻す**（§5.10.12.4）。**既定は偽。**
+    ///
+    /// **既定は `split_fragment_into`（切らないなら移動、確保 0 回）です。**
+    /// **従来の経路を正解器として残し、旗の ON / OFF でバイト一致を検査します。**
+    bool split_legacy = false;
     bool tight_out_aabb = true;
     bool region_key_cuts = false;
     /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。
@@ -1012,14 +1017,18 @@ inline BoolMesh boolean_op(const mesh::TriMesh& A, const mesh::TriMesh& B, BoolO
                         for (PlaneId q : (forced[which] >= 0) ? no_split : split_planes) {
                             std::vector<Fragment> next;
                             next.reserve(pieces.size());
-                            for (const Fragment& p : pieces) {
-                                if (q == p.support) {
-                                    next.push_back(p);
-                                    continue;
+                            for (Fragment& p : pieces) {
+                                if (opt.split_legacy) {
+                                    if (q == p.support) {
+                                        next.push_back(p);
+                                        continue;
+                                    }
+                                    const SplitResult r = split_fragment(table, p, q, cache);
+                                    if (r.has_pos) next.push_back(r.pos);
+                                    if (r.has_neg) next.push_back(r.neg);
+                                } else {
+                                    split_fragment_into(table, std::move(p), q, cache, next);
                                 }
-                                const SplitResult r = split_fragment(table, p, q, cache);
-                                if (r.has_pos) next.push_back(r.pos);
-                                if (r.has_neg) next.push_back(r.neg);
                             }
                             pieces.swap(next);
                         }

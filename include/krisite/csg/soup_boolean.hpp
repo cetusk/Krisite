@@ -241,6 +241,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     out.indicator = compose(X.indicator, Y.indicator, off, how);
 
     // ---- 2. 平面表を 1 つにまとめ、多角形を移す ------------------------------
+    KRISITE_ALLOC_TAG(1);  // 前処理（平面表の統合、多角形の複製、source の平面・AABB）
     std::vector<Poly> polys;
     polys.reserve(X.polys.size() + Y.polys.size());
     for (int which = 0; which < 2; ++which) {
@@ -401,6 +402,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // ---- 3. 葉の列挙（§3.1。固定深度は「常に最大深度」の特別な場合）----------
     const octree::SubdivisionPolicy policy{opt.depth, !opt.adaptive, opt.leaf_threshold,
                                            opt.single_src_sq};
+    KRISITE_ALLOC_TAG(2);  // 葉の列挙
     const std::vector<octree::Cell> leaves = octree::build_leaves(
         policy,
         [&](const octree::Cell& c, std::size_t* na, std::size_t* nb, bool* bsp_skipped) {
@@ -530,8 +532,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         PointCache* const cache = opt.cache_points ? &tl_cache[tid] : nullptr;
 #endif
         const octree::CellBox cbox = octree::box_of(cell);
-        // **★ 述語の計数**（`KRISITE_COUNT_PREDICATES` のときだけ）。
-        // **`thread_local` なので、同じスレッドでの差分を取れば正確です。**
+        KRISITE_ALLOC_TAG(3);  // arrange の設定（here / cell_tri_by_plane / 切断集合）
+                               // **★ 述語の計数**（`KRISITE_COUNT_PREDICATES` のときだけ）。
+                               // **`thread_local` なので、同じスレッドでの差分を取れば正確です。**
 #if defined(KRISITE_COUNT_PREDICATES)
         const std::uint64_t pc_side0 = geom::counters::side_calls;
         const std::uint64_t pc_i30 = geom::counters::intersect3_calls;
@@ -684,6 +687,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         std::vector<std::int32_t> forced(n_src, 0);
         std::vector<char> forced_known(n_src, 0);
         if (opt.early_out) {
+            KRISITE_ALLOC_TAG(13);  // early-out の隅のレイキャスト
             const geom::IPoint corner{static_cast<std::int32_t>(cbox.lo[0]),
                                       static_cast<std::int32_t>(cbox.lo[1]),
                                       static_cast<std::int32_t>(cbox.lo[2])};
@@ -822,6 +826,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
         st.ms_arr_prep += a_lap();
 
+        KRISITE_ALLOC_TAG(4);  // 断片の生成（クリップ + 局所 BSP）
         for (std::size_t idx : here) {
             Fragment frag = polys[idx].frag;
             bool alive = true;
@@ -861,6 +866,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             if (opt.local_bsp && !cut_planes.empty()) cut_begin = 1;
 #endif
             std::vector<Fragment> pieces{frag};
+            KRISITE_ALLOC_TAG(14);  // 切断ループ（切断ごとの next と、split の中身）
             for (std::size_t ci = cut_begin; ci < cut_planes.size(); ++ci) {
                 const PlaneId q = cut_planes[ci];
 #if defined(KRISITE_EXPERIMENT_BSP_SKIP_DISJOINT)
@@ -894,15 +900,24 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 }
 #endif
                 std::vector<Fragment> next;
-                next.reserve(pieces.size());
-                for (const Fragment& p : pieces) {
-                    if (q == p.support) {
-                        next.push_back(p);
-                        continue;
+                // **切ると 1 個が 2 個になるので、`pieces.size()` の予約では溢れます**
+                // （§5.10.12.4 の刻みで、`next` の伸長が新 `edge` より多いと分かりました）。
+                next.reserve(2 * pieces.size());
+                for (Fragment& p : pieces) {
+                    // **★ 既定は移動で積みます**（`split_fragment_into`。§5.10.12.4）。
+                    // **従来の形は `opt.split_legacy` で残しています**（正解器）。
+                    KRISITE_ALLOC_TAG(15);  // split_fragment_into の中身（新 edge）
+                    if (opt.split_legacy) {
+                        if (q == p.support) {
+                            next.push_back(p);
+                            continue;
+                        }
+                        const SplitResult r = split_fragment(out.table, p, q, cache);
+                        if (r.has_pos) next.push_back(r.pos);
+                        if (r.has_neg) next.push_back(r.neg);
+                    } else {
+                        split_fragment_into(out.table, std::move(p), q, cache, next);
                     }
-                    const SplitResult r = split_fragment(out.table, p, q, cache);
-                    if (r.has_pos) next.push_back(r.pos);
-                    if (r.has_neg) next.push_back(r.neg);
                 }
                 pieces.swap(next);
             }
@@ -928,6 +943,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // 支持平面が同じ断片どうしを、**相手の辺平面**で切ると領域が揃います。
         // 自分の辺平面で切っても no-op なので、まとめて適用して構いません。
         {
+            KRISITE_ALLOC_TAG(5);  // 共平面重複の揃え
             std::map<PlaneId, std::vector<std::size_t>> by_sup;
             for (std::size_t i = 0; i < local.size(); ++i) by_sup[local[i].support].push_back(i);
 
@@ -966,14 +982,18 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                     std::vector<Fragment> pieces{local[i]};
                     for (PlaneId q : es) {
                         std::vector<Fragment> next;
-                        for (const Fragment& p : pieces) {
-                            if (q == p.support) {
-                                next.push_back(p);
-                                continue;
+                        for (Fragment& p : pieces) {
+                            if (opt.split_legacy) {
+                                if (q == p.support) {
+                                    next.push_back(p);
+                                    continue;
+                                }
+                                const SplitResult r = split_fragment(out.table, p, q, cache);
+                                if (r.has_pos) next.push_back(r.pos);
+                                if (r.has_neg) next.push_back(r.neg);
+                            } else {
+                                split_fragment_into(out.table, std::move(p), q, cache, next);
                             }
-                            const SplitResult r = split_fragment(out.table, p, q, cache);
-                            if (r.has_pos) next.push_back(r.pos);
-                            if (r.has_neg) next.push_back(r.neg);
                         }
                         pieces.swap(next);
                     }
@@ -993,6 +1013,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
         st.ms_arr_coplanar += a_lap();
 
+        KRISITE_ALLOC_TAG(6);  // 葉の出力へ移す
         outl.frags = std::move(local);
         outl.src = std::move(local_src);
         outl.tag = std::move(local_tag);
@@ -1015,6 +1036,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // > ためです（順序を変えても同じ、を偶然に頼らない）。
     // >
     // > **依存が残っているのは分類の結合のほうです**（出力の多角形の並びが変わります）。
+    KRISITE_ALLOC_TAG(6);  // 葉の出力を平坦化（frags / frag_cell / frag_box）
     for (std::size_t li = 0; li < leaves.size(); ++li) {
         LeafOut& o = leaf_out[li];
         for (std::size_t i = 0; i < o.frags.size(); ++i) {
@@ -1084,6 +1106,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     //
     // 点ごとに、その点を参照した断片のセル添字（最大深度に正規化）の範囲を持ちます。
     std::vector<std::array<std::uint32_t, 3>> pt_lo, pt_hi;
+    KRISITE_ALLOC_TAG(7);  // 縫合（構成点・by_key・整列・remap）
     std::vector<std::vector<std::uint32_t>> raw(do_stitch ? frags.size() : 0);
     for (std::size_t fi = 0; do_stitch && fi < frags.size(); ++fi) {
         const Fragment& f = frags[fi];
@@ -1143,6 +1166,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     //
     // **`RegionKey2` に統一して持ちます。** 従来の鍵は、
     // **頂点 ID の列を `cutbits` の位置に詰めて**表します（型を 2 つ持たないため）。
+    KRISITE_ALLOC_TAG(8);  // 重複の仕分け（regions の map。鍵に vector）
     std::map<detail::RegionKey2, std::vector<std::size_t>> regions;
     for (std::size_t fi = 0; fi < frags.size(); ++fi) {
 #if defined(KRISITE_FRAGMENT_CUTBITS)
@@ -1162,9 +1186,12 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             std::sort(ids.begin(), ids.end());
             ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
             std::vector<std::uint64_t> packed(ids.begin(), ids.end());
-            regions[detail::RegionKey2{0, frags[fi].support, std::move(packed),
-                                       static_cast<std::uint32_t>(ids.size())}]
-                .push_back(fi);
+            {
+                KRISITE_ALLOC_TAG(16);  // 仕分け: map の節点と値の vector
+                regions[detail::RegionKey2{0, frags[fi].support, std::move(packed),
+                                           static_cast<std::uint32_t>(ids.size())}]
+                    .push_back(fi);
+            }
         }
     }
 
@@ -1357,6 +1384,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #endif
 
     pool.run(region_order.size(), [&](std::size_t ri, unsigned tid) {
+        KRISITE_ALLOC_TAG(9);  // 分類の準備（代表の選択、巻き数の器）
         const auto* kvp = region_order[ri];
 #if defined(KRISITE_MUTATION_SHARE_STATS)
         BoolStats& st = tl_stats2[0];
@@ -1416,7 +1444,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             if (frag_forced_known[pick][i2] == 0) need_point = true;
         }
         geom::HPointD rep{};
-        if (need_point) rep = interior_point(out.table, f, cache, &st.interior);
+        {
+            KRISITE_ALLOC_TAG(10);  // 代表点の構成
+            if (need_point) rep = interior_point(out.table, f, cache, &st.interior);
+        }
+        KRISITE_ALLOC_TAG(11);  // 分類のレイキャスト
 
         std::vector<std::int32_t> w_front(n_src, 0), w_back(n_src, 0);
         for (std::size_t i2 = 0; i2 < n_src; ++i2) {
@@ -1478,6 +1510,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #endif
         if (in_front == in_back) return;  // (in,in) / (out,out) は捨てる（§5.2）
 
+        KRISITE_ALLOC_TAG(12);  // 出力の多角形（frag の複製、反転）
         Poly q;
         q.frag = f;
         // **断片の巻き順は「元の三角形の法線」基準**で、`f.flipped` がそれが支持平面の

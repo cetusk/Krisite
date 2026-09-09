@@ -67,6 +67,30 @@ namespace kricount {
 
 std::atomic<std::uint64_t> alloc_count{0};
 std::atomic<std::uint64_t> alloc_bytes{0};
+/// **★ 発生箇所（印）ごとの計数**（§5.10.12.4。残る 93.4% を刻む）。
+constexpr int kTags = 20;
+std::atomic<std::uint64_t> by_tag[kTags] = {};
+std::atomic<std::uint64_t> bytes_by_tag[kTags] = {};
+const char* const kTagName[kTags] = {"その他（印なし）",
+                                     "前処理",
+                                     "葉の列挙",
+                                     "arrange: 設定",
+                                     "arrange: 断片の生成（frag の複製 + pieces）",
+                                     "arrange: 共平面",
+                                     "arrange: 出力へ",
+                                     "縫合: 構成点",
+                                     "縫合: 仕分け（ids / packed）",
+                                     "分類: 準備",
+                                     "分類: 代表点",
+                                     "分類: レイ",
+                                     "分類: 出力の多角形",
+                                     "early-out の隅",
+                                     "arrange: 切断ループ（next）",
+                                     "arrange: split の中（新 edge）",
+                                     "縫合: 仕分け（map の節点 + 値）",
+                                     "",
+                                     "",
+                                     ""};
 /// **数えるのは中核の中だけ**（駆動自身の確保を混ぜないため）。
 std::atomic<bool> enabled{false};
 
@@ -76,6 +100,13 @@ void* operator new(std::size_t n) {
     if (kricount::enabled.load(std::memory_order_relaxed)) {
         kricount::alloc_count.fetch_add(1, std::memory_order_relaxed);
         kricount::alloc_bytes.fetch_add(n, std::memory_order_relaxed);
+#if defined(KRISITE_COUNT_PREDICATES)
+        const int tag = krisite::geom::counters::alloc_tag;
+        if (tag >= 0 && tag < kricount::kTags) {
+            kricount::by_tag[tag].fetch_add(1, std::memory_order_relaxed);
+            kricount::bytes_by_tag[tag].fetch_add(n, std::memory_order_relaxed);
+        }
+#endif
     }
     void* p = std::malloc(n == 0 ? 1 : n);
     if (p == nullptr) throw std::bad_alloc();
@@ -128,6 +159,12 @@ struct Row {
     std::uint64_t allocs = 0, alloc_bytes = 0;
     /// **逐次部分も含む述語の計数**（`cmp_h` は縫合の整列で効きます）。
     std::uint64_t cmp_h = 0, side_ip = 0;
+    /// **発生箇所ごとの確保**（§5.10.12.4。残る 93.4% を刻む）。
+    std::uint64_t tag_count[20] = {}, tag_bytes[20] = {};
+    /// **断片の生成の内訳**（§5.10.12.4。`edge` の small-array の見積もり）。
+    std::uint64_t split_calls = 0, split_early = 0, split_both = 0, make_calls = 0, make_ok = 0,
+                  clip_calls = 0;
+    std::uint64_t edge_hist[10] = {};
 };
 
 std::vector<Row> g_rows;
@@ -141,9 +178,25 @@ void run_stage(const char* name, const csg::PolySoup& X, const csg::PolySoup& Y,
     r.in_polys = X.polys.size() + Y.polys.size();
     const std::uint64_t a0 = kricount::alloc_count.load(std::memory_order_relaxed);
     const std::uint64_t b0 = kricount::alloc_bytes.load(std::memory_order_relaxed);
+#if defined(KRISITE_COUNT_ALLOC) && defined(KRISITE_COUNT_PREDICATES)
+    std::uint64_t t0c[20], t0b[20];
+    for (int k = 0; k < 20; ++k) {
+        t0c[k] = kricount::by_tag[k].load(std::memory_order_relaxed);
+        t0b[k] = kricount::bytes_by_tag[k].load(std::memory_order_relaxed);
+    }
+#endif
 #if defined(KRISITE_COUNT_PREDICATES)
     const std::uint64_t h0 = geom::counters::cmp_h_calls.load(std::memory_order_relaxed);
     const std::uint64_t i0 = geom::counters::side_ipoint_calls.load(std::memory_order_relaxed);
+    const auto ld = [](const std::atomic<std::uint64_t>& a) {
+        return a.load(std::memory_order_relaxed);
+    };
+    const std::uint64_t f0[6] = {
+        ld(geom::counters::frag_split_calls), ld(geom::counters::frag_split_early),
+        ld(geom::counters::frag_split_both),  ld(geom::counters::frag_make_calls),
+        ld(geom::counters::frag_make_ok),     ld(geom::counters::frag_clip_calls)};
+    std::uint64_t e0[10];
+    for (int k = 0; k < 10; ++k) e0[k] = ld(geom::counters::frag_edge_hist[k]);
 #endif
     kricount::enabled.store(true, std::memory_order_relaxed);
     const auto t0 = std::chrono::steady_clock::now();
@@ -155,9 +208,22 @@ void run_stage(const char* name, const csg::PolySoup& X, const csg::PolySoup& Y,
 #if defined(KRISITE_COUNT_PREDICATES)
     r.cmp_h = geom::counters::cmp_h_calls.load(std::memory_order_relaxed) - h0;
     r.side_ip = geom::counters::side_ipoint_calls.load(std::memory_order_relaxed) - i0;
+    r.split_calls = ld(geom::counters::frag_split_calls) - f0[0];
+    r.split_early = ld(geom::counters::frag_split_early) - f0[1];
+    r.split_both = ld(geom::counters::frag_split_both) - f0[2];
+    r.make_calls = ld(geom::counters::frag_make_calls) - f0[3];
+    r.make_ok = ld(geom::counters::frag_make_ok) - f0[4];
+    r.clip_calls = ld(geom::counters::frag_clip_calls) - f0[5];
+    for (int k = 0; k < 10; ++k) r.edge_hist[k] = ld(geom::counters::frag_edge_hist[k]) - e0[k];
 #endif
     r.allocs = kricount::alloc_count.load(std::memory_order_relaxed) - a0;
     r.alloc_bytes = kricount::alloc_bytes.load(std::memory_order_relaxed) - b0;
+#if defined(KRISITE_COUNT_ALLOC) && defined(KRISITE_COUNT_PREDICATES)
+    for (int k = 0; k < 20; ++k) {
+        r.tag_count[k] = kricount::by_tag[k].load(std::memory_order_relaxed) - t0c[k];
+        r.tag_bytes[k] = kricount::bytes_by_tag[k].load(std::memory_order_relaxed) - t0b[k];
+    }
+#endif
     g_rows.push_back(r);
     if (out != nullptr) *out = s;
 }
@@ -546,6 +612,72 @@ void print_rows() {
                     r.st.cache_entries, static_cast<double>(r.st.cache_bytes) / 1048576.0);
     }
 
+    // ---- ★★★ 確保の発生箇所ごとの内訳（§5.10.12.4。残る 93.4% を刻む）--------------
+    //
+    // **回数だけでなく【CPU 時間あたりの密度】も出します**（仕様側の条件）。
+    // **和が 100% になることを、印なし（その他）を含めて確かめます。**
+    if (g_rows[0].allocs > 0) {
+        for (std::size_t ri = 0; ri < g_rows.size(); ++ri) {
+            const Row& r = g_rows[ri];
+            std::uint64_t sum = 0;
+            for (int k = 0; k < 20; ++k) sum += r.tag_count[k];
+            if (sum == 0) continue;
+            std::printf("\n#### %s — 確保の発生箇所（全 %llu 回、CPU %.3f 秒）\n\n", r.name.c_str(),
+                        (unsigned long long)r.allocs, r.cpu_s);
+            std::printf("| 発生箇所 | 回数 | **割合** | 量 | **密度（回 / CPU 秒）** |\n");
+            std::printf("|---|---:|---:|---:|---:|\n");
+            for (int k = 0; k < 20; ++k) {
+                if (r.tag_count[k] == 0 && k != 0) continue;
+                std::printf("| %s | %llu | **%.1f%%** | %.1f MB | %.0f |\n", kricount::kTagName[k],
+                            (unsigned long long)r.tag_count[k],
+                            100.0 * (double)r.tag_count[k] / (double)r.allocs,
+                            (double)r.tag_bytes[k] / 1048576.0,
+                            r.cpu_s == 0 ? 0.0 : (double)r.tag_count[k] / r.cpu_s);
+            }
+            std::printf("| **和** | **%llu** | **%.1f%%** | | |\n", (unsigned long long)sum,
+                        100.0 * (double)sum / (double)r.allocs);
+        }
+    }
+
+    // ---- ★★ 断片の生成の内訳と、`edge` の small-array の見積もり（§5.10.12.4）------
+    if (g_rows[0].split_calls > 0) {
+        std::printf(
+            "\n| 段 | `split` 呼び出し | 早期 return | 2 つに切った | `make` | 新 `edge` | "
+            "`clip` | **`split` 由来の確保** | 全確保 | **割合** |\n");
+        std::printf("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+        for (const Row& r : g_rows) {
+            // `s` は呼び出しごと、`keep` は make ごと、新 edge は make_ok、複製は早期 return ごと
+            const std::uint64_t due = r.split_calls + r.make_calls + r.make_ok + r.split_early;
+            std::printf(
+                "| %s | %llu | %llu | %llu | %llu | %llu | %llu | **%llu** | %llu | "
+                "**%.1f%%** |\n",
+                r.name.c_str(), (unsigned long long)r.split_calls,
+                (unsigned long long)r.split_early, (unsigned long long)r.split_both,
+                (unsigned long long)r.make_calls, (unsigned long long)r.make_ok,
+                (unsigned long long)r.clip_calls, (unsigned long long)due,
+                (unsigned long long)r.allocs,
+                r.allocs == 0 ? 0.0 : 100.0 * (double)due / (double)r.allocs);
+        }
+        std::printf("\n| 段 | 3 | 4 | 5 | 6 | 7 | 8 | ≥9 | **≤4 累積** | **≤8 累積** | 最大 |\n");
+        std::printf("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+        for (const Row& r : g_rows) {
+            std::uint64_t tot = 0;
+            for (int k = 0; k < 10; ++k) tot += r.edge_hist[k];
+            const double t = tot == 0 ? 1.0 : (double)tot;
+            const double c4 = (r.edge_hist[3] + r.edge_hist[4]) / t;
+            double c8 = 0;
+            for (int k = 3; k <= 8; ++k) c8 += r.edge_hist[k];
+            c8 /= t;
+            std::printf(
+                "| %s | %.1f%% | %.1f%% | %.1f%% | %.1f%% | %.1f%% | %.1f%% | %.2f%% | "
+                "**%.1f%%** | **%.2f%%** | %zu |\n",
+                r.name.c_str(), 100.0 * r.edge_hist[3] / t, 100.0 * r.edge_hist[4] / t,
+                100.0 * r.edge_hist[5] / t, 100.0 * r.edge_hist[6] / t, 100.0 * r.edge_hist[7] / t,
+                100.0 * r.edge_hist[8] / t, 100.0 * r.edge_hist[9] / t, 100.0 * c4, 100.0 * c8,
+                r.st.frag_edges_max);
+        }
+    }
+
     // ---- ★ 分類の費用（依頼 2 の材料）--------------------------------------
     //
     // **参照点の伝播で置き換えたいのは、この「領域ごとの大域レイキャスト」です。**
@@ -602,12 +734,18 @@ int main(int argc, char** argv) {
     // **★ 適応分割を切る経路**（§15.3 の予言を試すため）。
     // **固定深度なら段 1 と段 2 の格子が一致します。**
     const bool adaptive = (argc > 6) ? (std::atoi(argv[6]) != 0) : true;
+    // **★ 鍵の突き合わせ（`verify_region_key`）は既定で切ります**（第 7 引数で 1 にすると入る）。
+    // **本番では偽なので、確保の内訳を測るときに入れると仕分けの段が水増しされます**
+    // （実際に踏みました。`old_regions` の分が 14.5% に乗っていました）。
+    const bool verify_rk = (argc > 7) ? (std::atoi(argv[7]) != 0) : false;
 
     // **★ 設定と対象を最初に出します**（`CLAUDE.md`）
     std::printf("\n## 連鎖の断片数（`SPEC-phase5.md` §5.10.5.7 / 依頼 3）\n\n");
     std::printf("| 設定 | 値 |\n|---|---|\n");
     std::printf("| 対象 | A=`%s` B=`%s` D=`%s` |\n", ida.c_str(), idb.c_str(), idd.c_str());
     std::printf("| 深度 | %u（%s） |\n", depth, adaptive ? "**適応**" : "**固定**");
+    std::printf("| 鍵の突き合わせ | %s |\n",
+                verify_rk ? "**入れる**（本番は偽）" : "切る（本番と同じ）");
     std::printf("| スレッド | %u |\n", nthreads);
     std::printf("| b（座標ビット） | %d |\n", KRISITE_COORD_BITS);
     std::printf("| 走らせる段の数 | **3**（単発 1 段 + 連鎖 2 段） |\n\n");
@@ -662,7 +800,7 @@ int main(int argc, char** argv) {
     o.threads = nthreads;
     o.pool = &pool;
     // **突き合わせだけ**（出力は変えません）。セルまたぎの計数はこの旗の下です。
-    o.verify_region_key = true;
+    o.verify_region_key = verify_rk;
 
     const csg::PolySoup A = csg::from_mesh(qa.mesh);
     const csg::PolySoup B = csg::from_mesh(qb.mesh);
@@ -703,6 +841,44 @@ int main(int argc, char** argv) {
         std::printf("\n**出力**: %s / **CPU 時間の比**: **%.2f 倍**\n",
                     h[0] == h[1] ? "**バイト一致**" : "**★ 食い違い（重大）**",
                     cpu[0] == 0 ? 0.0 : cpu[1] / cpu[0]);
+    }
+
+    // ---- ★★ 断片の切断の A/B（`SPEC-phase5.md` §5.10.12.4。早期 return を移動に）------
+    //
+    // **同一実行の中で、従来（`SplitResult` を値で返す）と移動版を比べます。**
+    {
+        std::printf("\n### 断片の切断の A/B（同一実行）\n\n");
+        std::printf(
+            "| 実装 | 壁時計 | CPU 時間 | 確保 | 出力ハッシュ |\n|---|---:|---:|---:|---|\n");
+        unsigned long long h[2] = {0, 0};
+        double cpu[2] = {0, 0};
+        std::uint64_t al[2] = {0, 0};
+        for (int legacy = 1; legacy >= 0; --legacy) {
+            csg::BoolOptions ab = o;
+            ab.split_legacy = (legacy != 0);
+            csg::BoolStats st;
+            const std::uint64_t a0 = kricount::alloc_count.load(std::memory_order_relaxed);
+            kricount::enabled.store(true, std::memory_order_relaxed);
+            const auto t0 = std::chrono::steady_clock::now();
+            const std::clock_t c0 = std::clock();
+            const csg::PolySoup s2 = csg::boolean(A, D, csg::BoolOp::Difference, ab, &st);
+            const double cs = static_cast<double>(std::clock() - c0) / CLOCKS_PER_SEC;
+            const double ws =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            kricount::enabled.store(false, std::memory_order_relaxed);
+            al[legacy] = kricount::alloc_count.load(std::memory_order_relaxed) - a0;
+            csg::ToMeshOptions tm2;
+            tm2.split_contacts = true;
+            h[legacy] = hash_mesh(csg::to_mesh(s2, tm2));
+            cpu[legacy] = cs;
+            std::printf("| %s | %.3f s | **%.3f s** | %llu | `%016llx` |\n",
+                        legacy ? "従来（`SplitResult` を値で）" : "**移動（既定）**", ws, cs,
+                        static_cast<unsigned long long>(al[legacy]), h[legacy]);
+        }
+        std::printf("\n**出力**: %s / **CPU 時間の比**: **%.2f 倍** / 確保: %llu → %llu\n",
+                    h[0] == h[1] ? "**バイト一致**" : "**★ 食い違い（重大）**",
+                    cpu[0] == 0 ? 0.0 : cpu[1] / cpu[0], (unsigned long long)al[1],
+                    (unsigned long long)al[0]);
     }
 
     // ---- 単発（対照）--------------------------------------------------------

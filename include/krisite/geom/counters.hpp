@@ -88,6 +88,40 @@ inline thread_local std::uint64_t side_disp_limbreads = 0;
 inline std::atomic<std::uint64_t> cmp_h_calls{0};
 inline std::atomic<std::uint64_t> side_ipoint_calls{0};
 
+// ---- ★ 確保の【発生箇所】の印（`SPEC-phase5.md` §5.10.12.4。残る 93.4% を刻む）----
+//
+// **プロファイラが無いので、確保を「どの段で起きたか」で分けます。**
+// **スレッド局所の印を段の入口で立て、駆動の `operator new` が印ごとに数えます。**
+// **印の無い確保は「その他」に落ちるので、和は必ず 100% になります。**
+//
+// > **計測ビルドにしか存在しません。** 既定では印を立てる場所は空の文になります。
+inline thread_local int alloc_tag = 0;
+
+/// 段の入口で印を立て、出口で戻す（RAII）。
+struct AllocTagScope {
+    int prev;
+    explicit AllocTagScope(int t) noexcept : prev(alloc_tag) { alloc_tag = t; }
+    ~AllocTagScope() { alloc_tag = prev; }
+    AllocTagScope(const AllocTagScope&) = delete;
+    AllocTagScope& operator=(const AllocTagScope&) = delete;
+};
+
+// ---- ★ 断片の生成の内訳（`SPEC-phase5.md` §5.10.12.4。`edge` の small-array の見積もり）--
+//
+// **`split_fragment` の中で作られる `std::vector` は 3 種あります**
+// （符号の作業配列 `s`、`clip_edges` の `keep`、新しい `edge`）。
+// **確保の回数を「断片の生成」に帰着させるために、それぞれ数えます。**
+// **原子的にしてあるのは、駆動が `boolean()` の前後で差分を取るためです**（計測ビルドのみ）。
+inline std::atomic<std::uint64_t> frag_split_calls{
+    0};  ///< `split_fragment` の呼び出し（`s` の確保）
+inline std::atomic<std::uint64_t> frag_split_early{0};  ///< 早期 return（`edge` の複製 1 回）
+inline std::atomic<std::uint64_t> frag_split_both{0};   ///< 2 つに切った（`make` 2 回）
+inline std::atomic<std::uint64_t> frag_make_calls{0};   ///< `make`（`keep` の確保）
+inline std::atomic<std::uint64_t> frag_make_ok{0};      ///< 新しい `edge` を作った
+inline std::atomic<std::uint64_t> frag_clip_calls{0};   ///< `clip_fragment` の呼び出し
+/// **作った `edge` の要素数の分布**（0..8 と、9 以上）。**区分は small-array の枠に合わせます。**
+inline std::atomic<std::uint64_t> frag_edge_hist[10] = {};
+
 inline void reset() noexcept {
     side_calls = 0;
     intersect3_calls = 0;
@@ -105,11 +139,21 @@ inline void reset() noexcept {
     side_disp_limbreads = 0;
     cmp_h_calls.store(0);
     side_ipoint_calls.store(0);
+    frag_split_calls.store(0);
+    frag_split_early.store(0);
+    frag_split_both.store(0);
+    frag_make_calls.store(0);
+    frag_make_ok.store(0);
+    frag_clip_calls.store(0);
+    for (auto& h : frag_edge_hist) h.store(0);
 }
 
 }  // namespace counters
 
 #define KRISITE_COUNT(which) (++::krisite::geom::counters::which)
+/// **確保の印を立てる**（スコープの終わりまで）。
+#define KRISITE_ALLOC_TAG(t) \
+    const ::krisite::geom::counters::AllocTagScope krisite_alloc_tag_scope_##t(t)
 /// **原子的な計数**（`cmp_h_calls` / `side_ipoint_calls`）。
 #define KRISITE_COUNT_ATOMIC(which) \
     (::krisite::geom::counters::which.fetch_add(1, ::std::memory_order_relaxed))
@@ -118,6 +162,7 @@ inline void reset() noexcept {
 
 #define KRISITE_COUNT(which) ((void)0)
 #define KRISITE_COUNT_ATOMIC(which) ((void)0)
+#define KRISITE_ALLOC_TAG(t) ((void)0)
 
 #endif
 
