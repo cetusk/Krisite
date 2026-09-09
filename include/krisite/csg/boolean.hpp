@@ -422,6 +422,20 @@ struct BoolStats {
     double ms_arrange = 0;   ///< セルごとの arrangement（§4）
     double ms_stitch = 0;    ///< 縫合と重複の仕分け（§5 / §6）
     double ms_classify = 0;  ///< 分類（§7）
+    // **縫合の内訳**（壁時計。§5.10.13。逐次なので CPU と同じ）
+    double ms_st_points = 0;   ///< 第 1 段: 平面 3 つ組の表 + 構成点の計算
+    double ms_st_sort = 0;     ///< 第 2 段: `lex_less` の整列
+    double ms_st_remap = 0;    ///< 第 2 段: 値の等しい区分に番号を振る
+    double ms_st_regions = 0;  ///< 仕分け: `regions` の map
+    // **並列化の前提の確認**（`measure_stitch` のときだけ）
+    std::size_t pt_multi_leaf = 0;   ///< 2 つ以上の葉から参照された構成点（第 1 段の鍵で）
+    std::size_t pt_mixed_depth = 0;  ///< うち、参照した葉の深度が 2 種類以上
+    std::size_t pt_on_boundary =
+        0;  ///< 最初に参照した葉の閉じた箱の境界に載る構成点（大域併合の候補の上界）
+    std::size_t pt_multi_not_boundary = 0;  ///< 葉をまたぐのに境界に無い点（補題の対偶。0 のはず）
+    std::size_t leaf_adj_pairs = 0;         ///< 閉じた箱が接する葉の対
+    std::size_t leaf_adj_mixed = 0;         ///< うち深度の違う対
+    std::size_t leaf_adj_max = 0;           ///< 1 つの葉が接する葉の最大数
 
     /// §2.4.3 の T 頂点の解決（SPEC-phase2）。
     ///
@@ -693,6 +707,10 @@ struct BoolOptions {
     ///
     /// **0 で従来どおり。** 確保の回数は項目ごとに、時間は合計で 1 回測ります（仕様側の条件）。
     unsigned alloc_reuse = 7;
+    /// **★ 縫合の並列化に入る前の確認のための計測**（`SPEC-phase5.md` §5.10.13.3。既定 偽）。
+    /// 真にすると、構成点ごとに「参照した葉が 2 つ以上か」「その葉の深度が混ざるか」を数え、
+    /// 葉の閉じた箱が接する対を全部数えます（$O(L^2)$ なので既定では切ります）。
+    bool measure_stitch = false;
     bool tight_out_aabb = true;
     bool region_key_cuts = false;
     /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。

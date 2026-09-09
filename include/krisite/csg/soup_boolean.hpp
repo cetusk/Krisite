@@ -1127,6 +1127,11 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     //
     // 点ごとに、その点を参照した断片のセル添字（最大深度に正規化）の範囲を持ちます。
     std::vector<std::array<std::uint32_t, 3>> pt_lo, pt_hi;
+    // **並列化の前提の確認**（`opt.measure_stitch`。§5.10.13.3）: 点ごとに最初に参照した葉と、
+    // 別の葉・別の深度から参照されたかの印
+    std::vector<octree::Cell> pt_first_cell;
+    std::vector<char> pt_multi, pt_mixed, pt_bd;
+    const auto t_st0 = Clock::now();
     KRISITE_ALLOC_TAG(7);  // 縫合（構成点・by_key・整列・remap）
     // **★ G3: 断片ごとの頂点 ID 列を【平坦な配列 + 区切り】で持ちます**（§5.10.12.4）。
     // **従来は `std::vector<std::vector<>>` で、断片ごとに 1 回確保していました**（確保の 9.7%）。
@@ -1160,7 +1165,31 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 points.push_back(fragment_vertex(out.table, f, i, cache));
                 pt_lo.push_back({cix[0], cix[1], cix[2]});
                 pt_hi.push_back({cix[0], cix[1], cix[2]});
+                if (opt.measure_stitch) {
+                    pt_first_cell.push_back(frag_cell[fi]);
+                    pt_multi.push_back(0);
+                    pt_mixed.push_back(0);
+                    // **葉の閉じた箱の境界に載っているか**（§12.1 の補題の対偶: 内部の点は
+                    // 他の葉と併合され得ない。**境界の点だけが大域の併合の候補**）
+                    const octree::CellBox bx = octree::box_of(frag_cell[fi]);
+                    const geom::HPointD& hp = points.back();
+                    bool on_bd = false;
+                    for (int t = 0; t < 3 && !on_bd; ++t) {
+                        const auto ax = static_cast<geom::Axis>(t);
+                        on_bd = geom::cmp_axis_int(hp, bx.lo[t], ax) == 0 ||
+                                geom::cmp_axis_int(hp, bx.hi[t], ax) == 0;
+                    }
+                    if (on_bd) ++st.pt_on_boundary;
+                    pt_bd.push_back(on_bd ? 1 : 0);
+                }
                 it = by_key.emplace(k, id).first;
+            } else if (opt.measure_stitch) {
+                const octree::Cell& c0 = pt_first_cell[it->second];
+                const octree::Cell& c1 = frag_cell[fi];
+                if (c0.depth != c1.depth || c0.i != c1.i || c0.j != c1.j || c0.k != c1.k) {
+                    pt_multi[it->second] = 1;
+                    if (c0.depth != c1.depth) pt_mixed[it->second] = 1;
+                }
             }
             if (raw_flat) {
                 raw_items.push_back(it->second);
@@ -1178,12 +1207,16 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     }
     if (do_stitch && raw_flat) raw_off[frags.size()] = static_cast<std::uint32_t>(raw_items.size());
     st.constructed_points = points.size();
+    st.ms_st_points = std::chrono::duration<double, std::milli>(Clock::now() - t_st0).count();
+    const auto t_st1 = Clock::now();
     std::vector<std::uint32_t> order(points.size());
     (void)cache;
     for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
     std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
         return geom::lex_less(points[a], points[b]);
     });
+    st.ms_st_sort = std::chrono::duration<double, std::milli>(Clock::now() - t_st1).count();
+    const auto t_st2 = Clock::now();
     std::vector<std::uint32_t> remap(points.size());
     std::size_t merged_count = 0;
     for (std::size_t i = 0; i < order.size();) {
@@ -1197,6 +1230,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         i = j;
     }
     st.merged_points = merged_count;
+    st.ms_st_remap = std::chrono::duration<double, std::milli>(Clock::now() - t_st2).count();
+    const auto t_st3 = Clock::now();
 
     // ---- 6. 重複の仕分け（§4.3.3 / §5.5）-------------------------------------
     //
@@ -1368,6 +1403,40 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
     }
 
+    st.ms_st_regions = std::chrono::duration<double, std::milli>(Clock::now() - t_st3).count();
+    // **並列化の前提の確認**（§5.10.13.3）: 葉をまたぐ点と、深度が混ざる点、接する葉の対
+    if (opt.measure_stitch) {
+        for (std::size_t i = 0; i < pt_multi.size(); ++i) {
+            if (pt_multi[i] != 0) ++st.pt_multi_leaf;
+            if (pt_mixed[i] != 0) ++st.pt_mixed_depth;
+            // **補題の対偶の検査**: 葉をまたぐのに境界に無い点は 0 のはず
+            if (pt_multi[i] != 0 && pt_bd[i] == 0) ++st.pt_multi_not_boundary;
+        }
+        // **閉じた箱が接する対**。$O(L^2)$ だが計測のときだけ
+        // **空でない葉だけ**（固定深度では `leaves` に空の葉も全部入っているので、
+        // 全部数えると 8^6 のセルの 26 近傍を数えることになり、対象と違います）
+        std::vector<std::size_t> act;
+        for (std::size_t li = 0; li < leaves.size(); ++li) {
+            if (leaf_out[li].active) act.push_back(li);
+        }
+        std::vector<octree::CellBox> lb(act.size());
+        for (std::size_t a = 0; a < act.size(); ++a) lb[a] = octree::box_of(leaves[act[a]]);
+        std::vector<std::size_t> deg(act.size(), 0);
+        for (std::size_t a = 0; a < act.size(); ++a) {
+            for (std::size_t b = a + 1; b < act.size(); ++b) {
+                bool touch = true;
+                for (int t = 0; t < 3 && touch; ++t) {
+                    touch = lb[a].lo[t] <= lb[b].hi[t] && lb[b].lo[t] <= lb[a].hi[t];
+                }
+                if (!touch) continue;
+                ++st.leaf_adj_pairs;
+                if (leaves[act[a]].depth != leaves[act[b]].depth) ++st.leaf_adj_mixed;
+                ++deg[a];
+                ++deg[b];
+            }
+        }
+        for (std::size_t d : deg) st.leaf_adj_max = std::max(st.leaf_adj_max, d);
+    }
     // **広がりの集計**（`SPEC-phase4.md` §2.6 の前提を、実際に使う経路で測る）
     for (std::size_t i = 0; i < pt_lo.size(); ++i) {
         std::size_t span = 0;
