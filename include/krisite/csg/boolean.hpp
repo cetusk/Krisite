@@ -409,6 +409,16 @@ struct BoolStats {
     /// **`bsp_cuts_used` と `bsp_cuts_skipped` の両方が非零であること**を
     /// テストで確かめます。**片方が 0 なら判定が空回りしています**（一方に倒れている）。
     std::size_t bsp_cut_slots = 0;
+    /// **局所 BSP の切断のうち、実際に断片を 2 つに分けた数**（`SPEC-phase3.md` §5.4
+    /// の未測定の問い。 「返した候補のうち何割使うか」の 6 例目）。`bsp_split_attempts` は（断片 ×
+    /// 切断平面）の試行数
+    std::size_t bsp_split_attempts = 0;
+    std::size_t bsp_split_actual = 0;
+    /// **切断平面に一度も分けられなかった断片**（セル平面のクリップだけで分かれた断片。O2
+    /// の前提）と、 そのような断片を持つ元の三角形の数（`frags_uncut - frags_uncut_tris`
+    /// がレイの削減の上界）
+    std::size_t frags_uncut = 0;
+    std::size_t frags_uncut_tris = 0;
     std::size_t bsp_cuts_used = 0;     ///< 支持平面に触れるので切った枚数
     std::size_t bsp_cuts_skipped = 0;  ///< 厳密に片側なので切らなかった枚数
 

@@ -228,6 +228,7 @@ struct PairStruct {
     std::size_t cand_level[12] = {}, items_level[12] = {};
     std::size_t tri_level[12] = {}, fit1_level[12] = {}, cells0_level[12] = {};
     std::size_t hist_tri[6] = {}, hist_cells[6] = {};
+    std::size_t split_attempts = 0, split_actual = 0, uncut = 0, uncut_tris = 0;
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -309,6 +310,10 @@ struct PairStruct {
             hist_tri[k] += b.ray_hist_tri[k];
             hist_cells[k] += b.ray_hist_cells[k];
         }
+        split_attempts += b.bsp_split_attempts;
+        split_actual += b.bsp_split_actual;
+        uncut += b.frags_uncut;
+        uncut_tris += b.frags_uncut_tris;
         ms_arrange += b.ms_arrange;
         ms_classify += b.ms_classify;
         ms_stitch += b.ms_stitch;
@@ -374,6 +379,7 @@ struct PairStruct {
         for (int l = 0; l < 12; ++l) o << ' ' << cells0_level[l];
         for (int k = 0; k < 6; ++k) o << ' ' << hist_tri[k];
         for (int k = 0; k < 6; ++k) o << ' ' << hist_cells[k];
+        o << ' ' << split_attempts << ' ' << split_actual << ' ' << uncut << ' ' << uncut_tris;
     }
 };
 

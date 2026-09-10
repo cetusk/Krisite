@@ -118,6 +118,9 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.split_plane_slots += b.split_plane_slots;
     a.split_planes_used += b.split_planes_used;
     a.bsp_cut_slots += b.bsp_cut_slots;
+    a.bsp_split_attempts += b.bsp_split_attempts;
+    a.bsp_split_actual += b.bsp_split_actual;
+    a.frags_uncut += b.frags_uncut;
     a.bsp_cuts_used += b.bsp_cuts_used;
     a.bsp_cuts_skipped += b.bsp_cuts_skipped;
     a.regions += b.regions;
@@ -503,6 +506,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     std::vector<std::uint32_t> frag_src, frag_tag;
     /// **断片ごとの「元の多角形の外接箱」**（§5.10.6）。`frag_cell` と対で使います。
     std::vector<octree::Aabb> frag_box;
+    std::vector<char> frag_uncut;
     /// セルで「多角形が 1 枚も無かった source」の内外（-1 = 未確定）。§3.2 の early-out
     std::vector<std::vector<std::int32_t>> frag_forced;
     /// **その source の巻き数が確定しているか**（`frag_forced` と同じ形）。
@@ -535,6 +539,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         /// **出力の `Poly::aabb` を「元の箱 ∩ セル箱」にするために持ちます。**
         /// 断片 $\subseteq$ 元の多角形 $\cap$ セル なので、この交差は保守的です。
         std::vector<octree::Aabb> box;
+        std::vector<char> uncut;  ///< 切断平面に一度も分けられなかった断片（O2 の前提の計数）
         std::vector<std::int32_t> forced;
         std::vector<char> forced_known;
         // **★ 縫合の葉ごとの部分**（§5.10.13.3。`opt.stitch_parallel`）: 葉の中で鍵の重複を除き、
@@ -623,6 +628,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #endif
         std::vector<Fragment> local;
         std::vector<std::uint32_t> local_src, local_tag;
+        std::vector<char> local_uncut;
         std::vector<octree::Aabb> local_box;
 
         // **arrange を段に刻みます**（`PERF.md` §1.1）。葉の粒度なので計時は無視できます
@@ -987,9 +993,16 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                         split_fragment_into(out.table, std::move(p), q, cache, next);
                     }
                 }
+                // **実際に分けた数**（切断で 1 個が 2 個になった数 = 増えた分）
+                st.bsp_split_attempts += pieces.size();
+                st.bsp_split_actual += next.size() - pieces.size();
                 pieces.swap(next);
             }
+            // **切断平面に一度も分けられなかった断片**（= 1 個のまま）。O2 の前提の計数
+            if (pieces.size() == 1) ++st.frags_uncut;
+            const bool uncut_here = (pieces.size() == 1);
             for (Fragment& p : pieces) {
+                local_uncut.push_back(uncut_here ? 1 : 0);
                 // **無次元群**（`PERF.md` §1.8）。辺数 = 頂点数
                 st.frag_edges_total += p.edge.size();
                 ++st.frag_edges_count;
@@ -1020,6 +1033,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             std::vector<Fragment> nl;
             std::vector<std::uint32_t> ns, nt;
             std::vector<octree::Aabb> nb;
+            std::vector<char> nu;
             for (const auto& g : by_sup) {
                 // 由来が 1 つだけなら、同じ多角形の断片どうしなので揃っています
                 bool multi = false;
@@ -1036,6 +1050,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                         ns.push_back(local_src[i]);
                         nt.push_back(local_tag[i]);
                         nb.push_back(local_box[i]);
+                        nu.push_back(local_uncut[i]);
                     }
                     continue;
                 }
@@ -1072,11 +1087,14 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                         }
                         pieces.swap(next);
                     }
+                    // 揃えで分かれたら「分けられた」側に数える
+                    const char u2 = (pieces.size() == 1) ? local_uncut[i] : 0;
                     for (Fragment& p : pieces) {
                         nl.push_back(std::move(p));
                         ns.push_back(local_src[i]);
                         nt.push_back(local_tag[i]);
                         nb.push_back(local_box[i]);
+                        nu.push_back(u2);
                     }
                 }
             }
@@ -1084,6 +1102,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             local_src.swap(ns);
             local_tag.swap(nt);
             local_box.swap(nb);
+            local_uncut.swap(nu);
         }
 
         st.ms_arr_coplanar += a_lap();
@@ -1093,6 +1112,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         outl.src = std::move(local_src);
         outl.tag = std::move(local_tag);
         outl.box = std::move(local_box);
+        outl.uncut = std::move(local_uncut);
         outl.forced = forced;
         outl.forced_known = forced_known;
         // ---- ★ 縫合の葉ごとの部分（`SPEC-phase5.md` §5.10.13.3）-------------------------
@@ -1175,6 +1195,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             frag_src.push_back(o.src[i]);
             frag_tag.push_back(o.tag[i]);
             frag_box.push_back(o.box[i]);
+            frag_uncut.push_back(i < o.uncut.size() ? o.uncut[i] : 0);
             frag_forced.push_back(o.forced);
             frag_forced_known.push_back(o.forced_known);
         }
@@ -1193,6 +1214,24 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     }
     for (const BoolStats& t : tl_stats) detail::merge_stats(st, t);
     st.raw_fragments = frags.size();
+    // **未分割の断片を持つ元の三角形の数**（O2 の群の数の下界。`frags_uncut - frags_uncut_tris`
+    // がレイの削減の上界）
+    {
+        std::vector<std::vector<char>> seen(n_src);
+        for (std::size_t i = 0; i < n_src; ++i) seen[i].assign(out.sources[i].triangles.size(), 0);
+        std::size_t uncut = 0, tris = 0;
+        for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+            if (frag_uncut[fi] == 0) continue;
+            ++uncut;
+            std::vector<char>& sv = seen[frag_src[fi]];
+            if (frag_tag[fi] < sv.size() && sv[frag_tag[fi]] == 0) {
+                sv[frag_tag[fi]] = 1;
+                ++tris;
+            }
+        }
+        st.frags_uncut = uncut;  // 葉ごとの和と同じ値のはず（揃えの後の印で数え直す）
+        st.frags_uncut_tris = tris;
+    }
 
     st.ms_arrange = lap(t_stage);
     if (opt.verbose_stages) {
