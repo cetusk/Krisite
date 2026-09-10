@@ -216,6 +216,11 @@ struct PairStruct {
     double ms_core = 0;
     /// **入口（`from_mesh`）**。`fm_seconds` は検査込みなので、別に採る
     double ms_inlet = 0;
+    /// **★ 駆動側の検査・検算**（`SPEC-phase5.md`
+    /// §5.10.14。実務では切る部分。分母から外すために別に採る）
+    double ms_topo = 0;  ///< `check_topology`（演算ごとに 2 回: 統計用と合否用）
+    double ms_vol = 0;   ///< 体積の検算（`volume6_fp` × 5）
+    double ms_hash = 0;  ///< 出力のハッシュ（× 3）
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -327,7 +332,8 @@ struct PairStruct {
           // **出口の 5 段と、入口・中核・出口の合計**（2026-09-08 追加。§5.11.1）
           << ' ' << (long long)ms_construct << ' ' << (long long)ms_merge << ' '
           << (long long)ms_index << ' ' << (long long)ms_tri << ' ' << (long long)ms_split << ' '
-          << (long long)ms_tomesh << ' ' << (long long)ms_core << ' ' << (long long)ms_inlet;
+          << (long long)ms_tomesh << ' ' << (long long)ms_core << ' ' << (long long)ms_inlet << ' '
+          << (long long)ms_topo << ' ' << (long long)ms_vol << ' ' << (long long)ms_hash;
     }
 };
 
@@ -417,7 +423,12 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
                     out3[k3].triangles.size(), out3[k3].vertices.size());
         std::fflush(stdout);
         if (ps != nullptr) {
-            ps->add(bs, ts, mesh::check_topology(out3[k3].triangles), soup.polys.size());
+            const auto t_tp = std::chrono::steady_clock::now();
+            const mesh::TopologyReport tr = mesh::check_topology(out3[k3].triangles);
+            ps->ms_topo +=
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_tp)
+                    .count();
+            ps->add(bs, ts, tr, soup.polys.size());
         }
         ++k3;
     }
@@ -425,6 +436,7 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     const csg::SoupMesh& mi = out3[1];
     const csg::SoupMesh& md = out3[2];
 
+    const auto t_vol = std::chrono::steady_clock::now();
     if (ps != nullptr) {
         // **浮動小数点の体積恒等式**（`SPEC-phase5.md` §3.0）。**篩であって検査ではありません。**
         // 入力側は `signed_volume6` が厳密なので、丸めは出力側だけに乗ります。
@@ -433,7 +445,11 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
         const double vd = kritest::volume6_fp(md);
         ps->vol_err = kritest::identity_error(vu, vi, va, vb);
         ps->diff_err = kritest::difference_error(vd, va, vi);
+        ps->ms_vol =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_vol)
+                .count();
     }
+    const auto t_tp2 = std::chrono::steady_clock::now();
 
     for (const auto* pr : {&mu, &mi, &md}) {
         const mesh::TopologyReport t = mesh::check_topology(pr->triangles);
@@ -459,12 +475,23 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
             return false;
         }
     }
+    if (ps != nullptr) {
+        ps->ms_topo +=
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_tp2)
+                .count();
+    }
     if (ps != nullptr && ps->vol_err > kritest::kIdentityTol) {
         // **篩に引っかかりました。** 失敗ではありません — **GMP に回す印**です（§3.0）。
         *why = "体積の篩（GMP へ）";
     }
     if (hash_out != nullptr) {
+        const auto t_h = std::chrono::steady_clock::now();
         *hash_out = hash_mesh(mu) ^ (hash_mesh(mi) * 3) ^ (hash_mesh(md) * 7);
+        if (ps != nullptr) {
+            ps->ms_hash =
+                std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_h)
+                    .count();
+        }
     }
     // **体積の恒等式**（§3.1）。|A∪B| + |A∩B| = |A| + |B| を出力側の 6 倍体積で見る
     return true;
