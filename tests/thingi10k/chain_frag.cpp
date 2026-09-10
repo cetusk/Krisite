@@ -595,6 +595,45 @@ void print_rows() {
                     t == 0 ? 0.0 : 100.0 * r.st.ms_arr_coplanar / t);
     }
 
+    // ---- ★ 縫合の内訳と、並列化の前提の確認（`SPEC-phase5.md` §5.10.13）-----------
+    std::printf(
+        "\n| 段 | 縫合の内訳（壁時計）: 構成点 + 3 つ組の表 | 整列 | 番号付け | **仕分け** | "
+        "縫合の合計 |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|\n");
+    for (const Row& r : g_rows) {
+        const double t =
+            r.st.ms_st_points + r.st.ms_st_sort + r.st.ms_st_remap + r.st.ms_st_regions;
+        std::printf(
+            "| %s | %.1f%% | %.1f%% | %.1f%% | **%.1f%%** | %.3f s（段の計 %.3f s） |\n",
+            r.name.c_str(), t == 0 ? 0.0 : 100.0 * r.st.ms_st_points / t,
+            t == 0 ? 0.0 : 100.0 * r.st.ms_st_sort / t, t == 0 ? 0.0 : 100.0 * r.st.ms_st_remap / t,
+            t == 0 ? 0.0 : 100.0 * r.st.ms_st_regions / t, t / 1000.0, r.st.ms_stitch / 1000.0);
+    }
+    if (g_rows[0].st.leaf_adj_pairs > 0) {
+        std::printf(
+            "\n| 段 | 構成点 | 葉をまたぐ点 | うち深度が混ざる | **境界上の点** | 葉 | 深度 | "
+            "接する葉の対 | うち深度が違う | 1 葉あたり最大 | 併合群 | 最大広がり | "
+            "またぐのに境界に無い |\n");
+        std::printf("|---|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|---:|\n");
+        for (const Row& r : g_rows) {
+            std::printf(
+                "| %s | %zu | **%zu**（%.2f%%） | **%zu** | **%zu**（%.2f%%） | %zu | %u〜%u | %zu "
+                "| "
+                "%zu | %zu | %zu | %zu | **%zu** |\n",
+                r.name.c_str(), r.st.constructed_points, r.st.pt_multi_leaf,
+                r.st.constructed_points == 0
+                    ? 0.0
+                    : 100.0 * (double)r.st.pt_multi_leaf / (double)r.st.constructed_points,
+                r.st.pt_mixed_depth, r.st.pt_on_boundary,
+                r.st.constructed_points == 0
+                    ? 0.0
+                    : 100.0 * (double)r.st.pt_on_boundary / (double)r.st.constructed_points,
+                r.st.leaf_nonempty, r.st.leaf_depth_min, r.st.leaf_depth_max, r.st.leaf_adj_pairs,
+                r.st.leaf_adj_mixed, r.st.leaf_adj_max, r.st.merge_groups, r.st.max_merge_span,
+                r.st.pt_multi_not_boundary);
+        }
+    }
+
     // ---- ★★★ 構成点キャッシュの探索（`split_fragment` が頂点ごとに呼びます）--------
     //
     // **`split_fragment` は `s[i] = side(qp, fragment_vertex(t, f, i, cache))` です。**
@@ -807,6 +846,8 @@ int main(int argc, char** argv) {
     // **突き合わせだけ**（出力は変えません）。セルまたぎの計数はこの旗の下です。
     o.verify_region_key = verify_rk;
     o.alloc_reuse = alloc_reuse;
+    // **縫合の前提の確認**（第 9 引数。既定 0。$O(L^2)$ の葉の対の数え上げを含む）
+    o.measure_stitch = (argc > 9) && (std::atoi(argv[9]) != 0);
 
     const csg::PolySoup A = csg::from_mesh(qa.mesh);
     const csg::PolySoup B = csg::from_mesh(qb.mesh);
