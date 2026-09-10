@@ -738,6 +738,9 @@ int main(int argc, char** argv) {
     // **本番では偽なので、確保の内訳を測るときに入れると仕分けの段が水増しされます**
     // （実際に踏みました。`old_regions` の分が 14.5% に乗っていました）。
     const bool verify_rk = (argc > 7) ? (std::atoi(argv[7]) != 0) : false;
+    // **★ 器の使い回し（G1〜G3）のビット集合**（第 8 引数。既定 7 = 本番と同じ）。
+    // **確保の回数を項目ごとに測るには 0 / 1 / 2 / 4 / 7 で回します。**
+    const unsigned alloc_reuse = (argc > 8) ? static_cast<unsigned>(std::atoi(argv[8])) : 7u;
 
     // **★ 設定と対象を最初に出します**（`CLAUDE.md`）
     std::printf("\n## 連鎖の断片数（`SPEC-phase5.md` §5.10.5.7 / 依頼 3）\n\n");
@@ -747,6 +750,8 @@ int main(int argc, char** argv) {
     std::printf("| 鍵の突き合わせ | %s |\n",
                 verify_rk ? "**入れる**（本番は偽）" : "切る（本番と同じ）");
     std::printf("| スレッド | %u |\n", nthreads);
+    std::printf("| 器の使い回し（alloc_reuse） | %u（G1=%d G2=%d G3=%d） |\n", alloc_reuse,
+                (alloc_reuse & 1u) != 0, (alloc_reuse & 2u) != 0, (alloc_reuse & 4u) != 0);
     std::printf("| b（座標ビット） | %d |\n", KRISITE_COORD_BITS);
     std::printf("| 走らせる段の数 | **3**（単発 1 段 + 連鎖 2 段） |\n\n");
 
@@ -801,6 +806,7 @@ int main(int argc, char** argv) {
     o.pool = &pool;
     // **突き合わせだけ**（出力は変えません）。セルまたぎの計数はこの旗の下です。
     o.verify_region_key = verify_rk;
+    o.alloc_reuse = alloc_reuse;
 
     const csg::PolySoup A = csg::from_mesh(qa.mesh);
     const csg::PolySoup B = csg::from_mesh(qb.mesh);
@@ -891,9 +897,9 @@ int main(int argc, char** argv) {
     csg::PolySoup u2;
     run_stage("**冪等** `(A＼D)＼D`", u1, D, csg::BoolOp::Difference, o, &u2);
     // ---- 連鎖 ---------------------------------------------------------------
-    csg::PolySoup s1;
+    csg::PolySoup s1, s2;
     run_stage("連鎖 1 段目 `A∪B`", A, B, csg::BoolOp::Union, o, &s1);
-    run_stage("連鎖 2 段目 `(A∪B)＼D`", s1, D, csg::BoolOp::Difference, o, nullptr);
+    run_stage("連鎖 2 段目 `(A∪B)＼D`", s1, D, csg::BoolOp::Difference, o, &s2);
 
     print_rows();
 
@@ -918,6 +924,9 @@ int main(int argc, char** argv) {
                     r2.ok() ? "はい" : "**いいえ**");
         std::printf("\n**★ ハッシュ**: `A＼D` = `%016llx` / `(A＼D)＼D` = `%016llx`\n",
                     hash_mesh(m1), hash_mesh(m2));
+        // **連鎖の 2 段もバイト一致で見ます**（G1 の「出力は不変のはず」を 4 段すべてで確かめる）
+        std::printf("**★ ハッシュ（連鎖）**: `A∪B` = `%016llx` / `(A∪B)＼D` = `%016llx`\n",
+                    hash_mesh(csg::to_mesh(s1, tm)), hash_mesh(csg::to_mesh(s2, tm)));
         // **★ バイト一致しないときに「意味論は同じ」を示す側**（`SPEC-phase5.md` §5.10.6）。
         //
         // **これは篩です。厳密な検査ではありません**（`volume_fp.hpp` の注記）。

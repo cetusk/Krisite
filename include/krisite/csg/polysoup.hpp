@@ -98,14 +98,20 @@ struct Indicator {
     /// **定義を変えたときに、自己交差しない入力の挙動が変わっていないことを守れます。**
     bool legacy_nonzero_inside = false;
 
-    bool eval(const std::vector<std::int32_t>& w) const {
+    bool eval(const std::vector<std::int32_t>& w) const { return eval(w.data(), w.size()); }
+
+    /// **ポインタ版**（`SPEC-phase5.md` §5.10.12.4 の G2）。**巻き数をその場の器で持てます。**
+    /// **作業配列 `v` もその場の器です**（節点は数個。領域ごとに 2 回呼ばれるので効きます）。
+    bool eval(const std::int32_t* w, std::size_t n_src) const {
         KRISITE_CHECK(!nodes.empty(), "Indicator: 空の式");
-        std::vector<char> v(nodes.size(), 0);
+        detail::Scratch<char> v_buf;
+        char* const v = v_buf.get(nodes.size());
+        for (std::size_t i = 0; i < nodes.size(); ++i) v[i] = 0;
         for (std::size_t i = 0; i < nodes.size(); ++i) {
             const Node& n = nodes[i];
             switch (n.kind) {
                 case Kind::Source:
-                    KRISITE_CHECK(n.src < w.size(), "Indicator: source の添字が範囲外");
+                    KRISITE_CHECK(n.src < n_src, "Indicator: source の添字が範囲外");
                     // **既定は「正なら内側」**（§5.2.0）。旗が立つと旧定義（非零なら内側）
                     v[i] = (legacy_nonzero_inside ? (w[n.src] != 0) : (w[n.src] > 0)) ? 1 : 0;
                     break;
@@ -120,7 +126,7 @@ struct Indicator {
                     break;
             }
         }
-        return v.back() != 0;
+        return v[nodes.size() - 1] != 0;
     }
 
     /// **3 値論理での抽象評価**（`SPEC-phase5.md` §5.10.8。EMBER §4.5.2）。
