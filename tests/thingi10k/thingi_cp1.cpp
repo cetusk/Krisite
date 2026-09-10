@@ -226,6 +226,7 @@ struct PairStruct {
     double ar_gather = 0, ar_present = 0, ar_prep = 0, ar_frag = 0, ar_coplanar = 0, ar_stitch = 0;
     /// **索引の粒度**（§5.10.14.11。段ごとの候補と項目。3 演算の和）
     std::size_t cand_level[12] = {}, items_level[12] = {};
+    std::size_t tri_level[12] = {}, fit1_level[12] = {}, cells0_level[12] = {};
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -299,6 +300,9 @@ struct PairStruct {
         for (int l = 0; l < 12; ++l) {
             cand_level[l] += b.ray_cand_level[l];
             items_level[l] += b.ray_items_level[l];
+            tri_level[l] += b.ray_tri_level[l];
+            fit1_level[l] += b.ray_fit1_level[l];
+            cells0_level[l] += b.ray_cells0_level[l];
         }
         ms_arrange += b.ms_arrange;
         ms_classify += b.ms_classify;
@@ -360,6 +364,9 @@ struct PairStruct {
           << ' ' << (long long)ar_coplanar << ' ' << (long long)ar_stitch;
         for (int l = 0; l < 12; ++l) o << ' ' << cand_level[l];
         for (int l = 0; l < 12; ++l) o << ' ' << items_level[l];
+        for (int l = 0; l < 12; ++l) o << ' ' << tri_level[l];
+        for (int l = 0; l < 12; ++l) o << ' ' << fit1_level[l];
+        for (int l = 0; l < 12; ++l) o << ' ' << cells0_level[l];
     }
 };
 

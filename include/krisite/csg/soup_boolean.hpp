@@ -202,6 +202,11 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
         a.ray_items_level[l] += b.ray_items_level[l];
     }
     a.ray_levels_max = std::max(a.ray_levels_max, b.ray_levels_max);
+    for (int l = 0; l < 12; ++l) {
+        a.ray_tri_level[l] += b.ray_tri_level[l];
+        a.ray_fit1_level[l] += b.ray_fit1_level[l];
+        a.ray_cells0_level[l] += b.ray_cells0_level[l];
+    }
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
     a.leaf_input_max = std::max(a.leaf_input_max, b.leaf_input_max);
@@ -340,6 +345,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 if (opt.record_ray_levels) {
                     const RayIndex& ix = ray_index[i][static_cast<std::size_t>(ax)];
                     st.ray_levels_max = std::max(st.ray_levels_max, ix.levels());
+                    RayIndex::Granularity g;
+                    ix.granularity(out.sources[i], g);
+                    for (int l = 0; l < 12; ++l) {
+                        st.ray_tri_level[l] += g.tri[l];
+                        st.ray_fit1_level[l] += g.fit1[l];
+                        st.ray_cells0_level[l] += g.cells0[l];
+                    }
                     for (std::size_t l = 0; l < ix.levels() && l < 12; ++l) {
                         st.ray_items_level[l] += ix.items_at(l);
                     }

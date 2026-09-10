@@ -393,6 +393,10 @@ struct BoolStats {
     std::size_t ray_cand_level[12] = {};
     std::size_t ray_items_level[12] = {};
     std::size_t ray_levels_max = 0;
+    /// **粒度**（同上。三角形の数 / その段のセル 1 つに収まる数 / 段 0 のセルで数えた項目数）
+    std::size_t ray_tri_level[12] = {};
+    std::size_t ray_fit1_level[12] = {};
+    std::size_t ray_cells0_level[12] = {};
 
     /// §5.4 の局所 BSP（CP4）。**切断候補のうち何枚を実際に切ったか。**
     ///

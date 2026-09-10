@@ -971,6 +971,43 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- ★ 粗い段に入る理由（§5.10.14.13。本当に大きいか、境界をまたぐだけか）---------------
+    //
+    // **段 ℓ の三角形は幅が段 ℓ−1 のセル 1 つを超えるが、段 ℓ のセル 1 つに収まる大きさかは別。**
+    // **収まるなら「境界をまたぐだけ」で、揃えれば 1 セルに入ります。**
+    // **段 0 のセルで数えた項目数は、複数のセルに割り当てる案の費用です。**
+    {
+        std::printf(
+            "\n| 模型 | 軸 | 段 3 以上の三角形 | うち段のセル 1 つに収まる大きさ | 段 0 "
+            "のセルで数えた項目（段 3 以上） "
+            "| 段ごと: 三角形 / 収まる / 段 0 の項目（段 3 →） |\n|---|---|---:|---:|---:|---|\n");
+        const struct {
+            const char* name;
+            const mesh::TriMesh* m;
+        } models[3] = {{ida.c_str(), &qa.mesh}, {idb.c_str(), &qb.mesh}, {idd.c_str(), &qd.mesh}};
+        for (const auto& mm : models) {
+            for (int ax = 0; ax < 3; ++ax) {
+                csg::RayIndex ix;
+                ix.build(*mm.m, static_cast<geom::Axis>(ax));
+                csg::RayIndex::Granularity g;
+                ix.granularity(*mm.m, g);
+                std::size_t t3 = 0, f3 = 0, c3 = 0;
+                for (std::size_t l = 3; l < ix.levels() && l < 12; ++l) {
+                    t3 += g.tri[l];
+                    f3 += g.fit1[l];
+                    c3 += g.cells0[l];
+                }
+                std::printf("| `%s` | %c | %zu | **%zu**（%.0f%%） | %zu | ", mm.name, "XYZ"[ax],
+                            t3, f3, t3 == 0 ? 0.0 : 100.0 * (double)f3 / (double)t3, c3);
+                for (std::size_t l = 3; l < ix.levels() && l < 12; ++l) {
+                    std::printf("%s%zu/%zu/%zu", l > 3 ? ", " : "", g.tri[l], g.fit1[l],
+                                g.cells0[l]);
+                }
+                std::printf(" |\n");
+            }
+        }
+    }
+
     // ---- ★★ 構成点キャッシュの A/B（`SPEC-phase5.md` §5.10.12）------------------
     //
     // **同一実行の中で `std::map` と開番地法を比べます。**

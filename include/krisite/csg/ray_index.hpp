@@ -89,6 +89,8 @@ inline int cmp_coord(const geom::HPointD& p, std::int64_t g, geom::Axis ax) noex
 ///
 /// **1 つの軸につき 1 つ必要です。** `along` は基準平面ごとに変わるので、
 /// 呼び出し側は 3 軸ぶん作ります（構築は $O(n)$ なので無視できます）。
+inline constexpr std::size_t kRayIndexMaxLevelsDecl = 12;
+
 class RayIndex {
 public:
     /// 三角形を入れる段は「覆うセルがこれ以下になる最小の段」です。
@@ -194,6 +196,35 @@ public:
     std::size_t items_at(std::size_t l) const noexcept { return levels_[l].items.size(); }
     /// 段 `l` の解像度（1 辺のセル数）。
     std::uint32_t res_at(std::size_t l) const noexcept { return levels_[l].res; }
+
+    /// **粒度の計測**（`SPEC-phase5.md` §5.10.14.13。計測のときだけ呼ぶ）。
+    /// 段ごとに、三角形の数、**その段のセル 1 つに収まる大きさ**の三角形の数（境界をまたぐだけ）、
+    /// 段 0 のセルで数えたときの項目数（覆うセルの数 $c_u c_v$
+    /// の和。複数セルに割り当てる案の費用）。
+    struct Granularity {
+        std::size_t tri[kRayIndexMaxLevelsDecl] = {};
+        std::size_t fit1[kRayIndexMaxLevelsDecl] = {};
+        std::size_t cells0[kRayIndexMaxLevelsDecl] = {};
+    };
+    void granularity(const mesh::TriMesh& m, Granularity& g) const {
+        if (n_tri_ == 0) return;
+        const std::uint32_t n_lv = static_cast<std::uint32_t>(levels_.size());
+        for (std::size_t j = 0; j < n_tri_; ++j) {
+            std::int64_t e[4];
+            tri_extent(m, j, e);
+            const std::uint32_t a = cell0(e[0], u0_, du0_), b = cell0(e[1], u0_, du0_);
+            const std::uint32_t c = cell0(e[2], v0_, dv0_), d = cell0(e[3], v0_, dv0_);
+            std::uint32_t l = 0;
+            for (; l + 1 < n_lv; ++l) {
+                if (((b >> l) - (a >> l)) <= 1 && ((d >> l) - (c >> l)) <= 1) break;
+            }
+            if (l >= kRayIndexMaxLevelsDecl) continue;
+            const std::uint32_t cu = b - a + 1, cv = d - c + 1;
+            ++g.tri[l];
+            if (std::max(cu, cv) <= (1u << l)) ++g.fit1[l];
+            g.cells0[l] += static_cast<std::size_t>(cu) * cv;
+        }
+    }
 
     /// 判定点 `p` の候補（**三角形番号の昇順**）を `out` に集めます。
     ///
