@@ -388,6 +388,11 @@ struct BoolStats {
     std::size_t ray_tri_fwd_only = 0;
     /// **安い前判定が走った回数**（早期打ち切りあり）。
     std::size_t ray_cheap_tests = 0;
+    /// **索引の段ごとの候補数と項目数**（`record_ray_levels` の下。段 0 が最も細かい）。
+    /// 項目数は source × 3 軸の和。
+    std::size_t ray_cand_level[12] = {};
+    std::size_t ray_items_level[12] = {};
+    std::size_t ray_levels_max = 0;
 
     /// §5.4 の局所 BSP（CP4）。**切断候補のうち何枚を実際に切ったか。**
     ///
@@ -633,6 +638,9 @@ struct BoolOptions {
     bool verbose_stages = false;
     /// **前判定の効きを計測する**（既定 偽。真にすると計数のぶん遅くなります）。
     bool record_ray_filter = false;
+    /// **索引の粒度の計測**（`SPEC-phase5.md` §5.10.14.11。既定 偽）。
+    /// 候補が索引のどの段から来たかと、段ごとの項目数を数えます。
+    bool record_ray_levels = false;
     /// **適応分割**（§3.1）。偽なら常に最大深度まで分割する固定深度モード。
     /// **固定深度モードを消さないこと。** §9.1 の正解器です
     ///

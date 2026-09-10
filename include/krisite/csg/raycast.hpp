@@ -389,9 +389,9 @@ inline void winding_split(const mesh::TriMesh& m, const Point& p, const geom::Pl
             }
             if (best == nl) break;
             ++cur[best];
+            if (sup.per_level != nullptr) ++sup.per_level[best];
             visit(bv);
             ++visited;
-            if (sup.per_level != nullptr) ++sup.per_level[best];
         }
     }
     if (sup.tested != nullptr) *sup.tested += visited;
@@ -457,6 +457,7 @@ inline bool point_inside(const mesh::TriMesh& m, const Point& p, const RaySuppor
             }
             if (best == nl) break;
             ++cur[best];
+            if (sup.per_level != nullptr) ++sup.per_level[best];
             visit(bv);
             ++visited;
         }

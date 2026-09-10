@@ -666,6 +666,25 @@ void print_rows() {
                     r.st.ray_cheap_tests / n);
     }
 
+    // ---- ★ 索引の粒度（`SPEC-phase5.md` §5.10.14.11。候補はどの段から来るか）------------
+    //
+    // **段 0 が最も細かい。粗い段の項目は、その粗いセルに落ちるすべてのレイが見ます。**
+    {
+        std::printf(
+            "\n| 段（演算） | 候補の総数 | 索引の段ごとの候補（細 → 粗）と割合 "
+            "|\n|---|---:|---|\n");
+        for (const Row& r : g_rows) {
+            std::size_t tot = 0;
+            for (int l = 0; l < 12; ++l) tot += r.st.ray_cand_level[l];
+            std::printf("| %s | %zu | ", r.name.c_str(), tot);
+            for (std::size_t l = 0; l < r.st.ray_levels_max && l < 12; ++l) {
+                std::printf("%s%zu（%.1f%%）", l ? " / " : "", r.st.ray_cand_level[l],
+                            tot == 0 ? 0.0 : 100.0 * (double)r.st.ray_cand_level[l] / (double)tot);
+            }
+            std::printf(" |\n");
+        }
+    }
+
     // ---- ★ 縫合の内訳と、並列化の前提の確認（`SPEC-phase5.md` §5.10.13）-----------
     std::printf(
         "\n| 段 | 縫合の内訳（壁時計）: 構成点 + 3 つ組の表 | 整列 | 番号付け | **仕分け** | "
@@ -917,13 +936,40 @@ int main(int argc, char** argv) {
     // **突き合わせだけ**（出力は変えません）。セルまたぎの計数はこの旗の下です。
     o.verify_region_key = verify_rk;
     o.alloc_reuse = alloc_reuse;
-    o.measure_classify = true;  // 分類の内訳（§5.10.14.7）
+    o.measure_classify = true;   // 分類の内訳（§5.10.14.7）
+    o.record_ray_levels = true;  // 索引の粒度（§5.10.14.11）
     // **縫合の前提の確認**（第 9 引数。既定 0。$O(L^2)$ の葉の対の数え上げを含む）
     o.measure_stitch = (argc > 9) && (std::atoi(argv[9]) != 0);
 
     const csg::PolySoup A = csg::from_mesh(qa.mesh);
     const csg::PolySoup B = csg::from_mesh(qb.mesh);
     const csg::PolySoup D = csg::from_mesh(qd.mesh);
+
+    // ---- ★ 索引の段ごとの項目数（§5.10.14.11。§11.3 の形。模型・軸ごと）------------------
+    {
+        // **模型ごと・軸ごとの段の項目数**（§11.3 の形。三角形は自分の大きさに合った段に入る）
+        std::printf(
+            "\n| 模型 | 三角形 | 軸 | 段の数 | 段ごとの項目数（細 → 粗） | 最多の段 "
+            "|\n|---|---:|---|---:|---|---:|\n");
+        const struct {
+            const char* name;
+            const mesh::TriMesh* m;
+        } models[3] = {{ida.c_str(), &qa.mesh}, {idb.c_str(), &qb.mesh}, {idd.c_str(), &qd.mesh}};
+        for (const auto& mm : models) {
+            for (int ax = 0; ax < 3; ++ax) {
+                csg::RayIndex ix;
+                ix.build(*mm.m, static_cast<geom::Axis>(ax));
+                std::size_t best = 0;
+                std::printf("| `%s` | %zu | %c | %zu | ", mm.name, mm.m->triangles.size(),
+                            "XYZ"[ax], ix.levels());
+                for (std::size_t l = 0; l < ix.levels(); ++l) {
+                    if (ix.items_at(l) > ix.items_at(best)) best = l;
+                    std::printf("%s%zu", l ? " / " : "", ix.items_at(l));
+                }
+                std::printf(" | **%zu** |\n", best);
+            }
+        }
+    }
 
     // ---- ★★ 構成点キャッシュの A/B（`SPEC-phase5.md` §5.10.12）------------------
     //

@@ -197,6 +197,11 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.ray_tri_fwd += b.ray_tri_fwd;
     a.ray_tri_fwd_only += b.ray_tri_fwd_only;
     a.ray_cheap_tests += b.ray_cheap_tests;
+    for (int l = 0; l < 12; ++l) {
+        a.ray_cand_level[l] += b.ray_cand_level[l];
+        a.ray_items_level[l] += b.ray_items_level[l];
+    }
+    a.ray_levels_max = std::max(a.ray_levels_max, b.ray_levels_max);
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
     a.leaf_input_max = std::max(a.leaf_input_max, b.leaf_input_max);
@@ -332,14 +337,22 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             for (int ax = 0; ax < 3; ++ax) {
                 ray_index[i][static_cast<std::size_t>(ax)].build(out.sources[i],
                                                                  static_cast<geom::Axis>(ax));
+                if (opt.record_ray_levels) {
+                    const RayIndex& ix = ray_index[i][static_cast<std::size_t>(ax)];
+                    st.ray_levels_max = std::max(st.ray_levels_max, ix.levels());
+                    for (std::size_t l = 0; l < ix.levels() && l < 12; ++l) {
+                        st.ray_items_level[l] += ix.items_at(l);
+                    }
+                }
             }
         }
     }
     auto ray_support = [&](std::size_t i, std::size_t* tested, std::size_t* hits = nullptr,
                            std::size_t* kept = nullptr, std::size_t* aabb = nullptr,
                            std::size_t* fwd = nullptr, std::size_t* fwd1 = nullptr,
-                           std::size_t* cheap = nullptr) {
+                           std::size_t* cheap = nullptr, std::size_t* per_level = nullptr) {
         RaySupport sup;
+        if (opt.record_ray_levels) sup.per_level = per_level;
         sup.planes = ray_planes[i].data();
         sup.tested = tested;
         sup.hits = hits;
@@ -1790,7 +1803,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             winding_split(out.sources[i2], rep, refpl, &v.w_other, &v.c_front, &v.c_back,
                           ray_support(i2, &st.ray_tri_tests, &st.ray_tri_hits, &st.ray_tri_kept,
                                       &st.ray_tri_aabb, &st.ray_tri_fwd, &st.ray_tri_fwd_only,
-                                      &st.ray_cheap_tests));
+                                      &st.ray_cheap_tests, st.ray_cand_level));
             ++st.raycasts;
             ++st.regions;
             w_front[i2] = v.w_other + v.c_front;
