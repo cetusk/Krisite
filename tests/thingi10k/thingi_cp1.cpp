@@ -221,6 +221,9 @@ struct PairStruct {
     double ms_topo = 0;  ///< `check_topology`（演算ごとに 2 回: 統計用と合否用）
     double ms_vol = 0;   ///< 体積の検算（`volume6_fp` × 5）
     double ms_hash = 0;  ///< 出力のハッシュ（× 3）
+    /// **分類と arrange の内訳**（§5.10.14.7。3 演算の和）
+    double cl_prep = 0, cl_rep = 0, cl_ray = 0, cl_out = 0, cl_par_wall = 0;
+    double ar_gather = 0, ar_present = 0, ar_prep = 0, ar_frag = 0, ar_coplanar = 0, ar_stitch = 0;
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -280,6 +283,17 @@ struct PairStruct {
         ms_tri += t.ms_tri;
         ms_split += t.ms_split;
         ms_tomesh += t.ms_total;
+        cl_prep += b.ms_cl_prep;
+        cl_rep += b.ms_cl_rep;
+        cl_ray += b.ms_cl_ray;
+        cl_out += b.ms_cl_out;
+        cl_par_wall += b.ms_cl_par_wall;
+        ar_gather += b.ms_arr_gather;
+        ar_present += b.ms_arr_present;
+        ar_prep += b.ms_arr_prep;
+        ar_frag += b.ms_arr_frag;
+        ar_coplanar += b.ms_arr_coplanar;
+        ar_stitch += b.ms_arr_stitch;
         ms_arrange += b.ms_arrange;
         ms_classify += b.ms_classify;
         ms_stitch += b.ms_stitch;
@@ -333,7 +347,11 @@ struct PairStruct {
           << ' ' << (long long)ms_construct << ' ' << (long long)ms_merge << ' '
           << (long long)ms_index << ' ' << (long long)ms_tri << ' ' << (long long)ms_split << ' '
           << (long long)ms_tomesh << ' ' << (long long)ms_core << ' ' << (long long)ms_inlet << ' '
-          << (long long)ms_topo << ' ' << (long long)ms_vol << ' ' << (long long)ms_hash;
+          << (long long)ms_topo << ' ' << (long long)ms_vol << ' ' << (long long)ms_hash << ' '
+          << (long long)cl_prep << ' ' << (long long)cl_rep << ' ' << (long long)cl_ray << ' '
+          << (long long)cl_out << ' ' << (long long)cl_par_wall << ' ' << (long long)ar_gather
+          << ' ' << (long long)ar_present << ' ' << (long long)ar_prep << ' ' << (long long)ar_frag
+          << ' ' << (long long)ar_coplanar << ' ' << (long long)ar_stitch;
     }
 };
 
@@ -595,6 +613,7 @@ int main(int argc, char** argv) {
     // **coverage が出る前に打ち切られるのを避けるため**です。
     // **並びは決定的**なので、再開しても同じ対になります。
     csg::BoolOptions o;
+    o.measure_classify = true;  // 分類の内訳（§5.10.14.7。領域ごとに時計 4 回）
     o.depth = depth;
     o.adaptive = true;
     o.leaf_threshold = 0;

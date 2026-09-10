@@ -630,6 +630,42 @@ void print_rows() {
                     t == 0 ? 0.0 : 100.0 * r.st.ms_arr_stitch / t);
     }
 
+    // ---- ★ 分類の内訳（`SPEC-phase5.md` §5.10.14.7。まず刻むだけ）------------------------
+    //
+    // **CPU（全スレッドの和）で 4
+    // 区分。壁時計は「並列の領域ループ」と「逐次（順序の構築と結合）」。**
+    std::printf(
+        "\n| 段 | 分類の内訳（CPU）: 準備 | 代表点 | **レイ** | 判定 + 出力 | CPU の和 | "
+        "並列部の壁時計 | 逐次部の壁時計 | 並列効率 | 領域 |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    for (const Row& r : g_rows) {
+        const double c = r.st.ms_cl_prep + r.st.ms_cl_rep + r.st.ms_cl_ray + r.st.ms_cl_out;
+        const double seq = r.st.ms_classify - r.st.ms_cl_par_wall;
+        std::printf(
+            "| %s | %.1f%% | %.1f%% | **%.1f%%** | %.1f%% | %.3f s | %.3f s | %.3f s | %.2f | %zu "
+            "|\n",
+            r.name.c_str(), c == 0 ? 0.0 : 100.0 * r.st.ms_cl_prep / c,
+            c == 0 ? 0.0 : 100.0 * r.st.ms_cl_rep / c, c == 0 ? 0.0 : 100.0 * r.st.ms_cl_ray / c,
+            c == 0 ? 0.0 : 100.0 * r.st.ms_cl_out / c, c / 1000.0, r.st.ms_cl_par_wall / 1000.0,
+            seq / 1000.0,
+            r.st.ms_cl_par_wall == 0 ? 0.0 : c / (r.st.ms_cl_par_wall * (double)g_threads),
+            r.st.regions);
+    }
+
+    // ---- ★ レイの候補の漏斗（§5.10.14.7。索引が返す候補のうち何割を使うか）----------------
+    std::printf(
+        "\n| 段 | レイ | 索引の候補 / レイ | 投影 AABB を通過 / レイ | 前方 / レイ | "
+        "**厳密判定に回った / レイ** | "
+        "寄与 / レイ | 安い前判定の回数 / レイ |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    for (const Row& r : g_rows) {
+        const double n = r.st.raycasts == 0 ? 1.0 : (double)r.st.raycasts;
+        std::printf("| %s | %zu | %.1f | %.2f | %.2f | **%.2f** | %.2f | %.1f |\n", r.name.c_str(),
+                    r.st.raycasts, r.st.ray_tri_tests / n, r.st.ray_tri_aabb / n,
+                    r.st.ray_tri_fwd / n, r.st.ray_tri_kept / n, r.st.ray_tri_hits / n,
+                    r.st.ray_cheap_tests / n);
+    }
+
     // ---- ★ 縫合の内訳と、並列化の前提の確認（`SPEC-phase5.md` §5.10.13）-----------
     std::printf(
         "\n| 段 | 縫合の内訳（壁時計）: 構成点 + 3 つ組の表 | 整列 | 番号付け | **仕分け** | "
@@ -881,6 +917,7 @@ int main(int argc, char** argv) {
     // **突き合わせだけ**（出力は変えません）。セルまたぎの計数はこの旗の下です。
     o.verify_region_key = verify_rk;
     o.alloc_reuse = alloc_reuse;
+    o.measure_classify = true;  // 分類の内訳（§5.10.14.7）
     // **縫合の前提の確認**（第 9 引数。既定 0。$O(L^2)$ の葉の対の数え上げを含む）
     o.measure_stitch = (argc > 9) && (std::atoi(argv[9]) != 0);
 

@@ -325,6 +325,13 @@ struct BoolStats {
     double ms_arr_coplanar = 0.0;  ///< 共平面重複の突き合わせ（EMBER §4.3 の C4）
     double ms_arr_stitch =
         0.0;  ///< **縫合の葉ごとの部分**（鍵の重複除去 + 値の整列 + 境界の印。§5.10.13.3）
+    // **分類の内訳**（`measure_classify` のときだけ。CPU の和 = 全スレッドぶん。壁時計は
+    // `ms_cl_par_wall`）
+    double ms_cl_prep = 0.0;      ///< 領域の代表断片の選択、強制値の確認
+    double ms_cl_rep = 0.0;       ///< 代表点の構成（`interior_point`）
+    double ms_cl_ray = 0.0;       ///< レイキャスト（`winding_split` × source）
+    double ms_cl_out = 0.0;       ///< 指示関数の評価と出力多角形の生成
+    double ms_cl_par_wall = 0.0;  ///< 領域ループ（並列）の壁時計。`ms_classify` との差が逐次部分
     /// 空でない葉の数（平均を出すための分母）
     std::size_t leaf_nonempty = 0;
     /// **単一 source の葉**（`SPEC-phase5.md` の (c)）。
@@ -725,6 +732,8 @@ struct BoolOptions {
     /// **偽で従来（大域の `std::map` と整列。逐次）。** 従来とは領域の順序が変わるので、
     /// 出力の一致は「順序を除いた鍵」で検査します（`chain_frag` の縫合の A/B）。
     bool stitch_parallel = true;
+    /// **分類の中を刻む計測**（§5.10.14.7。既定 偽）。領域ごとに時計を 4 回読みます。
+    bool measure_classify = false;
     bool tight_out_aabb = true;
     bool region_key_cuts = false;
     /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。

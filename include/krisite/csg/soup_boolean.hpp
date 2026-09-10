@@ -1641,6 +1641,26 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // 命中率のために共有した瞬間に競合が入ります。**出力は 1 ビットも変わりません**
     // （キャッシュの有無で結果が変わらないことは Phase 2 で確かめてあります）。
     std::vector<PointCache> tl_cache2(nthreads, PointCache(opt.point_cache_map));
+    // **分類の内訳の時計**（`opt.measure_classify`）。スレッドごとに 4 区分の CPU を足す
+    std::vector<std::array<double, 4>> tl_cl(nthreads, std::array<double, 4>{0.0, 0.0, 0.0, 0.0});
+    struct ClTimer {
+        bool on;
+        std::array<double, 4>& acc;
+        Clock::time_point t;
+        int seg;
+        void mark(int s) {
+            if (!on) return;
+            const auto n = Clock::now();
+            acc[seg] += std::chrono::duration<double, std::milli>(n - t).count();
+            t = n;
+            seg = s;
+        }
+        ~ClTimer() {
+            if (!on) return;
+            acc[seg] += std::chrono::duration<double, std::milli>(Clock::now() - t).count();
+        }
+    };
+    const auto t_cl_par = Clock::now();
     std::vector<BoolStats> tl_stats2(nthreads);
     // **領域ごとのスロット。** 結合は `region_order` の順で行うので、
     // スレッド数に依らず出力はビット単位で同一になります（§4.2）
@@ -1661,6 +1681,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
     pool.run(region_order.size(), [&](std::size_t ri, unsigned tid) {
         KRISITE_ALLOC_TAG(9);  // 分類の準備（代表の選択、巻き数の器）
+        ClTimer clt{opt.measure_classify, tl_cl[tid], Clock::now(), 0};
         const auto* kvp = region_order[ri];
 #if defined(KRISITE_MUTATION_SHARE_STATS)
         BoolStats& st = tl_stats2[0];
@@ -1720,10 +1741,12 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             if (frag_forced_known[pick][i2] == 0) need_point = true;
         }
         geom::HPointD rep{};
+        clt.mark(1);
         {
             KRISITE_ALLOC_TAG(10);  // 代表点の構成
             if (need_point) rep = interior_point(out.table, f, cache, &st.interior);
         }
+        clt.mark(2);
         KRISITE_ALLOC_TAG(11);  // 分類のレイキャスト
 
         // **★ G2: 巻き数の器をその場に**（§5.10.12.4。領域ごとに 2 回の確保が消えます）。
@@ -1777,6 +1800,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         // **巻き数の分布を数えます**（`SPEC-phase5.md` §2.9 の第四段階）。
         // **捨てる領域も含めて数えます。** 訂正が効いたかの証拠なので、
         // 出力に残ったものだけでは足りません。
+        clt.mark(3);
         {
             bool neg = false, ge2 = false;
             for (std::size_t i2 = 0; i2 < n_src; ++i2) {
@@ -1884,6 +1908,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
 #endif
     });
+    st.ms_cl_par_wall = std::chrono::duration<double, std::milli>(Clock::now() - t_cl_par).count();
+    for (unsigned k = 0; k < nthreads; ++k) {
+        st.ms_cl_prep += tl_cl[k][0];
+        st.ms_cl_rep += tl_cl[k][1];
+        st.ms_cl_ray += tl_cl[k][2];
+        st.ms_cl_out += tl_cl[k][3];
+    }
 
     // **領域の順に結合します**（§4.2）。**ここが出力の多角形の並びを決めます。**
 #if !defined(KRISITE_MUTATION_JOIN_ORDER)
