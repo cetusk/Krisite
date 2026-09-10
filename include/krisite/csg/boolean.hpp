@@ -323,6 +323,8 @@ struct BoolStats {
     double ms_arr_prep = 0.0;      ///< early-out / 平面の絞り込み / 切断集合の準備
     double ms_arr_frag = 0.0;      ///< **断片の生成**（セル平面のクリップ + 局所 BSP + 確定）
     double ms_arr_coplanar = 0.0;  ///< 共平面重複の突き合わせ（EMBER §4.3 の C4）
+    double ms_arr_stitch =
+        0.0;  ///< **縫合の葉ごとの部分**（鍵の重複除去 + 値の整列 + 境界の印。§5.10.13.3）
     /// 空でない葉の数（平均を出すための分母）
     std::size_t leaf_nonempty = 0;
     /// **単一 source の葉**（`SPEC-phase5.md` の (c)）。
@@ -433,9 +435,12 @@ struct BoolStats {
     std::size_t pt_on_boundary =
         0;  ///< 最初に参照した葉の閉じた箱の境界に載る構成点（大域併合の候補の上界）
     std::size_t pt_multi_not_boundary = 0;  ///< 葉をまたぐのに境界に無い点（補題の対偶。0 のはず）
-    std::size_t leaf_adj_pairs = 0;         ///< 閉じた箱が接する葉の対
-    std::size_t leaf_adj_mixed = 0;         ///< うち深度の違う対
-    std::size_t leaf_adj_max = 0;           ///< 1 つの葉が接する葉の最大数
+    std::size_t stitch_boundary_classes =
+        0;                           ///< 縫合（葉ごと）: 境界に載る類の数（大域の併合の入力）
+    std::size_t stitch_classes = 0;  ///< 縫合（葉ごと）: 葉の中の類の総数（境界 + 内部）
+    std::size_t leaf_adj_pairs = 0;  ///< 閉じた箱が接する葉の対
+    std::size_t leaf_adj_mixed = 0;  ///< うち深度の違う対
+    std::size_t leaf_adj_max = 0;    ///< 1 つの葉が接する葉の最大数
 
     /// §2.4.3 の T 頂点の解決（SPEC-phase2）。
     ///
@@ -711,6 +716,15 @@ struct BoolOptions {
     /// 真にすると、構成点ごとに「参照した葉が 2 つ以上か」「その葉の深度が混ざるか」を数え、
     /// 葉の閉じた箱が接する対を全部数えます（$O(L^2)$ なので既定では切ります）。
     bool measure_stitch = false;
+    /// **★ 縫合を葉ごとに始める**（`SPEC-phase5.md` §5.10.13.3。既定 真）。
+    ///
+    /// 葉の中で平面 3 つ組の重複を除き、値で整列・併合し（arrange の並列部分）、
+    /// **葉の閉じた箱の境界に載る類だけ**を大域で値で併合します。番号（札）は
+    /// `(葉の番号 << 32) | 葉の中の類の番号` で、境界で併合された類は最小の札を取ります。
+    /// **札は葉の列挙順と葉の中の整列だけで決まるので、スレッド数に依りません。**
+    /// **偽で従来（大域の `std::map` と整列。逐次）。** 従来とは領域の順序が変わるので、
+    /// 出力の一致は「順序を除いた鍵」で検査します（`chain_frag` の縫合の A/B）。
+    bool stitch_parallel = true;
     bool tight_out_aabb = true;
     bool region_key_cuts = false;
     /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。

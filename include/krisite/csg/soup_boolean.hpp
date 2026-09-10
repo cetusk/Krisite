@@ -183,6 +183,7 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.ms_arr_prep += b.ms_arr_prep;
     a.ms_arr_frag += b.ms_arr_frag;
     a.ms_arr_coplanar += b.ms_arr_coplanar;
+    a.ms_arr_stitch += b.ms_arr_stitch;
     a.leaf_nonempty += b.leaf_nonempty;
     a.leaf_single_src += b.leaf_single_src;
     a.bsp_cut_slots_single += b.bsp_cut_slots_single;
@@ -496,10 +497,23 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         std::vector<octree::Aabb> box;
         std::vector<std::int32_t> forced;
         std::vector<char> forced_known;
+        // **★ 縫合の葉ごとの部分**（§5.10.13.3。`opt.stitch_parallel`）: 葉の中で鍵の重複を除き、
+        // 値で整列・併合した【類】の代表点、境界に載るかの印、断片の各頂点の類（葉の中の番号）
+        std::vector<geom::HPointD> cls_pt;
+        std::vector<char> cls_bd;
+        std::vector<std::uint32_t> lraw_off, lraw_items;
         bool empty_cell = false;
         bool active = false;
     };
     std::vector<LeafOut> leaf_out(leaves.size());
+#if defined(KRISITE_FRAGMENT_CUTBITS)
+    constexpr bool kCutbitsBuild = true;
+#else
+    constexpr bool kCutbitsBuild = false;
+#endif
+    // **縫合を葉ごとに始めるか**（§5.10.13.3）。縫合そのものが要らない構成（切断の符号列で仕分ける）では偽
+    const bool stitch_par =
+        opt.stitch_parallel && (!(opt.region_key_cuts && kCutbitsBuild) || opt.verify_region_key);
     // **検査用の書き出し**（`BoolOptions::leaf_cull_out`）。葉ごとに 1 スロットなので競合しません
     if (opt.leaf_cull_out != nullptr) {
         opt.leaf_cull_out->assign(leaves.size(), BoolOptions::kNotReached);
@@ -1041,6 +1055,61 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         outl.box = std::move(local_box);
         outl.forced = forced;
         outl.forced_known = forced_known;
+        // ---- ★ 縫合の葉ごとの部分（`SPEC-phase5.md` §5.10.13.3）-------------------------
+        //
+        // **葉の中で閉じる仕事をここで済ませます**（並列。スレッド局所の構成点キャッシュを使う）。
+        //   1. 平面 3 つ組の鍵で重複を除く（従来は大域の `std::map`）
+        //   2. 値で整列し、`h_equal` の区分を【類】にする（従来は大域の整列）
+        //   3. 類の代表点が葉の閉じた箱の【境界】に載るかを印す
+        //      （§12.1 の補題の対偶: 内部の点は他の葉と併合され得ない。実測 16/16 で違反 0）
+        // **大域に残るのは、境界の類だけの整列と、札の配布です。**
+        if (stitch_par) {
+            KRISITE_ALLOC_TAG(7);
+            std::map<std::array<PlaneId, 3>, std::uint32_t> lkey;
+            std::vector<geom::HPointD> lp;
+            outl.lraw_off.reserve(outl.frags.size() + 1);
+            for (const Fragment& f : outl.frags) {
+                outl.lraw_off.push_back(static_cast<std::uint32_t>(outl.lraw_items.size()));
+                const std::size_t n = vertex_count(f);
+                for (std::size_t i = 0; i < n; ++i) {
+                    const auto k = detail::vertex_key(f, i);
+                    auto it = lkey.find(k);
+                    if (it == lkey.end()) {
+                        it = lkey.emplace(k, static_cast<std::uint32_t>(lp.size())).first;
+                        lp.push_back(fragment_vertex(out.table, f, i, cache));
+                    }
+                    outl.lraw_items.push_back(it->second);
+                }
+            }
+            outl.lraw_off.push_back(static_cast<std::uint32_t>(outl.lraw_items.size()));
+            std::vector<std::uint32_t> ord(lp.size());
+            for (std::uint32_t i = 0; i < ord.size(); ++i) ord[i] = i;
+            std::sort(ord.begin(), ord.end(), [&](std::uint32_t a, std::uint32_t b) {
+                return geom::lex_less(lp[a], lp[b]);
+            });
+            std::vector<std::uint32_t> cls(lp.size());
+            const octree::CellBox bx = octree::box_of(leaves[li]);
+            outl.cls_pt.reserve(lp.size());
+            outl.cls_bd.reserve(lp.size());
+            for (std::size_t i = 0; i < ord.size();) {
+                std::size_t j = i;
+                const auto cid = static_cast<std::uint32_t>(outl.cls_pt.size());
+                while (j < ord.size() && geom::h_equal(lp[ord[i]], lp[ord[j]])) cls[ord[j++]] = cid;
+                const geom::HPointD& hp = lp[ord[i]];
+                bool on_bd = false;
+                for (int t = 0; t < 3 && !on_bd; ++t) {
+                    const auto ax = static_cast<geom::Axis>(t);
+                    on_bd = geom::cmp_axis_int(hp, bx.lo[t], ax) == 0 ||
+                            geom::cmp_axis_int(hp, bx.hi[t], ax) == 0;
+                }
+                outl.cls_pt.push_back(hp);
+                outl.cls_bd.push_back(on_bd ? 1 : 0);
+                st.merged_by_value += (j - i - 1);  // 葉の中で値により併合した数
+                i = j;
+            }
+            for (std::uint32_t& v : outl.lraw_items) v = cls[v];
+            st.ms_arr_stitch += a_lap();
+        }
         outl.active = !outl.frags.empty();
         if (outl.active) ++st.active_cells;
         if (eo_const_here) {
@@ -1131,107 +1200,196 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // 別の葉・別の深度から参照されたかの印
     std::vector<octree::Cell> pt_first_cell;
     std::vector<char> pt_multi, pt_mixed, pt_bd;
-    const auto t_st0 = Clock::now();
-    KRISITE_ALLOC_TAG(7);  // 縫合（構成点・by_key・整列・remap）
-    // **★ G3: 断片ごとの頂点 ID 列を【平坦な配列 + 区切り】で持ちます**（§5.10.12.4）。
-    // **従来は `std::vector<std::vector<>>` で、断片ごとに 1 回確保していました**（確保の 9.7%）。
-    // **縫合は逐次部分なので、壁時計に直に効きます。** `opt.alloc_reuse & 4` が偽なら従来どおり。
-    const bool raw_flat = (opt.alloc_reuse & 4u) != 0;
-    std::vector<std::vector<std::uint32_t>> raw_nested((do_stitch && !raw_flat) ? frags.size() : 0);
-    std::vector<std::uint32_t> raw_items;
-    std::vector<std::uint32_t> raw_off((do_stitch && raw_flat) ? frags.size() + 1 : 0, 0);
-    if (do_stitch && raw_flat) raw_items.reserve(st.frag_edges_total);
-    const auto raw_size = [&](std::size_t fi) -> std::size_t {
-        return raw_flat ? (raw_off[fi + 1] - raw_off[fi]) : raw_nested[fi].size();
-    };
-    const auto raw_begin = [&](std::size_t fi) -> const std::uint32_t* {
-        return raw_flat ? raw_items.data() + raw_off[fi] : raw_nested[fi].data();
-    };
-    for (std::size_t fi = 0; do_stitch && fi < frags.size(); ++fi) {
-        const Fragment& f = frags[fi];
-        const std::size_t n = vertex_count(f);
-        if (raw_flat) {
-            raw_off[fi] = static_cast<std::uint32_t>(raw_items.size());
-        } else {
-            raw_nested[fi].reserve(n);
-        }
-        for (std::size_t i = 0; i < n; ++i) {
-            const auto k = detail::vertex_key(f, i);
-            std::uint32_t cix[3];
-            octree::normalized_index(frag_cell[fi], opt.depth, cix);
-            auto it = by_key.find(k);
-            if (it == by_key.end()) {
-                const auto id = static_cast<std::uint32_t>(points.size());
-                points.push_back(fragment_vertex(out.table, f, i, cache));
-                pt_lo.push_back({cix[0], cix[1], cix[2]});
-                pt_hi.push_back({cix[0], cix[1], cix[2]});
-                if (opt.measure_stitch) {
-                    pt_first_cell.push_back(frag_cell[fi]);
-                    pt_multi.push_back(0);
-                    pt_mixed.push_back(0);
-                    // **葉の閉じた箱の境界に載っているか**（§12.1 の補題の対偶: 内部の点は
-                    // 他の葉と併合され得ない。**境界の点だけが大域の併合の候補**）
-                    const octree::CellBox bx = octree::box_of(frag_cell[fi]);
-                    const geom::HPointD& hp = points.back();
-                    bool on_bd = false;
-                    for (int t = 0; t < 3 && !on_bd; ++t) {
-                        const auto ax = static_cast<geom::Axis>(t);
-                        on_bd = geom::cmp_axis_int(hp, bx.lo[t], ax) == 0 ||
-                                geom::cmp_axis_int(hp, bx.hi[t], ax) == 0;
-                    }
-                    if (on_bd) ++st.pt_on_boundary;
-                    pt_bd.push_back(on_bd ? 1 : 0);
-                }
-                it = by_key.emplace(k, id).first;
-            } else if (opt.measure_stitch) {
-                const octree::Cell& c0 = pt_first_cell[it->second];
-                const octree::Cell& c1 = frag_cell[fi];
-                if (c0.depth != c1.depth || c0.i != c1.i || c0.j != c1.j || c0.k != c1.k) {
-                    pt_multi[it->second] = 1;
-                    if (c0.depth != c1.depth) pt_mixed[it->second] = 1;
-                }
-            }
+    // **断片の各頂点の【札】**（両経路が作る。仕分けと突き合わせはこれだけを読む）。
+    // 従来経路では札 = 値の順位（0 から密）、葉ごとの経路では札 = (葉 << 32) | 類。
+    std::vector<std::uint32_t> lab_off;
+    std::vector<std::uint64_t> lab_items;
+    auto t_st3 = Clock::now();
+    if (!stitch_par) {
+        const auto t_st0 = Clock::now();
+        KRISITE_ALLOC_TAG(7);  // 縫合（構成点・by_key・整列・remap）
+        // **★ G3: 断片ごとの頂点 ID 列を【平坦な配列 + 区切り】で持ちます**（§5.10.12.4）。
+        // **従来は `std::vector<std::vector<>>` で、断片ごとに 1
+        // 回確保していました**（確保の 9.7%）。
+        // **縫合は逐次部分なので、壁時計に直に効きます。** `opt.alloc_reuse & 4`
+        // が偽なら従来どおり。
+        const bool raw_flat = (opt.alloc_reuse & 4u) != 0;
+        std::vector<std::vector<std::uint32_t>> raw_nested((do_stitch && !raw_flat) ? frags.size()
+                                                                                    : 0);
+        std::vector<std::uint32_t> raw_items;
+        std::vector<std::uint32_t> raw_off((do_stitch && raw_flat) ? frags.size() + 1 : 0, 0);
+        if (do_stitch && raw_flat) raw_items.reserve(st.frag_edges_total);
+        const auto raw_size = [&](std::size_t fi) -> std::size_t {
+            return raw_flat ? (raw_off[fi + 1] - raw_off[fi]) : raw_nested[fi].size();
+        };
+        const auto raw_begin = [&](std::size_t fi) -> const std::uint32_t* {
+            return raw_flat ? raw_items.data() + raw_off[fi] : raw_nested[fi].data();
+        };
+        for (std::size_t fi = 0; do_stitch && fi < frags.size(); ++fi) {
+            const Fragment& f = frags[fi];
+            const std::size_t n = vertex_count(f);
             if (raw_flat) {
-                raw_items.push_back(it->second);
+                raw_off[fi] = static_cast<std::uint32_t>(raw_items.size());
             } else {
-                raw_nested[fi].push_back(it->second);
+                raw_nested[fi].reserve(n);
             }
-            {
-                const std::uint32_t id2 = it->second;
-                for (int t = 0; t < 3; ++t) {
-                    if (cix[t] < pt_lo[id2][t]) pt_lo[id2][t] = cix[t];
-                    if (cix[t] > pt_hi[id2][t]) pt_hi[id2][t] = cix[t];
+            for (std::size_t i = 0; i < n; ++i) {
+                const auto k = detail::vertex_key(f, i);
+                std::uint32_t cix[3];
+                octree::normalized_index(frag_cell[fi], opt.depth, cix);
+                auto it = by_key.find(k);
+                if (it == by_key.end()) {
+                    const auto id = static_cast<std::uint32_t>(points.size());
+                    points.push_back(fragment_vertex(out.table, f, i, cache));
+                    pt_lo.push_back({cix[0], cix[1], cix[2]});
+                    pt_hi.push_back({cix[0], cix[1], cix[2]});
+                    if (opt.measure_stitch) {
+                        pt_first_cell.push_back(frag_cell[fi]);
+                        pt_multi.push_back(0);
+                        pt_mixed.push_back(0);
+                        // **葉の閉じた箱の境界に載っているか**（§12.1 の補題の対偶: 内部の点は
+                        // 他の葉と併合され得ない。**境界の点だけが大域の併合の候補**）
+                        const octree::CellBox bx = octree::box_of(frag_cell[fi]);
+                        const geom::HPointD& hp = points.back();
+                        bool on_bd = false;
+                        for (int t = 0; t < 3 && !on_bd; ++t) {
+                            const auto ax = static_cast<geom::Axis>(t);
+                            on_bd = geom::cmp_axis_int(hp, bx.lo[t], ax) == 0 ||
+                                    geom::cmp_axis_int(hp, bx.hi[t], ax) == 0;
+                        }
+                        if (on_bd) ++st.pt_on_boundary;
+                        pt_bd.push_back(on_bd ? 1 : 0);
+                    }
+                    it = by_key.emplace(k, id).first;
+                } else if (opt.measure_stitch) {
+                    const octree::Cell& c0 = pt_first_cell[it->second];
+                    const octree::Cell& c1 = frag_cell[fi];
+                    if (c0.depth != c1.depth || c0.i != c1.i || c0.j != c1.j || c0.k != c1.k) {
+                        pt_multi[it->second] = 1;
+                        if (c0.depth != c1.depth) pt_mixed[it->second] = 1;
+                    }
+                }
+                if (raw_flat) {
+                    raw_items.push_back(it->second);
+                } else {
+                    raw_nested[fi].push_back(it->second);
+                }
+                {
+                    const std::uint32_t id2 = it->second;
+                    for (int t = 0; t < 3; ++t) {
+                        if (cix[t] < pt_lo[id2][t]) pt_lo[id2][t] = cix[t];
+                        if (cix[t] > pt_hi[id2][t]) pt_hi[id2][t] = cix[t];
+                    }
                 }
             }
         }
-    }
-    if (do_stitch && raw_flat) raw_off[frags.size()] = static_cast<std::uint32_t>(raw_items.size());
-    st.constructed_points = points.size();
-    st.ms_st_points = std::chrono::duration<double, std::milli>(Clock::now() - t_st0).count();
-    const auto t_st1 = Clock::now();
-    std::vector<std::uint32_t> order(points.size());
-    (void)cache;
-    for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
-    std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
-        return geom::lex_less(points[a], points[b]);
-    });
-    st.ms_st_sort = std::chrono::duration<double, std::milli>(Clock::now() - t_st1).count();
-    const auto t_st2 = Clock::now();
-    std::vector<std::uint32_t> remap(points.size());
-    std::size_t merged_count = 0;
-    for (std::size_t i = 0; i < order.size();) {
-        std::size_t j = i;
-        const auto id = static_cast<std::uint32_t>(merged_count++);
-        while (j < order.size() && geom::h_equal(points[order[i]], points[order[j]])) {
-            remap[order[j]] = id;
-            ++j;
+        if (do_stitch && raw_flat)
+            raw_off[frags.size()] = static_cast<std::uint32_t>(raw_items.size());
+        st.constructed_points = points.size();
+        st.ms_st_points = std::chrono::duration<double, std::milli>(Clock::now() - t_st0).count();
+        const auto t_st1 = Clock::now();
+        std::vector<std::uint32_t> order(points.size());
+        (void)cache;
+        for (std::uint32_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::sort(order.begin(), order.end(), [&](std::uint32_t a, std::uint32_t b) {
+            return geom::lex_less(points[a], points[b]);
+        });
+        st.ms_st_sort = std::chrono::duration<double, std::milli>(Clock::now() - t_st1).count();
+        const auto t_st2 = Clock::now();
+        std::vector<std::uint32_t> remap(points.size());
+        std::size_t merged_count = 0;
+        for (std::size_t i = 0; i < order.size();) {
+            std::size_t j = i;
+            const auto id = static_cast<std::uint32_t>(merged_count++);
+            while (j < order.size() && geom::h_equal(points[order[i]], points[order[j]])) {
+                remap[order[j]] = id;
+                ++j;
+            }
+            if (j - i > 1) st.merged_by_value += (j - i - 1);
+            i = j;
         }
-        if (j - i > 1) st.merged_by_value += (j - i - 1);
-        i = j;
+        st.merged_points = merged_count;
+        st.ms_st_remap = std::chrono::duration<double, std::milli>(Clock::now() - t_st2).count();
+        if (do_stitch) {
+            lab_off.assign(frags.size() + 1, 0);
+            for (std::size_t fi = 0; fi < frags.size(); ++fi) {
+                lab_off[fi] = static_cast<std::uint32_t>(lab_items.size());
+                for (const std::uint32_t* pv = raw_begin(fi); pv != raw_begin(fi) + raw_size(fi);
+                     ++pv) {
+                    lab_items.push_back(remap[*pv]);
+                }
+            }
+            lab_off[frags.size()] = static_cast<std::uint32_t>(lab_items.size());
+        }
+    }  // !stitch_par（従来の縫合）
+    if (stitch_par) {
+        // ---- ★ 縫合の大域の部分（`SPEC-phase5.md` §5.10.13.3）------------------------
+        //
+        // **葉ごとの類に札 `(葉 << 32) | 類` を与え、境界に載る類だけを集めて値で併合します。**
+        // 併合された類は最小の札を取ります。**札は葉の列挙順（整列済み）と葉の中の整列だけで
+        // 決まるので、スレッド数に依りません**（決定性。§30.2）。
+        KRISITE_ALLOC_TAG(7);
+        const auto t_p0 = Clock::now();
+        struct BdRef {
+            std::uint64_t lab;
+            const geom::HPointD* p;
+        };
+        std::vector<std::vector<std::uint64_t>> cls_lab(leaves.size());
+        std::vector<BdRef> bd;
+        std::size_t n_cls = 0;
+        for (std::size_t li = 0; li < leaves.size(); ++li) {
+            const LeafOut& o = leaf_out[li];
+            cls_lab[li].resize(o.cls_pt.size());
+            for (std::size_t c = 0; c < o.cls_pt.size(); ++c) {
+                const std::uint64_t lab = (static_cast<std::uint64_t>(li) << 32) | c;
+                cls_lab[li][c] = lab;
+                if (o.cls_bd[c] != 0) bd.push_back(BdRef{lab, &o.cls_pt[c]});
+            }
+            n_cls += o.cls_pt.size();
+        }
+        st.constructed_points = n_cls;
+        st.stitch_classes = n_cls;
+        st.stitch_boundary_classes = bd.size();
+        st.ms_st_points = std::chrono::duration<double, std::milli>(Clock::now() - t_p0).count();
+        const auto t_p1 = Clock::now();
+        std::sort(bd.begin(), bd.end(),
+                  [](const BdRef& a, const BdRef& b) { return geom::lex_less(*a.p, *b.p); });
+        st.ms_st_sort = std::chrono::duration<double, std::milli>(Clock::now() - t_p1).count();
+        const auto t_p2 = Clock::now();
+        std::size_t merged_across = 0;
+        for (std::size_t i = 0; i < bd.size();) {
+            std::size_t j = i;
+            std::uint64_t mn = bd[i].lab;
+            while (j < bd.size() && geom::h_equal(*bd[i].p, *bd[j].p)) {
+                mn = std::min(mn, bd[j].lab);
+                ++j;
+            }
+            for (std::size_t k = i; k < j; ++k) {
+                cls_lab[bd[k].lab >> 32][bd[k].lab & 0xffffffffu] = mn;
+            }
+            merged_across += (j - i - 1);
+            i = j;
+        }
+        st.merged_by_value += merged_across;
+        st.merged_points = n_cls - merged_across;
+        // **札を断片の頂点に配ります**（葉の順。`frags` の平坦化と同じ順）
+        lab_off.assign(frags.size() + 1, 0);
+        lab_items.reserve(st.frag_edges_total);
+        std::size_t fi = 0;
+        for (std::size_t li = 0; li < leaves.size(); ++li) {
+            const LeafOut& o = leaf_out[li];
+            for (std::size_t i = 0; i + 1 < o.lraw_off.size(); ++i) {
+                lab_off[fi++] = static_cast<std::uint32_t>(lab_items.size());
+                for (std::uint32_t k = o.lraw_off[i]; k < o.lraw_off[i + 1]; ++k) {
+                    lab_items.push_back(cls_lab[li][o.lraw_items[k]]);
+                }
+            }
+        }
+        KRISITE_CHECK(fi == frags.size(), "縫合: 葉ごとの断片数と平坦化した断片数が合わない");
+        lab_off[frags.size()] = static_cast<std::uint32_t>(lab_items.size());
+        st.ms_st_remap = std::chrono::duration<double, std::milli>(Clock::now() - t_p2).count();
     }
-    st.merged_points = merged_count;
-    st.ms_st_remap = std::chrono::duration<double, std::milli>(Clock::now() - t_st2).count();
-    const auto t_st3 = Clock::now();
+    t_st3 = Clock::now();
 
     // ---- 6. 重複の仕分け（§4.3.3 / §5.5）-------------------------------------
     //
@@ -1257,21 +1415,17 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 #else
         {
 #endif
-            if (raw_size(fi) < 3) continue;
-            std::vector<std::uint32_t> ids;
-            ids.reserve(raw_size(fi));
-            for (const std::uint32_t* pv = raw_begin(fi); pv != raw_begin(fi) + raw_size(fi);
-                 ++pv) {
-                ids.push_back(remap[*pv]);
-            }
-            std::sort(ids.begin(), ids.end());
-            ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-            std::vector<std::uint64_t> packed(ids.begin(), ids.end());
+            const std::size_t nv = lab_off[fi + 1] - lab_off[fi];
+            if (nv < 3) continue;
+            std::vector<std::uint64_t> packed(lab_items.begin() + lab_off[fi],
+                                              lab_items.begin() + lab_off[fi + 1]);
+            std::sort(packed.begin(), packed.end());
+            packed.erase(std::unique(packed.begin(), packed.end()), packed.end());
+            const auto np = static_cast<std::uint32_t>(packed.size());
             {
                 KRISITE_ALLOC_TAG(16);  // 仕分け: map の節点と値の vector
-                regions[detail::RegionKey2{0, frags[fi].support, std::move(packed),
-                                           static_cast<std::uint32_t>(ids.size())}]
-                    .push_back(fi);
+                regions[detail::RegionKey2{0, frags[fi].support, std::move(packed), np}].push_back(
+                    fi);
             }
         }
     }
@@ -1293,13 +1447,17 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // > 既定のビルドで守り続けます。**
     if (use_cuts || opt.verify_region_key) {
         std::map<detail::RegionKey, std::vector<std::size_t>> old_regions;
+        // **札を密な番号に直します**（`RegionKey` は 32 ビットの番号を取る）
+        std::vector<std::uint64_t> uniq(lab_items);
+        std::sort(uniq.begin(), uniq.end());
+        uniq.erase(std::unique(uniq.begin(), uniq.end()), uniq.end());
         for (std::size_t fi = 0; fi < frags.size(); ++fi) {
             if (vertex_count(frags[fi]) < 3) continue;
             std::vector<std::uint32_t> ids;
-            ids.reserve(raw_size(fi));
-            for (const std::uint32_t* pv = raw_begin(fi); pv != raw_begin(fi) + raw_size(fi);
-                 ++pv) {
-                ids.push_back(remap[*pv]);
+            ids.reserve(lab_off[fi + 1] - lab_off[fi]);
+            for (std::size_t k = lab_off[fi]; k < lab_off[fi + 1]; ++k) {
+                ids.push_back(static_cast<std::uint32_t>(
+                    std::lower_bound(uniq.begin(), uniq.end(), lab_items[k]) - uniq.begin()));
             }
             old_regions[detail::region_key(frags[fi].support, std::move(ids))].push_back(fi);
         }

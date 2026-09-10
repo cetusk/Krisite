@@ -125,6 +125,38 @@ namespace {
 ///
 /// **同一版の中の比較ではなく、コードを変える前後で比べるので、
 /// 値そのものを出力に書きます**（`CLAUDE.md`「版をまたいだ比較」）。
+/// **順序を除いた鍵**（`tests/csg/test_soup.cpp` の `geometric_key` と同じ形）。
+/// 頂点を値で正準化し、三角形を最小の頂点から始めて整列します。
+std::vector<std::array<std::uint32_t, 3>> geometric_key(const csg::SoupMesh& m) {
+    std::vector<std::uint32_t> ord(m.vertices.size());
+    for (std::uint32_t i = 0; i < ord.size(); ++i) ord[i] = i;
+    std::sort(ord.begin(), ord.end(), [&](std::uint32_t a, std::uint32_t b) {
+        return geom::lex_less(m.vertices[a], m.vertices[b]);
+    });
+    std::vector<std::uint32_t> canon(m.vertices.size(), 0);
+    std::uint32_t next = 0;
+    for (std::size_t i = 0; i < ord.size();) {
+        std::size_t j = i;
+        while (j < ord.size() && geom::h_equal(m.vertices[ord[i]], m.vertices[ord[j]])) {
+            canon[ord[j]] = next;
+            ++j;
+        }
+        ++next;
+        i = j;
+    }
+    std::vector<std::array<std::uint32_t, 3>> out;
+    out.reserve(m.triangles.size());
+    for (const mesh::Tri& t : m.triangles) {
+        const std::uint32_t c[3] = {canon[t[0]], canon[t[1]], canon[t[2]]};
+        int s = 0;
+        if (c[1] < c[s]) s = 1;
+        if (c[2] < c[s]) s = 2;
+        out.push_back({c[s], c[(s + 1) % 3], c[(s + 2) % 3]});
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
 unsigned long long hash_mesh(const csg::SoupMesh& m) {
     unsigned long long h = 1469598103934665603ull;
     const auto mix = [&h](unsigned long long v) {
@@ -582,17 +614,20 @@ void print_rows() {
                     t == 0 ? 0.0 : 100.0 * r.st.ms_stitch / t,
                     t == 0 ? 0.0 : 100.0 * r.st.ms_classify / t, t / 1000.0);
     }
-    std::printf("\n| 段 | arrange の内訳: 収集 | 存在判定 | 準備 | **断片の生成** | 共平面 |\n");
+    std::printf(
+        "\n| 段 | arrange の内訳: 収集 | 存在判定 | 準備 | **断片の生成** | 共平面 | "
+        "縫合（葉ごと） |\n");
     std::printf("|---|---:|---:|---:|---:|---:|\n");
     for (const Row& r : g_rows) {
         const double t = r.st.ms_arr_gather + r.st.ms_arr_present + r.st.ms_arr_prep +
-                         r.st.ms_arr_frag + r.st.ms_arr_coplanar;
-        std::printf("| %s | %.1f%% | %.1f%% | %.1f%% | **%.1f%%** | %.1f%% |\n", r.name.c_str(),
-                    t == 0 ? 0.0 : 100.0 * r.st.ms_arr_gather / t,
+                         r.st.ms_arr_frag + r.st.ms_arr_coplanar + r.st.ms_arr_stitch;
+        std::printf("| %s | %.1f%% | %.1f%% | %.1f%% | **%.1f%%** | %.1f%% | %.1f%% |\n",
+                    r.name.c_str(), t == 0 ? 0.0 : 100.0 * r.st.ms_arr_gather / t,
                     t == 0 ? 0.0 : 100.0 * r.st.ms_arr_present / t,
                     t == 0 ? 0.0 : 100.0 * r.st.ms_arr_prep / t,
                     t == 0 ? 0.0 : 100.0 * r.st.ms_arr_frag / t,
-                    t == 0 ? 0.0 : 100.0 * r.st.ms_arr_coplanar / t);
+                    t == 0 ? 0.0 : 100.0 * r.st.ms_arr_coplanar / t,
+                    t == 0 ? 0.0 : 100.0 * r.st.ms_arr_stitch / t);
     }
 
     // ---- ★ 縫合の内訳と、並列化の前提の確認（`SPEC-phase5.md` §5.10.13）-----------
@@ -888,6 +923,56 @@ int main(int argc, char** argv) {
         std::printf("\n**出力**: %s / **CPU 時間の比**: **%.2f 倍**\n",
                     h[0] == h[1] ? "**バイト一致**" : "**★ 食い違い（重大）**",
                     cpu[0] == 0 ? 0.0 : cpu[1] / cpu[0]);
+    }
+
+    // ---- ★★ 縫合の A/B（`SPEC-phase5.md` §5.10.13.3。葉ごと + 境界の類だけ大域）--------
+    //
+    // **従来（大域の表と整列、逐次）と新（葉ごと + 境界だけ大域）を同一実行で比べます。**
+    // **領域の順序が変わるので出力のバイトは違って当然で、一致は【順序を除いた鍵】で見ます。**
+    // **決定性はスレッド数 1 と 8 のバイト一致で見ます。**
+    {
+        std::printf("\n### 縫合の A/B（同一実行）\n\n");
+        std::printf(
+            "| 実装 | スレッド | 壁時計 | CPU 時間 | 縫合（壁） | 葉の中の縫合（CPU） | 境界の類 / "
+            "類 | "
+            "出力ハッシュ |\n|---|---:|---:|---:|---:|---:|---:|---|\n");
+        std::vector<std::array<std::uint32_t, 3>> gk[3];
+        unsigned long long h[3] = {0, 0, 0};
+        double wall[3] = {0, 0, 0}, stw[3] = {0, 0, 0};
+        for (int cfg = 0; cfg < 3; ++cfg) {
+            csg::BoolOptions ab = o;
+            ab.stitch_parallel = (cfg != 0);
+            if (cfg == 2) {
+                ab.threads = 1;
+                ab.pool = nullptr;
+            }
+            csg::BoolStats st;
+            const auto t0 = std::chrono::steady_clock::now();
+            const std::clock_t c0 = std::clock();
+            const csg::PolySoup s2 = csg::boolean(A, D, csg::BoolOp::Difference, ab, &st);
+            const double cs = static_cast<double>(std::clock() - c0) / CLOCKS_PER_SEC;
+            const double ws =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            csg::ToMeshOptions tm2;
+            tm2.split_contacts = true;
+            const csg::SoupMesh m = csg::to_mesh(s2, tm2);
+            h[cfg] = hash_mesh(m);
+            gk[cfg] = geometric_key(m);
+            wall[cfg] = ws;
+            stw[cfg] = st.ms_stitch / 1000.0;
+            std::printf(
+                "| %s | %u | %.3f s | %.3f s | **%.3f s** | %.3f s | %zu / %zu | `%016llx` |\n",
+                cfg == 0 ? "従来（大域の表と整列）" : "**葉ごと + 境界だけ大域**",
+                cfg == 2 ? 1u : nthreads, ws, cs, st.ms_stitch / 1000.0, st.ms_arr_stitch / 1000.0,
+                st.stitch_boundary_classes, st.stitch_classes, h[cfg]);
+        }
+        std::printf(
+            "\n**順序を除いた鍵**: %s / **スレッド数 1 と 8**: %s / **バイト**: %s / "
+            "**縫合（壁）の比（従来 ÷ 新）**: **%.2f 倍** / 全体（壁）: %.2f 倍\n",
+            gk[0] == gk[1] ? "**一致**" : "**★ 食い違い（重大）**",
+            h[1] == h[2] ? "**バイト一致**" : "**★ 食い違い（決定性が壊れている）**",
+            h[0] == h[1] ? "一致（順序も同じ）" : "違う（領域の順序が変わる。想定どおり）",
+            stw[1] == 0 ? 0.0 : stw[0] / stw[1], wall[1] == 0 ? 0.0 : wall[0] / wall[1]);
     }
 
     // ---- ★★ 断片の切断の A/B（`SPEC-phase5.md` §5.10.12.4。早期 return を移動に）------
