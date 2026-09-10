@@ -207,6 +207,10 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
         a.ray_fit1_level[l] += b.ray_fit1_level[l];
         a.ray_cells0_level[l] += b.ray_cells0_level[l];
     }
+    for (int k = 0; k < 6; ++k) {
+        a.ray_hist_tri[k] += b.ray_hist_tri[k];
+        a.ray_hist_cells[k] += b.ray_hist_cells[k];
+    }
     // ---- 最大 ----
     a.max_planes_per_cell = std::max(a.max_planes_per_cell, b.max_planes_per_cell);
     a.leaf_input_max = std::max(a.leaf_input_max, b.leaf_input_max);
@@ -340,8 +344,15 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     if (opt.ray_index) {
         for (std::size_t i = 0; i < n_src; ++i) {
             for (int ax = 0; ax < 3; ++ax) {
-                ray_index[i][static_cast<std::size_t>(ax)].build(out.sources[i],
-                                                                 static_cast<geom::Axis>(ax));
+                ray_index[i][static_cast<std::size_t>(ax)].build(
+                    out.sources[i], static_cast<geom::Axis>(ax), opt.ray_index_fine_cells,
+                    opt.ray_index_fine_budget);
+                {
+                    const std::size_t k = ray_index[i][static_cast<std::size_t>(ax)].fine_cap();
+                    if (i == 0 && ax == 0) st.ray_fine_cap_min = st.ray_fine_cap_max = k;
+                    st.ray_fine_cap_min = std::min(st.ray_fine_cap_min, k);
+                    st.ray_fine_cap_max = std::max(st.ray_fine_cap_max, k);
+                }
                 if (opt.record_ray_levels) {
                     const RayIndex& ix = ray_index[i][static_cast<std::size_t>(ax)];
                     st.ray_levels_max = std::max(st.ray_levels_max, ix.levels());
@@ -351,6 +362,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                         st.ray_tri_level[l] += g.tri[l];
                         st.ray_fit1_level[l] += g.fit1[l];
                         st.ray_cells0_level[l] += g.cells0[l];
+                    }
+                    for (int k = 0; k < 6; ++k) {
+                        st.ray_hist_tri[k] += g.hist_tri[k];
+                        st.ray_hist_cells[k] += g.hist_cells[k];
                     }
                     for (std::size_t l = 0; l < ix.levels() && l < 12; ++l) {
                         st.ray_items_level[l] += ix.items_at(l);

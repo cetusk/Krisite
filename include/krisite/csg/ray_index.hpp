@@ -98,8 +98,19 @@ public:
     /// **各軸 2 セル以下 = 2×2。** どの段でも 1 枚あたり 4 項目以下なので、
     /// **全項目数は $4n$ 以下**に収まります（段は互いに素）。
 
-    void build(const mesh::TriMesh& m, geom::Axis along) {
+    /// **`fine_cap`（A。`SPEC-phase5.md` §5.10.14.15）**: 段 0 で覆うセル数 $c_u c_v$ が
+    /// `fine_cap` 以下の三角形は、**覆う段 0
+    /// のセル全部**に入れます（境界をまたぐ項目を複数のセルに割り当てる）。
+    /// 超える三角形は従来どおり「各軸 2 セル以下になる最小の段」に入れます。
+    /// **0 なら従来どおり。** 問い合わせ（`candidates`）は変わりません（段ごとに 1 セル）。
+    /// 項目数の上限は `fine_cap` × 三角形数（記憶の上限から `fine_cap` を決める）。
+    /// **`fine_budget`**（三角形 1 枚あたりの項目数の上限。0 で使わない）: `fine_cap` を模型ごとに
+    /// 「項目の総数 ≤ `fine_budget` × 三角形数」を満たす最大の値に決めます（二分探索）。
+    /// **入力だけの関数なので決定性は保たれます。** 両方 0 なら従来どおり。
+    void build(const mesh::TriMesh& m, geom::Axis along, std::size_t fine_cap = 0,
+               std::size_t fine_budget = 0) {
         along_ = along;
+        fine_cap_ = fine_cap;
         u_ = detail::proj_u(along);
         v_ = detail::proj_v(along);
         levels_.clear();
@@ -143,15 +154,53 @@ public:
         for (std::size_t j = 0; j < n_tri_; ++j) {
             std::int64_t e[4];
             tri_extent(m, j, e);
-            const std::uint32_t a = cell0(e[0], u0_, du0_), b = cell0(e[1], u0_, du0_);
-            const std::uint32_t c = cell0(e[2], v0_, dv0_), d = cell0(e[3], v0_, dv0_);
-            lu[j] = a;
-            hu[j] = b;
-            lvv[j] = c;
-            hv[j] = d;
+            lu[j] = cell0(e[0], u0_, du0_);
+            hu[j] = cell0(e[1], u0_, du0_);
+            lvv[j] = cell0(e[2], v0_, dv0_);
+            hv[j] = cell0(e[3], v0_, dv0_);
+        }
+        if (fine_budget != 0) {
+            // **記憶の上限から K を決める**: Σ_j (cc_j ≤ K ? cc_j : 4) ≤ budget × n を満たす最大の
+            // K
+            const std::size_t limit = fine_budget * n_tri_;
+            const auto cc_of = [&](std::size_t j) {
+                return static_cast<std::size_t>(hu[j] - lu[j] + 1) * (hv[j] - lvv[j] + 1);
+            };
+            std::size_t lo = 0, hi = 0;
+            for (std::size_t j = 0; j < n_tri_; ++j) hi = std::max(hi, cc_of(j));
+            const auto total_at = [&](std::size_t K) {
+                std::size_t t = 0;
+                for (std::size_t j = 0; j < n_tri_; ++j) {
+                    const std::size_t cc = cc_of(j);
+                    t += (cc <= K) ? cc : 4;
+                }
+                return t;
+            };
+            while (lo < hi) {
+                const std::size_t mid = lo + (hi - lo + 1) / 2;
+                if (total_at(mid) <= limit) {
+                    lo = mid;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            fine_cap_ = lo;
+        }
+        for (std::size_t j = 0; j < n_tri_; ++j) {
+            const std::uint32_t a = lu[j], b = hu[j], c = lvv[j], d = hv[j];
             // **各軸で 2 セル以下**になる最小の段。積で 4 以下にすると
             // 1×4 のような並びが通ってしまい、**四隅だけでは中が抜けます。**
             std::uint32_t l = 0;
+            const std::size_t cc = static_cast<std::size_t>(b - a + 1) * (d - c + 1);
+            if (fine_cap_ != 0 && cc <= fine_cap_) {
+                // **A: 段 0 の覆うセル全部に入れる**（印として段を kFineAll に）
+                lv[j] = kFineAll;
+                for (std::uint32_t kv = c; kv <= d; ++kv) {
+                    for (std::uint32_t ku = a; ku <= b; ++ku)
+                        ++levels_[0].offsets[cell_at(0, ku, kv) + 1];
+                }
+                continue;
+            }
             for (; l + 1 < n_lv; ++l) {
                 if (((b >> l) - (a >> l)) <= 1 && ((d >> l) - (c >> l)) <= 1) break;
             }
@@ -168,6 +217,15 @@ public:
             L.fill.assign(L.offsets.begin(), L.offsets.end() - 1);
         }
         for (std::size_t j = 0; j < n_tri_; ++j) {
+            if (lv[j] == kFineAll) {
+                Level& L0 = levels_[0];
+                for (std::uint32_t kv = lvv[j]; kv <= hv[j]; ++kv) {
+                    for (std::uint32_t ku = lu[j]; ku <= hu[j]; ++ku) {
+                        L0.items[L0.fill[cell_at(0, ku, kv)]++] = static_cast<std::uint32_t>(j);
+                    }
+                }
+                continue;
+            }
             const std::uint32_t l = lv[j];
             const std::uint32_t a = lu[j] >> l, b = hu[j] >> l, c = lvv[j] >> l, d = hv[j] >> l;
             Level& L = levels_[l];
@@ -184,6 +242,7 @@ public:
 
     bool ready() const noexcept { return res0_ != 0; }
     std::size_t levels() const noexcept { return levels_.size(); }
+    std::size_t fine_cap() const noexcept { return fine_cap_; }
     /// `candidates` が埋める区間の数（段の数）。
     std::size_t candidates_levels() const noexcept { return levels_.size(); }
     std::size_t items() const noexcept {
@@ -205,6 +264,10 @@ public:
         std::size_t tri[kRayIndexMaxLevelsDecl] = {};
         std::size_t fit1[kRayIndexMaxLevelsDecl] = {};
         std::size_t cells0[kRayIndexMaxLevelsDecl] = {};
+        /// **覆うセル数 $c_u c_v$ の分布**（K を記憶の上限から決めるため）。
+        /// 区分: ≤4 / ≤16 / ≤64 / ≤256 / ≤1024 / >1024。三角形の数と、その区分の $c_u c_v$ の和
+        std::size_t hist_tri[6] = {};
+        std::size_t hist_cells[6] = {};
     };
     void granularity(const mesh::TriMesh& m, Granularity& g) const {
         if (n_tri_ == 0) return;
@@ -222,7 +285,16 @@ public:
             const std::uint32_t cu = b - a + 1, cv = d - c + 1;
             ++g.tri[l];
             if (std::max(cu, cv) <= (1u << l)) ++g.fit1[l];
-            g.cells0[l] += static_cast<std::size_t>(cu) * cv;
+            const std::size_t cc = static_cast<std::size_t>(cu) * cv;
+            g.cells0[l] += cc;
+            const int bk = cc <= 4      ? 0
+                           : cc <= 16   ? 1
+                           : cc <= 64   ? 2
+                           : cc <= 256  ? 3
+                           : cc <= 1024 ? 4
+                                        : 5;
+            ++g.hist_tri[bk];
+            g.hist_cells[bk] += cc;
         }
     }
 
@@ -246,6 +318,8 @@ public:
     }
 
 private:
+    static constexpr std::uint32_t kFineAll = 0xffffffffu;  ///< 段 0 の覆うセル全部に入れた印
+    std::size_t fine_cap_ = 0;
     struct Level {
         std::uint32_t res = 1;
         std::vector<std::uint32_t> offsets, items, fill;

@@ -227,6 +227,7 @@ struct PairStruct {
     /// **索引の粒度**（§5.10.14.11。段ごとの候補と項目。3 演算の和）
     std::size_t cand_level[12] = {}, items_level[12] = {};
     std::size_t tri_level[12] = {}, fit1_level[12] = {}, cells0_level[12] = {};
+    std::size_t hist_tri[6] = {}, hist_cells[6] = {};
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -304,6 +305,10 @@ struct PairStruct {
             fit1_level[l] += b.ray_fit1_level[l];
             cells0_level[l] += b.ray_cells0_level[l];
         }
+        for (int k = 0; k < 6; ++k) {
+            hist_tri[k] += b.ray_hist_tri[k];
+            hist_cells[k] += b.ray_hist_cells[k];
+        }
         ms_arrange += b.ms_arrange;
         ms_classify += b.ms_classify;
         ms_stitch += b.ms_stitch;
@@ -367,6 +372,8 @@ struct PairStruct {
         for (int l = 0; l < 12; ++l) o << ' ' << tri_level[l];
         for (int l = 0; l < 12; ++l) o << ' ' << fit1_level[l];
         for (int l = 0; l < 12; ++l) o << ' ' << cells0_level[l];
+        for (int k = 0; k < 6; ++k) o << ' ' << hist_tri[k];
+        for (int k = 0; k < 6; ++k) o << ' ' << hist_cells[k];
     }
 };
 
@@ -565,6 +572,8 @@ int main(int argc, char** argv) {
     // > **切るのは EMBER と比較可能な数字を採るときだけ**で、
     // > **そのときは正しさの判定に使わないでください。**
     const bool verify_delta = (argc > 8) ? (std::atoi(argv[8]) != 0) : true;
+    // **レイ索引の細かい割り当ての上限 K**（第 9 引数。既定 0 = 従来。§5.10.14.15）
+    const std::size_t fine_k = (argc > 9) ? std::strtoul(argv[9], nullptr, 10) : 0;
     // 宣言の内訳（(a) の空回り検査）。**「検査を入れた」と「検査が効いた」は別**なので、
     // **宣言できた数と落ちた数を必ず出します。**
     std::size_t nsi_declared = 0, nsi_rejected = 0;
@@ -630,6 +639,10 @@ int main(int argc, char** argv) {
     csg::BoolOptions o;
     o.measure_classify = true;   // 分類の内訳（§5.10.14.7。領域ごとに時計 4 回）
     o.record_ray_levels = true;  // 索引の粒度（§5.10.14.11）
+    o.ray_index_fine_cells = fine_k;
+    // **第 10 引数: 記憶の上限（項目 / 三角形）から K を導く形**
+    const std::size_t fine_budget = (argc > 10) ? std::strtoul(argv[10], nullptr, 10) : 0;
+    o.ray_index_fine_budget = fine_budget;
     o.depth = depth;
     o.adaptive = true;
     o.leaf_threshold = 0;
@@ -719,6 +732,10 @@ int main(int argc, char** argv) {
     std::printf("| b（座標ビット） | %d |\n", KRISITE_COORD_BITS);
     std::printf("| **NSI の扱い** | **%d = %s** |\n", nsi_mode,
                 (nsi_mode >= 0 && nsi_mode < 4) ? kNsiName[nsi_mode] : "?");
+    std::printf(
+        "| レイ索引の細かい割り当て K | %zu（0 = 従来）、記憶の上限 %zu 項目/三角形（0 = "
+        "使わない） |\n",
+        fine_k, fine_budget);
     std::printf("| 単一 source を割る閾値 P^2 | %zu |\n", o.single_src_sq);
     std::printf("| 索引の ON/OFF 突き合わせ | %s |\n", verify_index ? "する" : "しない");
     std::printf("| 済みの対 | %s |\n", redo ? "やり直す" : "飛ばす（再開）");

@@ -940,6 +940,12 @@ int main(int argc, char** argv) {
     o.record_ray_levels = true;  // 索引の粒度（§5.10.14.11）
     // **縫合の前提の確認**（第 9 引数。既定 0。$O(L^2)$ の葉の対の数え上げを含む）
     o.measure_stitch = (argc > 9) && (std::atoi(argv[9]) != 0);
+    // **レイ索引の細かい割り当ての上限 K**（第 10 引数。既定 0 = 従来。A/B はこの値と 0 を比べる）
+    const std::size_t fine_k = (argc > 10) ? std::strtoul(argv[10], nullptr, 10) : 0;
+    o.ray_index_fine_cells = fine_k;
+    // **第 11 引数: 記憶の上限（項目 / 三角形）から K を導く形**（0 で使わない）
+    const std::size_t fine_budget = (argc > 11) ? std::strtoul(argv[11], nullptr, 10) : 0;
+    o.ray_index_fine_budget = fine_budget;
 
     const csg::PolySoup A = csg::from_mesh(qa.mesh);
     const csg::PolySoup B = csg::from_mesh(qb.mesh);
@@ -1043,6 +1049,51 @@ int main(int argc, char** argv) {
         std::printf("\n**出力**: %s / **CPU 時間の比**: **%.2f 倍**\n",
                     h[0] == h[1] ? "**バイト一致**" : "**★ 食い違い（重大）**",
                     cpu[0] == 0 ? 0.0 : cpu[1] / cpu[0]);
+    }
+
+    // ---- ★★ レイ索引の A/B（`SPEC-phase5.md` §5.10.14.15。A: 段 0 の覆うセル全部に割り当て）----
+    //
+    // **候補の計数（演算回数）で効きを見ます。出力はバイト一致のはず（候補は超集合で、判定は同じ述語）。**
+    if (fine_k != 0 || fine_budget != 0) {
+        std::printf("\n### レイ索引の A/B（同一実行。K = %zu、記憶の上限 = %zu 項目/三角形）\n\n",
+                    fine_k, fine_budget);
+        std::printf(
+            "| 実装 | 索引の項目 | 候補 / レイ | 前判定を通過 / レイ | 寄与 / レイ | 分類（壁） | "
+            "全体（壁） | "
+            "出力ハッシュ |\n|---|---:|---:|---:|---:|---:|---:|---|\n");
+        unsigned long long h[2] = {0, 0};
+        double cl[2] = {0, 0}, wall[2] = {0, 0}, cand[2] = {0, 0};
+        for (int cfg = 0; cfg < 2; ++cfg) {
+            csg::BoolOptions ab = o;
+            ab.ray_index_fine_cells = cfg == 0 ? 0 : fine_k;
+            ab.ray_index_fine_budget = cfg == 0 ? 0 : fine_budget;
+            csg::BoolStats st;
+            const auto t0 = std::chrono::steady_clock::now();
+            const csg::PolySoup s2 = csg::boolean(A, D, csg::BoolOp::Difference, ab, &st);
+            const double ws =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            csg::ToMeshOptions tm2;
+            tm2.split_contacts = true;
+            h[cfg] = hash_mesh(csg::to_mesh(s2, tm2));
+            std::size_t items = 0;
+            for (int l = 0; l < 12; ++l) items += st.ray_items_level[l];
+            const double n = st.raycasts == 0 ? 1.0 : (double)st.raycasts;
+            cl[cfg] = st.ms_classify / 1000.0;
+            wall[cfg] = ws;
+            cand[cfg] = st.ray_tri_tests / n;
+            std::printf(
+                "| %s（K %zu〜%zu） | %zu | **%.1f** | %.2f | %.2f | %.3f s | %.3f s | `%016llx` "
+                "|\n",
+                cfg == 0 ? "従来（K = 0）" : "**A**", st.ray_fine_cap_min, st.ray_fine_cap_max,
+                items, st.ray_tri_tests / n, st.ray_tri_kept / n, st.ray_tri_hits / n,
+                st.ms_classify / 1000.0, ws, h[cfg]);
+        }
+        std::printf(
+            "\n**出力**: %s / **候補 / レイの比**: **%.2f 倍** / 分類（壁）の比: %.2f 倍 / "
+            "全体（壁）: %.2f 倍\n",
+            h[0] == h[1] ? "**バイト一致**" : "**★ 食い違い（重大）**",
+            cand[1] == 0 ? 0.0 : cand[0] / cand[1], cl[1] == 0 ? 0.0 : cl[0] / cl[1],
+            wall[1] == 0 ? 0.0 : wall[0] / wall[1]);
     }
 
     // ---- ★★ 縫合の A/B（`SPEC-phase5.md` §5.10.13.3。葉ごと + 境界の類だけ大域）--------

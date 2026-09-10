@@ -393,10 +393,15 @@ struct BoolStats {
     std::size_t ray_cand_level[12] = {};
     std::size_t ray_items_level[12] = {};
     std::size_t ray_levels_max = 0;
+    std::size_t ray_fine_cap_min = 0,
+                ray_fine_cap_max = 0;  ///< 使った K（source × 軸の最小 / 最大）
     /// **粒度**（同上。三角形の数 / その段のセル 1 つに収まる数 / 段 0 のセルで数えた項目数）
     std::size_t ray_tri_level[12] = {};
     std::size_t ray_fit1_level[12] = {};
     std::size_t ray_cells0_level[12] = {};
+    /// 覆うセル数の区分（≤4 / ≤16 / ≤64 / ≤256 / ≤1024 / >1024）ごとの三角形数と $c_u c_v$ の和
+    std::size_t ray_hist_tri[6] = {};
+    std::size_t ray_hist_cells[6] = {};
 
     /// §5.4 の局所 BSP（CP4）。**切断候補のうち何枚を実際に切ったか。**
     ///
@@ -645,6 +650,13 @@ struct BoolOptions {
     /// **索引の粒度の計測**（`SPEC-phase5.md` §5.10.14.11。既定 偽）。
     /// 候補が索引のどの段から来たかと、段ごとの項目数を数えます。
     bool record_ray_levels = false;
+    /// **★ レイ索引の細かい割り当て（A。§5.10.14.15）**: 段 0 で覆うセル数がこれ以下の三角形は
+    /// 覆うセル全部に入れる。**0 で従来どおり**（正解器）。値は記憶の上限から決める（`BENCH.md`）。
+    std::size_t ray_index_fine_cells = 0;
+    /// **同、記憶の上限で決める形**: 三角形 1 枚あたりの項目数の上限（例 16）。0 で使わない。
+    /// 非零なら模型ごと・軸ごとに K を導き、`ray_index_fine_cells` は使わない。
+    /// **既定 16**（2026-09-10 判断。`BENCH.md`「A を実装した」）。40 対の最大で 15.9 項目 / 三角形 / 軸、14 MB。
+    std::size_t ray_index_fine_budget = 16;
     /// **適応分割**（§3.1）。偽なら常に最大深度まで分割する固定深度モード。
     /// **固定深度モードを消さないこと。** §9.1 の正解器です
     ///
