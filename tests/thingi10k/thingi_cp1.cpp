@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -229,6 +230,9 @@ struct PairStruct {
     std::size_t tri_level[12] = {}, fit1_level[12] = {}, cells0_level[12] = {};
     std::size_t hist_tri[6] = {}, hist_cells[6] = {};
     std::size_t split_attempts = 0, split_actual = 0, uncut = 0, uncut_tris = 0;
+    /// **版をまたいだ意味論の比較のため**: 3 演算の出力の 6 倍体積（浮動小数の篩）と、三角形数
+    double vol3[3] = {0, 0, 0};
+    std::size_t tri3[3] = {0, 0, 0};
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -380,6 +384,8 @@ struct PairStruct {
         for (int k = 0; k < 6; ++k) o << ' ' << hist_tri[k];
         for (int k = 0; k < 6; ++k) o << ' ' << hist_cells[k];
         o << ' ' << split_attempts << ' ' << split_actual << ' ' << uncut << ' ' << uncut_tris;
+        for (int k = 0; k < 3; ++k) o << ' ' << std::setprecision(17) << vol3[k];
+        for (int k = 0; k < 3; ++k) o << ' ' << tri3[k];
     }
 };
 
@@ -490,6 +496,12 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
         const double vu = kritest::volume6_fp(mu), vi = kritest::volume6_fp(mi);
         const double vd = kritest::volume6_fp(md);
         ps->vol_err = kritest::identity_error(vu, vi, va, vb);
+        ps->vol3[0] = vu;
+        ps->vol3[1] = vi;
+        ps->vol3[2] = vd;
+        ps->tri3[0] = mu.triangles.size();
+        ps->tri3[1] = mi.triangles.size();
+        ps->tri3[2] = md.triangles.size();
         ps->diff_err = kritest::difference_error(vd, va, vi);
         ps->ms_vol =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_vol)
