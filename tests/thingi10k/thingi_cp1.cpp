@@ -232,6 +232,7 @@ struct PairStruct {
     std::size_t split_attempts = 0, split_actual = 0, uncut = 0, uncut_tris = 0;
     /// **版をまたいだ意味論の比較のため**: 3 演算の出力の 6 倍体積（浮動小数の篩）と、三角形数
     double vol3[3] = {0, 0, 0};
+    std::size_t skip_box = 0, skip_exact = 0;
     std::size_t tri3[3] = {0, 0, 0};
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
@@ -315,6 +316,8 @@ struct PairStruct {
             hist_cells[k] += b.ray_hist_cells[k];
         }
         split_attempts += b.bsp_split_attempts;
+        skip_box += b.bsp_skip_box;
+        skip_exact += b.bsp_skip_exact;
         split_actual += b.bsp_split_actual;
         uncut += b.frags_uncut;
         uncut_tris += b.frags_uncut_tris;
@@ -386,6 +389,7 @@ struct PairStruct {
         o << ' ' << split_attempts << ' ' << split_actual << ' ' << uncut << ' ' << uncut_tris;
         for (int k = 0; k < 3; ++k) o << ' ' << std::setprecision(17) << vol3[k];
         for (int k = 0; k < 3; ++k) o << ' ' << tri3[k];
+        o << ' ' << skip_box << ' ' << skip_exact;
     }
 };
 
@@ -664,6 +668,8 @@ int main(int argc, char** argv) {
     // **第 11 引数: 記憶の上限（絶対量、MB / 軸）。既定 16。0 で使わない**
     const std::size_t fine_mb = (argc > 11) ? std::strtoul(argv[11], nullptr, 10) : 16;
     o.ray_index_fine_bytes = fine_mb << 20;
+    // **第 12 引数: O3 の判定（0 = 従来、1 = 整数の箱だけ、2 = 箱 + 厳密）。既定 0**
+    o.bsp_skip_disjoint = (argc > 12) ? std::atoi(argv[12]) : 0;
     o.depth = depth;
     o.adaptive = true;
     o.leaf_threshold = 0;
@@ -757,6 +763,9 @@ int main(int argc, char** argv) {
         "| レイ索引の細かい割り当て K | %zu（0 = 従来）、上限 %zu 項目/三角形、絶対量 %zu MB/軸 "
         "|\n",
         fine_k, fine_budget, fine_mb);
+    std::printf(
+        "| O3（触れない三角形の平面で切らない） | %d（0 = 従来、1 = 整数の箱、2 = 箱 + 厳密） |\n",
+        o.bsp_skip_disjoint);
     std::printf("| 単一 source を割る閾値 P^2 | %zu |\n", o.single_src_sq);
     std::printf("| 索引の ON/OFF 突き合わせ | %s |\n", verify_index ? "する" : "しない");
     std::printf("| 済みの対 | %s |\n", redo ? "やり直す" : "飛ばす（再開）");

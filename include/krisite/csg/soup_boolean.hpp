@@ -77,7 +77,6 @@ inline bool tri_touches_plane(const geom::PlaneD& pl, const mesh::TriMesh& m, co
     return false;
 }
 
-#if defined(KRISITE_EXPERIMENT_BSP_SKIP_DISJOINT)
 /// 断片が箱と**分離している**か（どれかの軸で厳密に外側にあるか）。
 ///
 /// **最適化の候補**であって変異ではありません（`ROADMAP.md`「切断候補の絞り込み」）。
@@ -101,7 +100,6 @@ inline bool fragment_outside_box(const PlaneTable& t, const Fragment& f, const o
     }
     return false;
 }
-#endif
 
 /// スレッド局所に貯めた統計を集約する（`SPEC-phase4.md` §1.1）。
 ///
@@ -118,6 +116,8 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.split_plane_slots += b.split_plane_slots;
     a.split_planes_used += b.split_planes_used;
     a.bsp_cut_slots += b.bsp_cut_slots;
+    a.bsp_skip_box += b.bsp_skip_box;
+    a.bsp_skip_exact += b.bsp_skip_exact;
     a.bsp_split_attempts += b.bsp_split_attempts;
     a.bsp_split_actual += b.bsp_split_actual;
     a.frags_uncut += b.frags_uncut;
@@ -933,44 +933,64 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             std::vector<Fragment> pieces_own;
             std::vector<Fragment>& pieces = reuse_pieces ? pieces_buf : pieces_own;
             pieces.clear();
-#if defined(KRISITE_EXPERIMENT_BSP_SKIP_DISJOINT)
-            pieces.push_back(frag);  // 実験は `frag` をこの後も読みます
-#else
+            // **O3（`opt.bsp_skip_disjoint`）の材料**: 断片は「多角形の箱 ∩ セルの箱」の中にある（整数）。
+            // 切る三角形の箱がこれと交わらなければ、その平面で切る必要はありません（超集合を切るだけ）。
+            octree::Aabb fbox = polys[idx].aabb;
+            if (opt.bsp_skip_disjoint != 0) {
+                for (int t = 0; t < 3; ++t) {
+                    fbox.lo[t] = std::max(fbox.lo[t], cbox.lo[t]);
+                    fbox.hi[t] = std::min(fbox.hi[t], cbox.hi[t]);
+                }
+            }
+            // 厳密な比較（値 2）は元の断片を読むので、そのときだけ複製を残す
+            const Fragment frag_keep = (opt.bsp_skip_disjoint >= 2) ? frag : Fragment{};
             pieces.push_back(std::move(frag));
-#endif
             KRISITE_ALLOC_TAG(14);  // 切断ループ（切断ごとの next と、split の中身）
             for (std::size_t ci = cut_begin; ci < cut_planes.size(); ++ci) {
                 const PlaneId q = cut_planes[ci];
-#if defined(KRISITE_EXPERIMENT_BSP_SKIP_DISJOINT)
-                // **切断候補の絞り込み（最適化の候補。Phase 5）。変異ではありません。**
+                // ---- ★ O3: 切る三角形が触れない断片は切らない（`SPEC-phase5.md` §5.10.14.24）----
                 //
-                // 三角形が断片と交わらないなら、その断片をその平面で切る必要はありません。
-                // **分類については健全です**（定理 7.2 の前提は保たれます）。
-                // 全コーパスで出力は 1 ビットも変わらず、8,169 回多く省きました。
+                // 三角形が断片と交わらないなら、その断片をその平面で切る必要はありません
+                // （分類については健全。定理 7.2 の前提は保たれます）。
+                // **残る懸念は「共平面に載る別々の多角形が違う切り方をして `region_key` が潰せなくなる」**で、
+                // 証明かコーパスケースが要ります（条件 1。仕様側）。**それまで既定は 0。**
                 //
-                // **採用には証明か専用のコーパスケースが要ります。** 残る経路は
-                // 「共平面に載る別々の多角形が違う切り方をして `region_key` が潰せなく
-                // なる」で、**「コーパスに配置が無い」だけでは否定できません**
-                // （`SPEC-phase2.md` §2.6）。Phase 3 は性能のフェーズではないので保留です。
-                {
+                // 値 1: 整数の箱どうし（多角形の箱 ∩ セルの箱 と 三角形の箱）だけ。安い。
+                // 値 2: 1 で交わるときは、断片の頂点と三角形の箱の厳密な比較（Phase 3 の実験）。
+                if (opt.bsp_skip_disjoint != 0) {
                     bool touches = false;
+                    bool need_exact = false;
                     const auto it = cell_tri_by_plane.find(q);
                     if (it != cell_tri_by_plane.end()) {
                         for (const auto& ref : it->second) {
-                            if (!detail::fragment_outside_box(
-                                    out.table, frag, src_aabb[ref.first][ref.second], cache)) {
+                            const octree::Aabb& tb = src_aabb[ref.first][ref.second];
+                            bool ov = true;
+                            for (int t = 0; t < 3 && ov; ++t) {
+                                ov = fbox.lo[t] <= tb.hi[t] && tb.lo[t] <= fbox.hi[t];
+                            }
+                            if (!ov) continue;
+                            if (opt.bsp_skip_disjoint >= 2) {
+                                need_exact = true;
+                                if (!detail::fragment_outside_box(out.table, frag_keep, tb, cache)) {
+                                    touches = true;
+                                    break;
+                                }
+                            } else {
                                 touches = true;
                                 break;
                             }
                         }
                     }
-                    // **変異が発火したことを数えます。** 空回りの変異は変異ではありません
                     if (!touches) {
+                        if (need_exact) {
+                            ++st.bsp_skip_exact;
+                        } else {
+                            ++st.bsp_skip_box;
+                        }
                         ++st.bsp_cuts_skipped;
                         continue;
                     }
                 }
-#endif
                 std::vector<Fragment> next_own;
                 std::vector<Fragment>& next = reuse_pieces ? next_buf : next_own;
                 next.clear();
