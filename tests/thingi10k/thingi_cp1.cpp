@@ -643,6 +643,9 @@ int main(int argc, char** argv) {
     // **第 10 引数: 記憶の上限（項目 / 三角形）から K を導く形**
     const std::size_t fine_budget = (argc > 10) ? std::strtoul(argv[10], nullptr, 10) : 0;
     o.ray_index_fine_budget = fine_budget;
+    // **第 11 引数: 記憶の上限（絶対量、MB / 軸）。既定 16。0 で使わない**
+    const std::size_t fine_mb = (argc > 11) ? std::strtoul(argv[11], nullptr, 10) : 16;
+    o.ray_index_fine_bytes = fine_mb << 20;
     o.depth = depth;
     o.adaptive = true;
     o.leaf_threshold = 0;
@@ -733,9 +736,9 @@ int main(int argc, char** argv) {
     std::printf("| **NSI の扱い** | **%d = %s** |\n", nsi_mode,
                 (nsi_mode >= 0 && nsi_mode < 4) ? kNsiName[nsi_mode] : "?");
     std::printf(
-        "| レイ索引の細かい割り当て K | %zu（0 = 従来）、記憶の上限 %zu 項目/三角形（0 = "
-        "使わない） |\n",
-        fine_k, fine_budget);
+        "| レイ索引の細かい割り当て K | %zu（0 = 従来）、上限 %zu 項目/三角形、絶対量 %zu MB/軸 "
+        "|\n",
+        fine_k, fine_budget, fine_mb);
     std::printf("| 単一 source を割る閾値 P^2 | %zu |\n", o.single_src_sq);
     std::printf("| 索引の ON/OFF 突き合わせ | %s |\n", verify_index ? "する" : "しない");
     std::printf("| 済みの対 | %s |\n", redo ? "やり直す" : "飛ばす（再開）");

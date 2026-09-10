@@ -946,6 +946,9 @@ int main(int argc, char** argv) {
     // **第 11 引数: 記憶の上限（項目 / 三角形）から K を導く形**（0 で使わない）
     const std::size_t fine_budget = (argc > 11) ? std::strtoul(argv[11], nullptr, 10) : 0;
     o.ray_index_fine_budget = fine_budget;
+    // **第 12 引数: 記憶の上限（絶対量、MB / 軸）。既定 16。0 で使わない**
+    const std::size_t fine_mb = (argc > 12) ? std::strtoul(argv[12], nullptr, 10) : 16;
+    o.ray_index_fine_bytes = fine_mb << 20;
 
     const csg::PolySoup A = csg::from_mesh(qa.mesh);
     const csg::PolySoup B = csg::from_mesh(qb.mesh);
@@ -1054,9 +1057,9 @@ int main(int argc, char** argv) {
     // ---- ★★ レイ索引の A/B（`SPEC-phase5.md` §5.10.14.15。A: 段 0 の覆うセル全部に割り当て）----
     //
     // **候補の計数（演算回数）で効きを見ます。出力はバイト一致のはず（候補は超集合で、判定は同じ述語）。**
-    if (fine_k != 0 || fine_budget != 0) {
-        std::printf("\n### レイ索引の A/B（同一実行。K = %zu、記憶の上限 = %zu 項目/三角形）\n\n",
-                    fine_k, fine_budget);
+    if (fine_k != 0 || fine_budget != 0 || fine_mb != 0) {
+        std::printf("\n### レイ索引の A/B（同一実行。K = %zu、上限 = %zu 項目/三角形、絶対量 %zu MB/軸）\n\n",
+                    fine_k, fine_budget, fine_mb);
         std::printf(
             "| 実装 | 索引の項目 | 候補 / レイ | 前判定を通過 / レイ | 寄与 / レイ | 分類（壁） | "
             "全体（壁） | "
@@ -1067,6 +1070,7 @@ int main(int argc, char** argv) {
             csg::BoolOptions ab = o;
             ab.ray_index_fine_cells = cfg == 0 ? 0 : fine_k;
             ab.ray_index_fine_budget = cfg == 0 ? 0 : fine_budget;
+            ab.ray_index_fine_bytes = cfg == 0 ? 0 : (fine_mb << 20);
             csg::BoolStats st;
             const auto t0 = std::chrono::steady_clock::now();
             const csg::PolySoup s2 = csg::boolean(A, D, csg::BoolOp::Difference, ab, &st);

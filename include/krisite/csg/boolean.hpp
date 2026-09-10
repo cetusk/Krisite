@@ -655,8 +655,12 @@ struct BoolOptions {
     std::size_t ray_index_fine_cells = 0;
     /// **同、記憶の上限で決める形**: 三角形 1 枚あたりの項目数の上限（例 16）。0 で使わない。
     /// 非零なら模型ごと・軸ごとに K を導き、`ray_index_fine_cells` は使わない。
-    /// **既定 16**（2026-09-10 判断。`BENCH.md`「A を実装した」）。40 対の最大で 15.9 項目 / 三角形 / 軸、14 MB。
-    std::size_t ray_index_fine_budget = 16;
+    /// 既定 0（2026-09-10 判断: 上限は絶対量で置く。下の `ray_index_fine_bytes`）。
+    std::size_t ray_index_fine_budget = 0;
+    /// **★ レイ索引の記憶の上限（絶対量。source × 軸ごとのバイト数）**（§5.10.14.17。既定 16 MB）。
+    /// この上限を満たす最大の K を模型・軸ごとに導く。**記憶の制約は絶対量なので、こちらが既定。**
+    /// 0 で使わない（`ray_index_fine_budget` / `ray_index_fine_cells` へ）。
+    std::size_t ray_index_fine_bytes = std::size_t{16} << 20;
     /// **適応分割**（§3.1）。偽なら常に最大深度まで分割する固定深度モード。
     /// **固定深度モードを消さないこと。** §9.1 の正解器です
     ///

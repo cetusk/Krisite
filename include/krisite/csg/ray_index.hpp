@@ -107,8 +107,10 @@ public:
     /// **`fine_budget`**（三角形 1 枚あたりの項目数の上限。0 で使わない）: `fine_cap` を模型ごとに
     /// 「項目の総数 ≤ `fine_budget` × 三角形数」を満たす最大の値に決めます（二分探索）。
     /// **入力だけの関数なので決定性は保たれます。** 両方 0 なら従来どおり。
+    /// **`fine_items_max`**（項目数の絶対量の上限。0 で使わない）: 記憶の制約は絶対量なので、
+    /// こちらが既定の形（`SPEC-phase5.md` §5.10.14.17）。`fine_budget` より優先。
     void build(const mesh::TriMesh& m, geom::Axis along, std::size_t fine_cap = 0,
-               std::size_t fine_budget = 0) {
+               std::size_t fine_budget = 0, std::size_t fine_items_max = 0) {
         along_ = along;
         fine_cap_ = fine_cap;
         u_ = detail::proj_u(along);
@@ -159,10 +161,11 @@ public:
             lvv[j] = cell0(e[2], v0_, dv0_);
             hv[j] = cell0(e[3], v0_, dv0_);
         }
-        if (fine_budget != 0) {
+        if (fine_budget != 0 || fine_items_max != 0) {
             // **記憶の上限から K を決める**: Σ_j (cc_j ≤ K ? cc_j : 4) ≤ budget × n を満たす最大の
             // K
-            const std::size_t limit = fine_budget * n_tri_;
+            // limit は絶対量（`fine_items_max`）が優先、無ければ三角形あたり（`fine_budget` × n）
+            const std::size_t limit = fine_items_max != 0 ? fine_items_max : fine_budget * n_tri_;
             const auto cc_of = [&](std::size_t j) {
                 return static_cast<std::size_t>(hu[j] - lu[j] + 1) * (hv[j] - lvv[j] + 1);
             };

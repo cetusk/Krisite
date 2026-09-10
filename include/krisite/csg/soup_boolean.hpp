@@ -346,7 +346,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             for (int ax = 0; ax < 3; ++ax) {
                 ray_index[i][static_cast<std::size_t>(ax)].build(
                     out.sources[i], static_cast<geom::Axis>(ax), opt.ray_index_fine_cells,
-                    opt.ray_index_fine_budget);
+                    opt.ray_index_fine_budget, opt.ray_index_fine_bytes / sizeof(std::uint32_t));
                 {
                     const std::size_t k = ray_index[i][static_cast<std::size_t>(ax)].fine_cap();
                     if (i == 0 && ax == 0) st.ray_fine_cap_min = st.ray_fine_cap_max = k;
