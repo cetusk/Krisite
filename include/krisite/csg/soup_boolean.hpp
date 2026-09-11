@@ -265,6 +265,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
 
     // ---- 2. 平面表を 1 つにまとめ、多角形を移す ------------------------------
     KRISITE_ALLOC_TAG(1);  // 前処理（平面表の統合、多角形の複製、source の平面・AABB）
+    auto t_pre = Clock::now();
+    const auto pre_lap = [&t_pre]() {
+        const auto n = Clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(n - t_pre).count();
+        t_pre = n;
+        return ms;
+    };
     std::vector<Poly> polys;
     polys.reserve(X.polys.size() + Y.polys.size());
     for (int which = 0; which < 2; ++which) {
@@ -300,6 +307,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // キーとしての妥当性: 閉多様体なら三角形の辺は隣接三角形との共有辺なので、
     // **平面配置は三角形分割を細分します。** よって同じ符号ベクトルの点は
     // 「同じ三角形の内側／外側」まで一致し、$w$ も $c_{front}, c_{back}$ も一致します。
+    st.ms_pre_copy += pre_lap();
     std::vector<std::vector<PlaneId>> planes_of_src(n_src);
     // 三角形ごとの平面 ID（退化は `kNoPlane`）。**局所 BSP の切断候補**（§5.4）。
     // `planes_of_src` と違って**重複を潰しません。** どの三角形がどのセルに居るかで
@@ -333,6 +341,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     //
     // 実測: 1 レイあたり source の全三角形を走査するので、作り直すと
     // **$n$ = 7,620 で 14.7 億回**の平面構成になります（`IMPL-phase5.md` §9）。
+    st.ms_pre_intern += pre_lap();
     std::vector<std::vector<geom::PlaneD>> ray_planes(n_src);
     for (std::size_t i = 0; i < n_src; ++i) {
         const mesh::TriMesh& m = out.sources[i];
@@ -348,6 +357,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // レイは軸平行なので、判定点の (u, v) セルにある三角形だけを見れば足ります。
     // **どの軸を使うかは基準平面ごとに変わる**ので 3 軸ぶん作ります。
     // 構築は $O(n)$ で、レイあたり $O(n)$ の走査に対して無視できます。
+    st.ms_pre_rayplanes += pre_lap();
     std::vector<std::array<RayIndex, 3>> ray_index(n_src);
     if (opt.ray_index) {
         for (std::size_t i = 0; i < n_src; ++i) {
@@ -406,6 +416,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         return sup;
     };
 
+    st.ms_pre_rayindex += pre_lap();
     std::vector<PlaneId> all_split;
     for (const std::vector<PlaneId>& v : planes_of_src) {
         all_split.insert(all_split.end(), v.begin(), v.end());
@@ -419,6 +430,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // 「この source の多角形が無い = この source の曲面が無い」は成り立ちません。
     // 曲面が横切っているのに「内外が一定」と決めつけると分類が壊れます
     // （**実際に踏みました**）。
+    st.ms_pre_split += pre_lap();
     std::vector<std::vector<octree::Aabb>> src_aabb(n_src);
     for (std::size_t i = 0; i < n_src; ++i) {
         const mesh::TriMesh& m = out.sources[i];
@@ -441,6 +453,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
     }
 
+    st.ms_pre_aabb += pre_lap();
     st.ms_prepare = lap(t_stage);
     if (opt.verbose_stages) {
         std::fprintf(stderr, "      [段] 前処理 完了 %.2f s（葉 %zu / 断片 %zu）\n",
@@ -455,6 +468,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     const std::vector<octree::Cell> leaves = octree::build_leaves(
         policy,
         [&](const octree::Cell& c, std::size_t* na, std::size_t* nb, bool* bsp_skipped) {
+            const auto t_cnt = Clock::now();
+            ++st.leaves_count_calls;
+            st.leaves_count_tests += polys.size();
             const octree::CellBox cb = octree::box_of(c);
             *na = 0;
             *nb = 0;
@@ -478,6 +494,8 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             }
             *bsp_skipped = single_src && only_src != kNoSrc && only_src < out.nsi.size() &&
                            out.nsi[only_src] != 0;
+            st.ms_leaves_count +=
+                std::chrono::duration<double, std::milli>(Clock::now() - t_cnt).count();
         },
         &st.single_src_splits);
     st.leaf_depth_min = opt.depth;

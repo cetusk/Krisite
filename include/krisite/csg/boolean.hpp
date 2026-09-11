@@ -458,11 +458,21 @@ struct BoolStats {
     ///
     /// **並列化の対象を選ぶために測ります。** どこに時間が行くかを知らずに
     /// 並列化しても無駄になります（`CLAUDE.md`「最適化の前に比率を測る」）。
-    double ms_prepare = 0;   ///< 平面表の統合、source ごとの平面・AABB
-    double ms_leaves = 0;    ///< 葉の列挙（八分木の構築）
-    double ms_arrange = 0;   ///< セルごとの arrangement（§4）
-    double ms_stitch = 0;    ///< 縫合と重複の仕分け（§5 / §6）
-    double ms_classify = 0;  ///< 分類（§7）
+    double ms_prepare = 0;  ///< 平面表の統合、source ごとの平面・AABB
+    double ms_leaves = 0;   ///< 葉の列挙（八分木の構築）
+    // **前処理と葉の列挙の内訳**（§5.10.14.33。逐次なので時計を置くだけ）
+    double ms_pre_copy = 0;       ///< 多角形の複製と平面表の統合
+    double ms_pre_intern = 0;     ///< 三角形の平面の intern（`plane_from_triangle` + 表）
+    double ms_pre_rayplanes = 0;  ///< レイ用の平面の複製
+    double ms_pre_rayindex = 0;   ///< レイ索引の構築（source × 3 軸）
+    double ms_pre_split = 0;      ///< 切断平面の集合（整列・一意化）
+    double ms_pre_aabb = 0;       ///< 三角形の箱
+    double ms_leaves_count = 0;   ///< 葉の列挙のうち「数える」呼び出し（セルごとに全多角形を走査）
+    std::size_t leaves_count_calls = 0;  ///< 数える呼び出しの回数（訪れたセル）
+    std::size_t leaves_count_tests = 0;  ///< 同、多角形の箱とセルの判定の回数
+    double ms_arrange = 0;               ///< セルごとの arrangement（§4）
+    double ms_stitch = 0;                ///< 縫合と重複の仕分け（§5 / §6）
+    double ms_classify = 0;              ///< 分類（§7）
     // **縫合の内訳**（壁時計。§5.10.13。逐次なので CPU と同じ）
     double ms_st_points = 0;   ///< 第 1 段: 平面 3 つ組の表 + 構成点の計算
     double ms_st_sort = 0;     ///< 第 2 段: `lex_less` の整列

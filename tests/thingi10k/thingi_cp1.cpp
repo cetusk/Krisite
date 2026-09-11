@@ -234,6 +234,8 @@ struct PairStruct {
     double vol3[3] = {0, 0, 0};
     std::size_t skip_box = 0, skip_exact = 0, skip_boxside = 0;
     double fr_clip = 0, fr_prep = 0, fr_cut = 0, fr_commit = 0;
+    double ms_prepare = 0, ms_leaves = 0, pre[6] = {0, 0, 0, 0, 0, 0}, leaves_count = 0;
+    std::size_t leaves_calls = 0, leaves_tests = 0;
     std::size_t tri3[3] = {0, 0, 0};
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
@@ -322,6 +324,17 @@ struct PairStruct {
         fr_prep += b.ms_fr_prep;
         fr_cut += b.ms_fr_cut;
         fr_commit += b.ms_fr_commit;
+        ms_prepare += b.ms_prepare;
+        ms_leaves += b.ms_leaves;
+        pre[0] += b.ms_pre_copy;
+        pre[1] += b.ms_pre_intern;
+        pre[2] += b.ms_pre_rayplanes;
+        pre[3] += b.ms_pre_rayindex;
+        pre[4] += b.ms_pre_split;
+        pre[5] += b.ms_pre_aabb;
+        leaves_count += b.ms_leaves_count;
+        leaves_calls += b.leaves_count_calls;
+        leaves_tests += b.leaves_count_tests;
         skip_exact += b.bsp_skip_exact;
         skip_boxside += b.bsp_skip_boxside;
         split_actual += b.bsp_split_actual;
@@ -397,7 +410,9 @@ struct PairStruct {
         for (int k = 0; k < 3; ++k) o << ' ' << tri3[k];
         o << ' ' << skip_box << ' ' << skip_exact << ' ' << (long long)fr_clip << ' '
           << (long long)fr_prep << ' ' << (long long)fr_cut << ' ' << (long long)fr_commit << ' '
-          << skip_boxside;
+          << skip_boxside << ' ' << (long long)ms_prepare << ' ' << (long long)ms_leaves;
+        for (int k = 0; k < 6; ++k) o << ' ' << (long long)pre[k];
+        o << ' ' << (long long)leaves_count << ' ' << leaves_calls << ' ' << leaves_tests;
     }
 };
 
