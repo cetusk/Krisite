@@ -121,6 +121,8 @@ set_tests_properties(parallel PROPERTIES PROCESSORS 4)
 # SPEC-phase3 §3.1 / §2.1 の CP1。辺平面の構成（軸方向との外積）と、
 # 断片の相対内部の点。**両方の経路が使われることを固定する**（空回りの番人）
 krisite_add_test(interior      csg/test_interior.cpp)
+# O3（触れない三角形の平面で切らない）の条件 1 を突く構成（SPEC-phase3 §5.4）。発火しなければ失敗
+krisite_add_test(o3_coplanar   csg/test_o3_coplanar.cpp)
 # SPEC-phase3 §14 の CP2。入口・中核・出口の分離。**二項正解器との一致**と、
 # **連鎖でビット幅が伸びないこと**（§10.3.1。契約の成立条件）
 krisite_add_test(soup          csg/test_soup.cpp)

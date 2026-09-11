@@ -630,6 +630,61 @@ void print_rows() {
                     t == 0 ? 0.0 : 100.0 * r.st.ms_arr_stitch / t);
     }
 
+    // ---- ★ 分類の内訳（`SPEC-phase5.md` §5.10.14.7。まず刻むだけ）------------------------
+    //
+    // **CPU（全スレッドの和）で 4
+    // 区分。壁時計は「並列の領域ループ」と「逐次（順序の構築と結合）」。**
+    std::printf(
+        "\n| 段 | 分類の内訳（CPU）: 準備 | 代表点 | **レイ** | 判定 + 出力 | CPU の和 | "
+        "並列部の壁時計 | 逐次部の壁時計 | 並列効率 | 領域 |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    for (const Row& r : g_rows) {
+        const double c = r.st.ms_cl_prep + r.st.ms_cl_rep + r.st.ms_cl_ray + r.st.ms_cl_out;
+        const double seq = r.st.ms_classify - r.st.ms_cl_par_wall;
+        std::printf(
+            "| %s | %.1f%% | %.1f%% | **%.1f%%** | %.1f%% | %.3f s | %.3f s | %.3f s | %.2f | %zu "
+            "|\n",
+            r.name.c_str(), c == 0 ? 0.0 : 100.0 * r.st.ms_cl_prep / c,
+            c == 0 ? 0.0 : 100.0 * r.st.ms_cl_rep / c, c == 0 ? 0.0 : 100.0 * r.st.ms_cl_ray / c,
+            c == 0 ? 0.0 : 100.0 * r.st.ms_cl_out / c, c / 1000.0, r.st.ms_cl_par_wall / 1000.0,
+            seq / 1000.0,
+            r.st.ms_cl_par_wall == 0 ? 0.0 : c / (r.st.ms_cl_par_wall * (double)g_threads),
+            r.st.regions);
+    }
+
+    // ---- ★ レイの候補の漏斗（§5.10.14.7。索引が返す候補のうち何割を使うか）----------------
+    std::printf(
+        "\n| 段 | レイ | 索引の候補 / レイ | 投影 AABB を通過 / レイ | 前方 / レイ | "
+        "**厳密判定に回った / レイ** | "
+        "寄与 / レイ | 安い前判定の回数 / レイ |\n");
+    std::printf("|---|---:|---:|---:|---:|---:|---:|---:|\n");
+    for (const Row& r : g_rows) {
+        const double n = r.st.raycasts == 0 ? 1.0 : (double)r.st.raycasts;
+        std::printf("| %s | %zu | %.1f | %.2f | %.2f | **%.2f** | %.2f | %.1f |\n", r.name.c_str(),
+                    r.st.raycasts, r.st.ray_tri_tests / n, r.st.ray_tri_aabb / n,
+                    r.st.ray_tri_fwd / n, r.st.ray_tri_kept / n, r.st.ray_tri_hits / n,
+                    r.st.ray_cheap_tests / n);
+    }
+
+    // ---- ★ 索引の粒度（`SPEC-phase5.md` §5.10.14.11。候補はどの段から来るか）------------
+    //
+    // **段 0 が最も細かい。粗い段の項目は、その粗いセルに落ちるすべてのレイが見ます。**
+    {
+        std::printf(
+            "\n| 段（演算） | 候補の総数 | 索引の段ごとの候補（細 → 粗）と割合 "
+            "|\n|---|---:|---|\n");
+        for (const Row& r : g_rows) {
+            std::size_t tot = 0;
+            for (int l = 0; l < 12; ++l) tot += r.st.ray_cand_level[l];
+            std::printf("| %s | %zu | ", r.name.c_str(), tot);
+            for (std::size_t l = 0; l < r.st.ray_levels_max && l < 12; ++l) {
+                std::printf("%s%zu（%.1f%%）", l ? " / " : "", r.st.ray_cand_level[l],
+                            tot == 0 ? 0.0 : 100.0 * (double)r.st.ray_cand_level[l] / (double)tot);
+            }
+            std::printf(" |\n");
+        }
+    }
+
     // ---- ★ 縫合の内訳と、並列化の前提の確認（`SPEC-phase5.md` §5.10.13）-----------
     std::printf(
         "\n| 段 | 縫合の内訳（壁時計）: 構成点 + 3 つ組の表 | 整列 | 番号付け | **仕分け** | "
@@ -881,12 +936,86 @@ int main(int argc, char** argv) {
     // **突き合わせだけ**（出力は変えません）。セルまたぎの計数はこの旗の下です。
     o.verify_region_key = verify_rk;
     o.alloc_reuse = alloc_reuse;
+    o.measure_classify = true;   // 分類の内訳（§5.10.14.7）
+    o.record_ray_levels = true;  // 索引の粒度（§5.10.14.11）
     // **縫合の前提の確認**（第 9 引数。既定 0。$O(L^2)$ の葉の対の数え上げを含む）
     o.measure_stitch = (argc > 9) && (std::atoi(argv[9]) != 0);
+    // **レイ索引の細かい割り当ての上限 K**（第 10 引数。既定 0 = 従来。A/B はこの値と 0 を比べる）
+    const std::size_t fine_k = (argc > 10) ? std::strtoul(argv[10], nullptr, 10) : 0;
+    o.ray_index_fine_cells = fine_k;
+    // **第 11 引数: 記憶の上限（項目 / 三角形）から K を導く形**（0 で使わない）
+    const std::size_t fine_budget = (argc > 11) ? std::strtoul(argv[11], nullptr, 10) : 0;
+    o.ray_index_fine_budget = fine_budget;
+    // **第 12 引数: 記憶の上限（絶対量、MB / 軸）。既定 16。0 で使わない**
+    const std::size_t fine_mb = (argc > 12) ? std::strtoul(argv[12], nullptr, 10) : 16;
+    o.ray_index_fine_bytes = fine_mb << 20;
 
     const csg::PolySoup A = csg::from_mesh(qa.mesh);
     const csg::PolySoup B = csg::from_mesh(qb.mesh);
     const csg::PolySoup D = csg::from_mesh(qd.mesh);
+
+    // ---- ★ 索引の段ごとの項目数（§5.10.14.11。§11.3 の形。模型・軸ごと）------------------
+    {
+        // **模型ごと・軸ごとの段の項目数**（§11.3 の形。三角形は自分の大きさに合った段に入る）
+        std::printf(
+            "\n| 模型 | 三角形 | 軸 | 段の数 | 段ごとの項目数（細 → 粗） | 最多の段 "
+            "|\n|---|---:|---|---:|---|---:|\n");
+        const struct {
+            const char* name;
+            const mesh::TriMesh* m;
+        } models[3] = {{ida.c_str(), &qa.mesh}, {idb.c_str(), &qb.mesh}, {idd.c_str(), &qd.mesh}};
+        for (const auto& mm : models) {
+            for (int ax = 0; ax < 3; ++ax) {
+                csg::RayIndex ix;
+                ix.build(*mm.m, static_cast<geom::Axis>(ax));
+                std::size_t best = 0;
+                std::printf("| `%s` | %zu | %c | %zu | ", mm.name, mm.m->triangles.size(),
+                            "XYZ"[ax], ix.levels());
+                for (std::size_t l = 0; l < ix.levels(); ++l) {
+                    if (ix.items_at(l) > ix.items_at(best)) best = l;
+                    std::printf("%s%zu", l ? " / " : "", ix.items_at(l));
+                }
+                std::printf(" | **%zu** |\n", best);
+            }
+        }
+    }
+
+    // ---- ★ 粗い段に入る理由（§5.10.14.13。本当に大きいか、境界をまたぐだけか）---------------
+    //
+    // **段 ℓ の三角形は幅が段 ℓ−1 のセル 1 つを超えるが、段 ℓ のセル 1 つに収まる大きさかは別。**
+    // **収まるなら「境界をまたぐだけ」で、揃えれば 1 セルに入ります。**
+    // **段 0 のセルで数えた項目数は、複数のセルに割り当てる案の費用です。**
+    {
+        std::printf(
+            "\n| 模型 | 軸 | 段 3 以上の三角形 | うち段のセル 1 つに収まる大きさ | 段 0 "
+            "のセルで数えた項目（段 3 以上） "
+            "| 段ごと: 三角形 / 収まる / 段 0 の項目（段 3 →） |\n|---|---|---:|---:|---:|---|\n");
+        const struct {
+            const char* name;
+            const mesh::TriMesh* m;
+        } models[3] = {{ida.c_str(), &qa.mesh}, {idb.c_str(), &qb.mesh}, {idd.c_str(), &qd.mesh}};
+        for (const auto& mm : models) {
+            for (int ax = 0; ax < 3; ++ax) {
+                csg::RayIndex ix;
+                ix.build(*mm.m, static_cast<geom::Axis>(ax));
+                csg::RayIndex::Granularity g;
+                ix.granularity(*mm.m, g);
+                std::size_t t3 = 0, f3 = 0, c3 = 0;
+                for (std::size_t l = 3; l < ix.levels() && l < 12; ++l) {
+                    t3 += g.tri[l];
+                    f3 += g.fit1[l];
+                    c3 += g.cells0[l];
+                }
+                std::printf("| `%s` | %c | %zu | **%zu**（%.0f%%） | %zu | ", mm.name, "XYZ"[ax],
+                            t3, f3, t3 == 0 ? 0.0 : 100.0 * (double)f3 / (double)t3, c3);
+                for (std::size_t l = 3; l < ix.levels() && l < 12; ++l) {
+                    std::printf("%s%zu/%zu/%zu", l > 3 ? ", " : "", g.tri[l], g.fit1[l],
+                                g.cells0[l]);
+                }
+                std::printf(" |\n");
+            }
+        }
+    }
 
     // ---- ★★ 構成点キャッシュの A/B（`SPEC-phase5.md` §5.10.12）------------------
     //
@@ -923,6 +1052,54 @@ int main(int argc, char** argv) {
         std::printf("\n**出力**: %s / **CPU 時間の比**: **%.2f 倍**\n",
                     h[0] == h[1] ? "**バイト一致**" : "**★ 食い違い（重大）**",
                     cpu[0] == 0 ? 0.0 : cpu[1] / cpu[0]);
+    }
+
+    // ---- ★★ レイ索引の A/B（`SPEC-phase5.md` §5.10.14.15。A: 段 0 の覆うセル全部に割り当て）----
+    //
+    // **候補の計数（演算回数）で効きを見ます。出力はバイト一致のはず（候補は超集合で、判定は同じ述語）。**
+    if (fine_k != 0 || fine_budget != 0 || fine_mb != 0) {
+        std::printf(
+            "\n### レイ索引の A/B（同一実行。K = %zu、上限 = %zu 項目/三角形、絶対量 %zu "
+            "MB/軸）\n\n",
+            fine_k, fine_budget, fine_mb);
+        std::printf(
+            "| 実装 | 索引の項目 | 候補 / レイ | 前判定を通過 / レイ | 寄与 / レイ | 分類（壁） | "
+            "全体（壁） | "
+            "出力ハッシュ |\n|---|---:|---:|---:|---:|---:|---:|---|\n");
+        unsigned long long h[2] = {0, 0};
+        double cl[2] = {0, 0}, wall[2] = {0, 0}, cand[2] = {0, 0};
+        for (int cfg = 0; cfg < 2; ++cfg) {
+            csg::BoolOptions ab = o;
+            ab.ray_index_fine_cells = cfg == 0 ? 0 : fine_k;
+            ab.ray_index_fine_budget = cfg == 0 ? 0 : fine_budget;
+            ab.ray_index_fine_bytes = cfg == 0 ? 0 : (fine_mb << 20);
+            csg::BoolStats st;
+            const auto t0 = std::chrono::steady_clock::now();
+            const csg::PolySoup s2 = csg::boolean(A, D, csg::BoolOp::Difference, ab, &st);
+            const double ws =
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+            csg::ToMeshOptions tm2;
+            tm2.split_contacts = true;
+            h[cfg] = hash_mesh(csg::to_mesh(s2, tm2));
+            std::size_t items = 0;
+            for (int l = 0; l < 12; ++l) items += st.ray_items_level[l];
+            const double n = st.raycasts == 0 ? 1.0 : (double)st.raycasts;
+            cl[cfg] = st.ms_classify / 1000.0;
+            wall[cfg] = ws;
+            cand[cfg] = st.ray_tri_tests / n;
+            std::printf(
+                "| %s（K %zu〜%zu） | %zu | **%.1f** | %.2f | %.2f | %.3f s | %.3f s | `%016llx` "
+                "|\n",
+                cfg == 0 ? "従来（K = 0）" : "**A**", st.ray_fine_cap_min, st.ray_fine_cap_max,
+                items, st.ray_tri_tests / n, st.ray_tri_kept / n, st.ray_tri_hits / n,
+                st.ms_classify / 1000.0, ws, h[cfg]);
+        }
+        std::printf(
+            "\n**出力**: %s / **候補 / レイの比**: **%.2f 倍** / 分類（壁）の比: %.2f 倍 / "
+            "全体（壁）: %.2f 倍\n",
+            h[0] == h[1] ? "**バイト一致**" : "**★ 食い違い（重大）**",
+            cand[1] == 0 ? 0.0 : cand[0] / cand[1], cl[1] == 0 ? 0.0 : cl[0] / cl[1],
+            wall[1] == 0 ? 0.0 : wall[0] / wall[1]);
     }
 
     // ---- ★★ 縫合の A/B（`SPEC-phase5.md` §5.10.13.3。葉ごと + 境界の類だけ大域）--------

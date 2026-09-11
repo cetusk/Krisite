@@ -325,6 +325,18 @@ struct BoolStats {
     double ms_arr_coplanar = 0.0;  ///< 共平面重複の突き合わせ（EMBER §4.3 の C4）
     double ms_arr_stitch =
         0.0;  ///< **縫合の葉ごとの部分**（鍵の重複除去 + 値の整列 + 境界の印。§5.10.13.3）
+    // **断片の生成の内訳**（`measure_frag` のときだけ。全スレッドの CPU の和）
+    double ms_fr_clip = 0.0;    ///< セル平面でのクリップ
+    double ms_fr_prep = 0.0;    ///< 切断集合の取得（`cuts_for`）と器の準備
+    double ms_fr_cut = 0.0;     ///< 切断ループ（O3 の判定 + `split_fragment_into`）
+    double ms_fr_commit = 0.0;  ///< 確定（葉の配列へ移す）
+    // **分類の内訳**（`measure_classify` のときだけ。CPU の和 = 全スレッドぶん。壁時計は
+    // `ms_cl_par_wall`）
+    double ms_cl_prep = 0.0;      ///< 領域の代表断片の選択、強制値の確認
+    double ms_cl_rep = 0.0;       ///< 代表点の構成（`interior_point`）
+    double ms_cl_ray = 0.0;       ///< レイキャスト（`winding_split` × source）
+    double ms_cl_out = 0.0;       ///< 指示関数の評価と出力多角形の生成
+    double ms_cl_par_wall = 0.0;  ///< 領域ループ（並列）の壁時計。`ms_classify` との差が逐次部分
     /// 空でない葉の数（平均を出すための分母）
     std::size_t leaf_nonempty = 0;
     /// **単一 source の葉**（`SPEC-phase5.md` の (c)）。
@@ -381,6 +393,20 @@ struct BoolStats {
     std::size_t ray_tri_fwd_only = 0;
     /// **安い前判定が走った回数**（早期打ち切りあり）。
     std::size_t ray_cheap_tests = 0;
+    /// **索引の段ごとの候補数と項目数**（`record_ray_levels` の下。段 0 が最も細かい）。
+    /// 項目数は source × 3 軸の和。
+    std::size_t ray_cand_level[12] = {};
+    std::size_t ray_items_level[12] = {};
+    std::size_t ray_levels_max = 0;
+    std::size_t ray_fine_cap_min = 0,
+                ray_fine_cap_max = 0;  ///< 使った K（source × 軸の最小 / 最大）
+    /// **粒度**（同上。三角形の数 / その段のセル 1 つに収まる数 / 段 0 のセルで数えた項目数）
+    std::size_t ray_tri_level[12] = {};
+    std::size_t ray_fit1_level[12] = {};
+    std::size_t ray_cells0_level[12] = {};
+    /// 覆うセル数の区分（≤4 / ≤16 / ≤64 / ≤256 / ≤1024 / >1024）ごとの三角形数と $c_u c_v$ の和
+    std::size_t ray_hist_tri[6] = {};
+    std::size_t ray_hist_cells[6] = {};
 
     /// §5.4 の局所 BSP（CP4）。**切断候補のうち何枚を実際に切ったか。**
     ///
@@ -388,8 +414,21 @@ struct BoolStats {
     /// **`bsp_cuts_used` と `bsp_cuts_skipped` の両方が非零であること**を
     /// テストで確かめます。**片方が 0 なら判定が空回りしています**（一方に倒れている）。
     std::size_t bsp_cut_slots = 0;
+    /// **局所 BSP の切断のうち、実際に断片を 2 つに分けた数**（`SPEC-phase3.md` §5.4
+    /// の未測定の問い。 「返した候補のうち何割使うか」の 6 例目）。`bsp_split_attempts` は（断片 ×
+    /// 切断平面）の試行数
+    std::size_t bsp_split_attempts = 0;
+    std::size_t bsp_split_actual = 0;
+    /// **切断平面に一度も分けられなかった断片**（セル平面のクリップだけで分かれた断片。O2
+    /// の前提）と、 そのような断片を持つ元の三角形の数（`frags_uncut - frags_uncut_tris`
+    /// がレイの削減の上界）
+    std::size_t frags_uncut = 0;
+    std::size_t frags_uncut_tris = 0;
     std::size_t bsp_cuts_used = 0;     ///< 支持平面に触れるので切った枚数
     std::size_t bsp_cuts_skipped = 0;  ///< 厳密に片側なので切らなかった枚数
+    std::size_t bsp_skip_box = 0;      ///< O3: 安い前判定（整数の箱）で飛ばした（断片 × 平面）
+    std::size_t bsp_skip_exact = 0;    ///< O3: 厳密な比較で飛ばした（同）
+    std::size_t bsp_skip_boxside = 0;  ///< 多角形の箱が平面の片側なので飛ばした（断片 × 平面）
 
     /// §3.1 の適応分割。葉の深度の分布（**深さの差が §2.4 の前提**）。
     unsigned leaf_depth_min = 0;
@@ -419,11 +458,21 @@ struct BoolStats {
     ///
     /// **並列化の対象を選ぶために測ります。** どこに時間が行くかを知らずに
     /// 並列化しても無駄になります（`CLAUDE.md`「最適化の前に比率を測る」）。
-    double ms_prepare = 0;   ///< 平面表の統合、source ごとの平面・AABB
-    double ms_leaves = 0;    ///< 葉の列挙（八分木の構築）
-    double ms_arrange = 0;   ///< セルごとの arrangement（§4）
-    double ms_stitch = 0;    ///< 縫合と重複の仕分け（§5 / §6）
-    double ms_classify = 0;  ///< 分類（§7）
+    double ms_prepare = 0;  ///< 平面表の統合、source ごとの平面・AABB
+    double ms_leaves = 0;   ///< 葉の列挙（八分木の構築）
+    // **前処理と葉の列挙の内訳**（§5.10.14.33。逐次なので時計を置くだけ）
+    double ms_pre_copy = 0;       ///< 多角形の複製と平面表の統合
+    double ms_pre_intern = 0;     ///< 三角形の平面の intern（`plane_from_triangle` + 表）
+    double ms_pre_rayplanes = 0;  ///< レイ用の平面の複製
+    double ms_pre_rayindex = 0;   ///< レイ索引の構築（source × 3 軸）
+    double ms_pre_split = 0;      ///< 切断平面の集合（整列・一意化）
+    double ms_pre_aabb = 0;       ///< 三角形の箱
+    double ms_leaves_count = 0;   ///< 葉の列挙のうち「数える」呼び出し（セルごとに全多角形を走査）
+    std::size_t leaves_count_calls = 0;  ///< 数える呼び出しの回数（訪れたセル）
+    std::size_t leaves_count_tests = 0;  ///< 同、多角形の箱とセルの判定の回数
+    double ms_arrange = 0;               ///< セルごとの arrangement（§4）
+    double ms_stitch = 0;                ///< 縫合と重複の仕分け（§5 / §6）
+    double ms_classify = 0;              ///< 分類（§7）
     // **縫合の内訳**（壁時計。§5.10.13。逐次なので CPU と同じ）
     double ms_st_points = 0;   ///< 第 1 段: 平面 3 つ組の表 + 構成点の計算
     double ms_st_sort = 0;     ///< 第 2 段: `lex_less` の整列
@@ -626,6 +675,39 @@ struct BoolOptions {
     bool verbose_stages = false;
     /// **前判定の効きを計測する**（既定 偽。真にすると計数のぶん遅くなります）。
     bool record_ray_filter = false;
+    /// **索引の粒度の計測**（`SPEC-phase5.md` §5.10.14.11。既定 偽）。
+    /// 候補が索引のどの段から来たかと、段ごとの項目数を数えます。
+    bool record_ray_levels = false;
+    /// **★ レイ索引の細かい割り当て（A。§5.10.14.15）**: 段 0 で覆うセル数がこれ以下の三角形は
+    /// 覆うセル全部に入れる。**0 で従来どおり**（正解器）。値は記憶の上限から決める（`BENCH.md`）。
+    std::size_t ray_index_fine_cells = 0;
+    /// **同、記憶の上限で決める形**: 三角形 1 枚あたりの項目数の上限（例 16）。0 で使わない。
+    /// 非零なら模型ごと・軸ごとに K を導き、`ray_index_fine_cells` は使わない。
+    /// 既定 0（2026-09-10 判断: 上限は絶対量で置く。下の `ray_index_fine_bytes`）。
+    std::size_t ray_index_fine_budget = 0;
+    /// **★ レイ索引の記憶の上限（絶対量。source × 軸ごとのバイト数）**（§5.10.14.17。既定 16 MB）。
+    /// この上限を満たす最大の K を模型・軸ごとに導く。**記憶の制約は絶対量なので、こちらが既定。**
+    /// 0 で使わない（`ray_index_fine_budget` / `ray_index_fine_cells` へ）。
+    std::size_t ray_index_fine_bytes = std::size_t{16} << 20;
+    /// **★ O3: 切る三角形が触れない断片は切らない**（`SPEC-phase5.md` §5.10.14.24。**既定 0 =
+    /// 切らない判定をしない**）。
+    ///
+    /// | 値 | 判定 |
+    /// |---|---|
+    /// | 0 | 従来（セル内の候補平面すべてで切る） |
+    /// | 1 | **安い前判定だけ**: 多角形の箱 ∩
+    /// セルの箱（整数）が、切る三角形の箱と交わらなければ飛ばす | | 2 | 1
+    /// に加えて、交わるときは断片の頂点と三角形の箱の厳密な比較（Phase 3 の実験と同じ）で飛ばす |
+    ///
+    /// **既定 2**（2026-09-11。条件 1 は `DESIGN-phase5-hotspots.md` §36.8: 共平面の揃え（C4）が
+    /// `region_key` の前に 走るので、切り方の違いは重なりの分割に残らない。突く構成
+    /// `tests/csg/test_o3_coplanar.cpp` で発火と一致を確認）。
+    int bsp_skip_disjoint = 2;
+    /// **★ 多角形の箱が切断平面の片側に完全にあれば、その多角形の全断片でその平面を飛ばす**
+    /// （§5.10.14.30 の 7 例目。既定 真）。箱は「多角形の箱 ∩ セルの箱」（整数）で、
+    /// 断片はその中にあるので
+    /// **早期 return と同じ判定を頂点を評価せずに行うだけ**（出力は不変）。偽で従来（正解器）。
+    bool bsp_skip_boxside = true;
     /// **適応分割**（§3.1）。偽なら常に最大深度まで分割する固定深度モード。
     /// **固定深度モードを消さないこと。** §9.1 の正解器です
     ///
@@ -725,6 +807,10 @@ struct BoolOptions {
     /// **偽で従来（大域の `std::map` と整列。逐次）。** 従来とは領域の順序が変わるので、
     /// 出力の一致は「順序を除いた鍵」で検査します（`chain_frag` の縫合の A/B）。
     bool stitch_parallel = true;
+    /// **分類の中を刻む計測**（§5.10.14.7。既定 偽）。領域ごとに時計を 4 回読みます。
+    bool measure_classify = false;
+    /// **断片の生成の中を刻む計測**（§5.10.14.30。既定 偽）。多角形ごとに時計を 4 回読みます。
+    bool measure_frag = false;
     bool tight_out_aabb = true;
     bool region_key_cuts = false;
     /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。

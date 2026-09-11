@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <ostream>
 #include <string>
 #include <vector>
@@ -221,6 +222,23 @@ struct PairStruct {
     double ms_topo = 0;  ///< `check_topology`（演算ごとに 2 回: 統計用と合否用）
     double ms_vol = 0;   ///< 体積の検算（`volume6_fp` × 5）
     double ms_hash = 0;  ///< 出力のハッシュ（× 3）
+    /// **分類と arrange の内訳**（§5.10.14.7。3 演算の和）
+    double cl_prep = 0, cl_rep = 0, cl_ray = 0, cl_out = 0, cl_par_wall = 0;
+    double ar_gather = 0, ar_present = 0, ar_prep = 0, ar_frag = 0, ar_coplanar = 0, ar_stitch = 0;
+    /// **索引の粒度**（§5.10.14.11。段ごとの候補と項目。3 演算の和）
+    std::size_t cand_level[12] = {}, items_level[12] = {};
+    std::size_t tri_level[12] = {}, fit1_level[12] = {}, cells0_level[12] = {};
+    std::size_t hist_tri[6] = {}, hist_cells[6] = {};
+    std::size_t split_attempts = 0, split_actual = 0, uncut = 0, uncut_tris = 0;
+    /// **版をまたいだ意味論の比較のため**: 3 演算の出力の 6 倍体積（浮動小数の篩）と、三角形数
+    double vol3[3] = {0, 0, 0};
+    std::size_t skip_box = 0, skip_exact = 0, skip_boxside = 0;
+    double fr_clip = 0, fr_prep = 0, fr_cut = 0, fr_commit = 0;
+    double ms_prepare = 0, ms_leaves = 0, pre[6] = {0, 0, 0, 0, 0, 0}, leaves_count = 0;
+    std::size_t leaves_calls = 0, leaves_tests = 0;
+    double sp[5] = {0, 0, 0, 0,
+                    0};  ///< 接触の分裂の内訳: 辺の表 / 診断と成分 / 扇（並列） / 割り当て / 検証
+    std::size_t tri3[3] = {0, 0, 0};
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
     /// **NSI を宣言できたか**（-1 = 検査していない / 0 = 自己交差あり / 1 = 宣言した）。
@@ -280,6 +298,55 @@ struct PairStruct {
         ms_tri += t.ms_tri;
         ms_split += t.ms_split;
         ms_tomesh += t.ms_total;
+        cl_prep += b.ms_cl_prep;
+        cl_rep += b.ms_cl_rep;
+        cl_ray += b.ms_cl_ray;
+        cl_out += b.ms_cl_out;
+        cl_par_wall += b.ms_cl_par_wall;
+        ar_gather += b.ms_arr_gather;
+        ar_present += b.ms_arr_present;
+        ar_prep += b.ms_arr_prep;
+        ar_frag += b.ms_arr_frag;
+        ar_coplanar += b.ms_arr_coplanar;
+        ar_stitch += b.ms_arr_stitch;
+        for (int l = 0; l < 12; ++l) {
+            cand_level[l] += b.ray_cand_level[l];
+            items_level[l] += b.ray_items_level[l];
+            tri_level[l] += b.ray_tri_level[l];
+            fit1_level[l] += b.ray_fit1_level[l];
+            cells0_level[l] += b.ray_cells0_level[l];
+        }
+        for (int k = 0; k < 6; ++k) {
+            hist_tri[k] += b.ray_hist_tri[k];
+            hist_cells[k] += b.ray_hist_cells[k];
+        }
+        split_attempts += b.bsp_split_attempts;
+        skip_box += b.bsp_skip_box;
+        fr_clip += b.ms_fr_clip;
+        fr_prep += b.ms_fr_prep;
+        fr_cut += b.ms_fr_cut;
+        fr_commit += b.ms_fr_commit;
+        ms_prepare += b.ms_prepare;
+        ms_leaves += b.ms_leaves;
+        pre[0] += b.ms_pre_copy;
+        pre[1] += b.ms_pre_intern;
+        pre[2] += b.ms_pre_rayplanes;
+        pre[3] += b.ms_pre_rayindex;
+        pre[4] += b.ms_pre_split;
+        pre[5] += b.ms_pre_aabb;
+        leaves_count += b.ms_leaves_count;
+        leaves_calls += b.leaves_count_calls;
+        leaves_tests += b.leaves_count_tests;
+        sp[0] += t.split.ms_edges;
+        sp[1] += t.split.ms_diag;
+        sp[2] += t.split.ms_fan;
+        sp[3] += t.split.ms_apply;
+        sp[4] += t.split.ms_verify;
+        skip_exact += b.bsp_skip_exact;
+        skip_boxside += b.bsp_skip_boxside;
+        split_actual += b.bsp_split_actual;
+        uncut += b.frags_uncut;
+        uncut_tris += b.frags_uncut_tris;
         ms_arrange += b.ms_arrange;
         ms_classify += b.ms_classify;
         ms_stitch += b.ms_stitch;
@@ -333,7 +400,27 @@ struct PairStruct {
           << ' ' << (long long)ms_construct << ' ' << (long long)ms_merge << ' '
           << (long long)ms_index << ' ' << (long long)ms_tri << ' ' << (long long)ms_split << ' '
           << (long long)ms_tomesh << ' ' << (long long)ms_core << ' ' << (long long)ms_inlet << ' '
-          << (long long)ms_topo << ' ' << (long long)ms_vol << ' ' << (long long)ms_hash;
+          << (long long)ms_topo << ' ' << (long long)ms_vol << ' ' << (long long)ms_hash << ' '
+          << (long long)cl_prep << ' ' << (long long)cl_rep << ' ' << (long long)cl_ray << ' '
+          << (long long)cl_out << ' ' << (long long)cl_par_wall << ' ' << (long long)ar_gather
+          << ' ' << (long long)ar_present << ' ' << (long long)ar_prep << ' ' << (long long)ar_frag
+          << ' ' << (long long)ar_coplanar << ' ' << (long long)ar_stitch;
+        for (int l = 0; l < 12; ++l) o << ' ' << cand_level[l];
+        for (int l = 0; l < 12; ++l) o << ' ' << items_level[l];
+        for (int l = 0; l < 12; ++l) o << ' ' << tri_level[l];
+        for (int l = 0; l < 12; ++l) o << ' ' << fit1_level[l];
+        for (int l = 0; l < 12; ++l) o << ' ' << cells0_level[l];
+        for (int k = 0; k < 6; ++k) o << ' ' << hist_tri[k];
+        for (int k = 0; k < 6; ++k) o << ' ' << hist_cells[k];
+        o << ' ' << split_attempts << ' ' << split_actual << ' ' << uncut << ' ' << uncut_tris;
+        for (int k = 0; k < 3; ++k) o << ' ' << std::setprecision(17) << vol3[k];
+        for (int k = 0; k < 3; ++k) o << ' ' << tri3[k];
+        o << ' ' << skip_box << ' ' << skip_exact << ' ' << (long long)fr_clip << ' '
+          << (long long)fr_prep << ' ' << (long long)fr_cut << ' ' << (long long)fr_commit << ' '
+          << skip_boxside << ' ' << (long long)ms_prepare << ' ' << (long long)ms_leaves;
+        for (int k = 0; k < 6; ++k) o << ' ' << (long long)pre[k];
+        o << ' ' << (long long)leaves_count << ' ' << leaves_calls << ' ' << leaves_tests;
+        for (int k = 0; k < 5; ++k) o << ' ' << (long long)sp[k];
     }
 };
 
@@ -444,6 +531,12 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
         const double vu = kritest::volume6_fp(mu), vi = kritest::volume6_fp(mi);
         const double vd = kritest::volume6_fp(md);
         ps->vol_err = kritest::identity_error(vu, vi, va, vb);
+        ps->vol3[0] = vu;
+        ps->vol3[1] = vi;
+        ps->vol3[2] = vd;
+        ps->tri3[0] = mu.triangles.size();
+        ps->tri3[1] = mi.triangles.size();
+        ps->tri3[2] = md.triangles.size();
         ps->diff_err = kritest::difference_error(vd, va, vi);
         ps->ms_vol =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_vol)
@@ -532,6 +625,8 @@ int main(int argc, char** argv) {
     // > **切るのは EMBER と比較可能な数字を採るときだけ**で、
     // > **そのときは正しさの判定に使わないでください。**
     const bool verify_delta = (argc > 8) ? (std::atoi(argv[8]) != 0) : true;
+    // **レイ索引の細かい割り当ての上限 K**（第 9 引数。既定 0 = 従来。§5.10.14.15）
+    const std::size_t fine_k = (argc > 9) ? std::strtoul(argv[9], nullptr, 10) : 0;
     // 宣言の内訳（(a) の空回り検査）。**「検査を入れた」と「検査が効いた」は別**なので、
     // **宣言できた数と落ちた数を必ず出します。**
     std::size_t nsi_declared = 0, nsi_rejected = 0;
@@ -595,6 +690,22 @@ int main(int argc, char** argv) {
     // **coverage が出る前に打ち切られるのを避けるため**です。
     // **並びは決定的**なので、再開しても同じ対になります。
     csg::BoolOptions o;
+    o.measure_classify = true;   // 分類の内訳（§5.10.14.7。領域ごとに時計 4 回）
+    o.measure_frag = true;       // 断片の生成の内訳（§5.10.14.30。多角形ごとに時計 4 回）
+    o.record_ray_levels = true;  // 索引の粒度（§5.10.14.11）
+    o.ray_index_fine_cells = fine_k;
+    // **第 10 引数: 記憶の上限（項目 / 三角形）から K を導く形**
+    const std::size_t fine_budget = (argc > 10) ? std::strtoul(argv[10], nullptr, 10) : 0;
+    o.ray_index_fine_budget = fine_budget;
+    // **第 11 引数: 記憶の上限（絶対量、MB / 軸）。既定 16。0 で使わない**
+    const std::size_t fine_mb = (argc > 11) ? std::strtoul(argv[11], nullptr, 10) : 16;
+    o.ray_index_fine_bytes = fine_mb << 20;
+    // **第 12 引数: O3 の判定（0 = 従来、1 = 整数の箱だけ、2 = 箱 + 厳密）。既定 0**
+    // **引数が無ければライブラリの既定（2）を使う。** 0
+    // を既定にすると既定の経路を測っていないことになる（実際に踏んだ）
+    if (argc > 12) o.bsp_skip_disjoint = std::atoi(argv[12]);
+    // **第 13 引数: 箱が片側なら飛ばす（1 = 既定、0 = 切る）**
+    if (argc > 13) o.bsp_skip_boxside = std::atoi(argv[13]) != 0;
     o.depth = depth;
     o.adaptive = true;
     o.leaf_threshold = 0;
@@ -684,6 +795,14 @@ int main(int argc, char** argv) {
     std::printf("| b（座標ビット） | %d |\n", KRISITE_COORD_BITS);
     std::printf("| **NSI の扱い** | **%d = %s** |\n", nsi_mode,
                 (nsi_mode >= 0 && nsi_mode < 4) ? kNsiName[nsi_mode] : "?");
+    std::printf(
+        "| レイ索引の細かい割り当て K | %zu（0 = 従来）、上限 %zu 項目/三角形、絶対量 %zu MB/軸 "
+        "|\n",
+        fine_k, fine_budget, fine_mb);
+    std::printf(
+        "| O3（触れない三角形の平面で切らない） | %d（0 = 従来、1 = 整数の箱、2 = 箱 + 厳密） |\n",
+        o.bsp_skip_disjoint);
+    std::printf("| 箱が片側なら飛ばす（7 例目） | %d |\n", o.bsp_skip_boxside ? 1 : 0);
     std::printf("| 単一 source を割る閾値 P^2 | %zu |\n", o.single_src_sq);
     std::printf("| 索引の ON/OFF 突き合わせ | %s |\n", verify_index ? "する" : "しない");
     std::printf("| 済みの対 | %s |\n", redo ? "やり直す" : "飛ばす（再開）");
