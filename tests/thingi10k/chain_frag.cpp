@@ -1058,8 +1058,10 @@ int main(int argc, char** argv) {
     //
     // **候補の計数（演算回数）で効きを見ます。出力はバイト一致のはず（候補は超集合で、判定は同じ述語）。**
     if (fine_k != 0 || fine_budget != 0 || fine_mb != 0) {
-        std::printf("\n### レイ索引の A/B（同一実行。K = %zu、上限 = %zu 項目/三角形、絶対量 %zu MB/軸）\n\n",
-                    fine_k, fine_budget, fine_mb);
+        std::printf(
+            "\n### レイ索引の A/B（同一実行。K = %zu、上限 = %zu 項目/三角形、絶対量 %zu "
+            "MB/軸）\n\n",
+            fine_k, fine_budget, fine_mb);
         std::printf(
             "| 実装 | 索引の項目 | 候補 / レイ | 前判定を通過 / レイ | 寄与 / レイ | 分類（壁） | "
             "全体（壁） | "

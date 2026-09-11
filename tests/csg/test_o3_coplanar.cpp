@@ -35,13 +35,17 @@ unsigned long long hash_mesh(const csg::SoupMesh& m) {
         h ^= v;
         h *= 1099511628211ull;
     };
+    // **成分ごとに別の型**（b = 26 では x, y, z と w のリム数が違い、三項演算子で型が合わない）
+    const auto mix_limbs = [&mix](const auto& c) {
+        unsigned char buf[sizeof(c)];
+        std::memcpy(buf, &c, sizeof(c));
+        for (std::size_t l = 0; l < sizeof(c); ++l) mix(buf[l]);
+    };
     for (const auto& v : m.vertices) {
-        for (int k = 0; k < 4; ++k) {
-            const auto& c = k == 0 ? v.x : k == 1 ? v.y : k == 2 ? v.z : v.w;
-            unsigned char buf[sizeof(c)];
-            std::memcpy(buf, &c, sizeof(c));
-            for (std::size_t l = 0; l < sizeof(c); ++l) mix(buf[l]);
-        }
+        mix_limbs(v.x);
+        mix_limbs(v.y);
+        mix_limbs(v.z);
+        mix_limbs(v.w);
     }
     for (const auto& t : m.triangles) {
         mix(t[0]);
