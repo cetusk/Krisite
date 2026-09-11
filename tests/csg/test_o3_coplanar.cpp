@@ -105,6 +105,10 @@ int main() {
             for (int mode : {0, 1, 2}) {
                 csg::BoolOptions o = kritest::corpus_options(d);
                 o.bsp_skip_disjoint = mode;
+                // **検査対象は O3 だけ。** 箱が片側なら飛ばす前判定（7 例目）は O3
+                // の機会を減らすので切る （あちらは早期 return
+                // と同じ判定を安く出すだけで、分割を変えない）
+                o.bsp_skip_boxside = false;
                 csg::BoolStats st;
                 const csg::PolySoup s =
                     csg::boolean(csg::from_mesh(A), csg::from_mesh(B), op, o, &st);

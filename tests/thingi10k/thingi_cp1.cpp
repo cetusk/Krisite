@@ -232,7 +232,7 @@ struct PairStruct {
     std::size_t split_attempts = 0, split_actual = 0, uncut = 0, uncut_tris = 0;
     /// **版をまたいだ意味論の比較のため**: 3 演算の出力の 6 倍体積（浮動小数の篩）と、三角形数
     double vol3[3] = {0, 0, 0};
-    std::size_t skip_box = 0, skip_exact = 0;
+    std::size_t skip_box = 0, skip_exact = 0, skip_boxside = 0;
     double fr_clip = 0, fr_prep = 0, fr_cut = 0, fr_commit = 0;
     std::size_t tri3[3] = {0, 0, 0};
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
@@ -323,6 +323,7 @@ struct PairStruct {
         fr_cut += b.ms_fr_cut;
         fr_commit += b.ms_fr_commit;
         skip_exact += b.bsp_skip_exact;
+        skip_boxside += b.bsp_skip_boxside;
         split_actual += b.bsp_split_actual;
         uncut += b.frags_uncut;
         uncut_tris += b.frags_uncut_tris;
@@ -395,7 +396,8 @@ struct PairStruct {
         for (int k = 0; k < 3; ++k) o << ' ' << std::setprecision(17) << vol3[k];
         for (int k = 0; k < 3; ++k) o << ' ' << tri3[k];
         o << ' ' << skip_box << ' ' << skip_exact << ' ' << (long long)fr_clip << ' '
-          << (long long)fr_prep << ' ' << (long long)fr_cut << ' ' << (long long)fr_commit;
+          << (long long)fr_prep << ' ' << (long long)fr_cut << ' ' << (long long)fr_commit << ' '
+          << skip_boxside;
     }
 };
 
@@ -679,6 +681,8 @@ int main(int argc, char** argv) {
     // **引数が無ければライブラリの既定（2）を使う。** 0
     // を既定にすると既定の経路を測っていないことになる（実際に踏んだ）
     if (argc > 12) o.bsp_skip_disjoint = std::atoi(argv[12]);
+    // **第 13 引数: 箱が片側なら飛ばす（1 = 既定、0 = 切る）**
+    if (argc > 13) o.bsp_skip_boxside = std::atoi(argv[13]) != 0;
     o.depth = depth;
     o.adaptive = true;
     o.leaf_threshold = 0;
@@ -775,6 +779,7 @@ int main(int argc, char** argv) {
     std::printf(
         "| O3（触れない三角形の平面で切らない） | %d（0 = 従来、1 = 整数の箱、2 = 箱 + 厳密） |\n",
         o.bsp_skip_disjoint);
+    std::printf("| 箱が片側なら飛ばす（7 例目） | %d |\n", o.bsp_skip_boxside ? 1 : 0);
     std::printf("| 単一 source を割る閾値 P^2 | %zu |\n", o.single_src_sq);
     std::printf("| 索引の ON/OFF 突き合わせ | %s |\n", verify_index ? "する" : "しない");
     std::printf("| 済みの対 | %s |\n", redo ? "やり直す" : "飛ばす（再開）");

@@ -118,6 +118,7 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.bsp_cut_slots += b.bsp_cut_slots;
     a.bsp_skip_box += b.bsp_skip_box;
     a.bsp_skip_exact += b.bsp_skip_exact;
+    a.bsp_skip_boxside += b.bsp_skip_boxside;
     a.bsp_split_attempts += b.bsp_split_attempts;
     a.bsp_split_actual += b.bsp_split_actual;
     a.frags_uncut += b.frags_uncut;
@@ -569,6 +570,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **符号列の鍵を使う、または突き合わせる構成では O3 を切ります**（`cutbits` の CI
     // 検査を保つため）。
     const int skip_mode = kCutbitsBuild ? 0 : opt.bsp_skip_disjoint;
+    // 箱が片側なら飛ばす前判定（7
+    // 例目）も、切断の符号列を残さないので符号列の鍵と両立しない。同じ扱い
+    const bool skip_boxside = kCutbitsBuild ? false : opt.bsp_skip_boxside;
     // **検査用の書き出し**（`BoolOptions::leaf_cull_out`）。葉ごとに 1 スロットなので競合しません
     if (opt.leaf_cull_out != nullptr) {
         opt.leaf_cull_out->assign(leaves.size(), BoolOptions::kNotReached);
@@ -968,11 +972,9 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // セルの箱」の中にある（整数）。
             // 切る三角形の箱がこれと交わらなければ、その平面で切る必要はありません（超集合を切るだけ）。
             octree::Aabb fbox = polys[idx].aabb;
-            if (skip_mode != 0) {
-                for (int t = 0; t < 3; ++t) {
-                    fbox.lo[t] = std::max(fbox.lo[t], cbox.lo[t]);
-                    fbox.hi[t] = std::min(fbox.hi[t], cbox.hi[t]);
-                }
+            for (int t = 0; t < 3; ++t) {
+                fbox.lo[t] = std::max(fbox.lo[t], cbox.lo[t]);
+                fbox.hi[t] = std::min(fbox.hi[t], cbox.hi[t]);
             }
             // 厳密な比較（値 2）は元の断片を読むので、そのときだけ複製を残す
             const Fragment frag_keep = (skip_mode >= 2) ? frag : Fragment{};
@@ -981,6 +983,31 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             KRISITE_ALLOC_TAG(14);  // 切断ループ（切断ごとの next と、split の中身）
             for (std::size_t ci = cut_begin; ci < cut_planes.size(); ++ci) {
                 const PlaneId q = cut_planes[ci];
+                // ---- ★ 多角形の箱が平面の片側に完全にあれば、頂点を評価せずに飛ばす（7 例目）----
+                //
+                // 断片は fbox（多角形の箱 ∩ セルの箱）の中にある。fbox の 2
+                // つの極値の隅（平面の法線の向きで選ぶ）が
+                // 同じ符号なら箱全体がその側にあり、`split_fragment_into` は全断片で早期 return
+                // する。
+                // **同じ判定を整数点 2 つの `side` で済ませる**（出力は不変）。
+                if (skip_boxside) {
+                    const geom::PlaneD& qp = out.table.at(q);
+                    const int sa = arith::sign(qp.a), sb2 = arith::sign(qp.b),
+                              sc = arith::sign(qp.c);
+                    const geom::IPoint lo{
+                        static_cast<std::int32_t>(sa >= 0 ? fbox.lo[0] : fbox.hi[0]),
+                        static_cast<std::int32_t>(sb2 >= 0 ? fbox.lo[1] : fbox.hi[1]),
+                        static_cast<std::int32_t>(sc >= 0 ? fbox.lo[2] : fbox.hi[2])};
+                    const geom::IPoint hi{
+                        static_cast<std::int32_t>(sa >= 0 ? fbox.hi[0] : fbox.lo[0]),
+                        static_cast<std::int32_t>(sb2 >= 0 ? fbox.hi[1] : fbox.lo[1]),
+                        static_cast<std::int32_t>(sc >= 0 ? fbox.hi[2] : fbox.lo[2])};
+                    const int s_lo = geom::side(qp, lo);
+                    if (s_lo != 0 && s_lo == geom::side(qp, hi)) {
+                        st.bsp_skip_boxside += pieces.size();
+                        continue;
+                    }
+                }
                 // ---- ★ O3: 切る三角形が触れない断片は切らない（`SPEC-phase5.md` §5.10.14.24）----
                 //
                 // 三角形が断片と交わらないなら、その断片をその平面で切る必要はありません
