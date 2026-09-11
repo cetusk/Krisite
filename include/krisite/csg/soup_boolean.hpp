@@ -559,6 +559,12 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     // **縫合を葉ごとに始めるか**（§5.10.13.3）。縫合そのものが要らない構成（切断の符号列で仕分ける）では偽
     const bool stitch_par =
         opt.stitch_parallel && (!(opt.region_key_cuts && kCutbitsBuild) || opt.verify_region_key);
+    // **O3 と切断の符号列の鍵は両立しません**（`SPEC-phase5.md` §5.10.14.28）。符号列の鍵は
+    // 「同じ支持平面なら同じ切断集合」に依り、O3 は多角形ごとに切る平面を変えます。
+    // 頂点集合の鍵は共平面の揃え（C4）で一致しますが、符号列は切り方の履歴そのものです。
+    // **符号列の鍵を使う、または突き合わせる構成では O3 を切ります**（`cutbits` の CI
+    // 検査を保つため）。
+    const int skip_mode = kCutbitsBuild ? 0 : opt.bsp_skip_disjoint;
     // **検査用の書き出し**（`BoolOptions::leaf_cull_out`）。葉ごとに 1 スロットなので競合しません
     if (opt.leaf_cull_out != nullptr) {
         opt.leaf_cull_out->assign(leaves.size(), BoolOptions::kNotReached);
@@ -933,17 +939,18 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             std::vector<Fragment> pieces_own;
             std::vector<Fragment>& pieces = reuse_pieces ? pieces_buf : pieces_own;
             pieces.clear();
-            // **O3（`opt.bsp_skip_disjoint`）の材料**: 断片は「多角形の箱 ∩ セルの箱」の中にある（整数）。
+            // **O3（`opt.bsp_skip_disjoint`）の材料**: 断片は「多角形の箱 ∩
+            // セルの箱」の中にある（整数）。
             // 切る三角形の箱がこれと交わらなければ、その平面で切る必要はありません（超集合を切るだけ）。
             octree::Aabb fbox = polys[idx].aabb;
-            if (opt.bsp_skip_disjoint != 0) {
+            if (skip_mode != 0) {
                 for (int t = 0; t < 3; ++t) {
                     fbox.lo[t] = std::max(fbox.lo[t], cbox.lo[t]);
                     fbox.hi[t] = std::min(fbox.hi[t], cbox.hi[t]);
                 }
             }
             // 厳密な比較（値 2）は元の断片を読むので、そのときだけ複製を残す
-            const Fragment frag_keep = (opt.bsp_skip_disjoint >= 2) ? frag : Fragment{};
+            const Fragment frag_keep = (skip_mode >= 2) ? frag : Fragment{};
             pieces.push_back(std::move(frag));
             KRISITE_ALLOC_TAG(14);  // 切断ループ（切断ごとの next と、split の中身）
             for (std::size_t ci = cut_begin; ci < cut_planes.size(); ++ci) {
@@ -952,12 +959,13 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 //
                 // 三角形が断片と交わらないなら、その断片をその平面で切る必要はありません
                 // （分類については健全。定理 7.2 の前提は保たれます）。
-                // **残る懸念は「共平面に載る別々の多角形が違う切り方をして `region_key` が潰せなくなる」**で、
-                // 証明かコーパスケースが要ります（条件 1。仕様側）。**それまで既定は 0。**
+                // **残る懸念は「共平面に載る別々の多角形が違う切り方をして `region_key`
+                // が潰せなくなる」**で、 証明かコーパスケースが要ります（条件
+                // 1。仕様側）。**それまで既定は 0。**
                 //
                 // 値 1: 整数の箱どうし（多角形の箱 ∩ セルの箱 と 三角形の箱）だけ。安い。
                 // 値 2: 1 で交わるときは、断片の頂点と三角形の箱の厳密な比較（Phase 3 の実験）。
-                if (opt.bsp_skip_disjoint != 0) {
+                if (skip_mode != 0) {
                     bool touches = false;
                     bool need_exact = false;
                     const auto it = cell_tri_by_plane.find(q);
@@ -969,9 +977,10 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                                 ov = fbox.lo[t] <= tb.hi[t] && tb.lo[t] <= fbox.hi[t];
                             }
                             if (!ov) continue;
-                            if (opt.bsp_skip_disjoint >= 2) {
+                            if (skip_mode >= 2) {
                                 need_exact = true;
-                                if (!detail::fragment_outside_box(out.table, frag_keep, tb, cache)) {
+                                if (!detail::fragment_outside_box(out.table, frag_keep, tb,
+                                                                  cache)) {
                                     touches = true;
                                     break;
                                 }
@@ -982,12 +991,15 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                         }
                     }
                     if (!touches) {
+                        // **`bsp_cuts_skipped` には足しません。** あちらは（支持平面 ×
+                        // 候補平面）の単位で `bsp_cut_slots == used + skipped`
+                        // の恒等式（`test_soup.cpp`）を守っています。 O3 の飛ばしは（断片 ×
+                        // 平面）の単位なので、別の計数で持ちます。
                         if (need_exact) {
                             ++st.bsp_skip_exact;
                         } else {
                             ++st.bsp_skip_box;
                         }
-                        ++st.bsp_cuts_skipped;
                         continue;
                     }
                 }
