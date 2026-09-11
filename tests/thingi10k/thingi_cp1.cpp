@@ -236,6 +236,8 @@ struct PairStruct {
     double fr_clip = 0, fr_prep = 0, fr_cut = 0, fr_commit = 0;
     double ms_prepare = 0, ms_leaves = 0, pre[6] = {0, 0, 0, 0, 0, 0}, leaves_count = 0;
     std::size_t leaves_calls = 0, leaves_tests = 0;
+    double sp[5] = {0, 0, 0, 0,
+                    0};  ///< 接触の分裂の内訳: 辺の表 / 診断と成分 / 扇（並列） / 割り当て / 検証
     std::size_t tri3[3] = {0, 0, 0};
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
@@ -335,6 +337,11 @@ struct PairStruct {
         leaves_count += b.ms_leaves_count;
         leaves_calls += b.leaves_count_calls;
         leaves_tests += b.leaves_count_tests;
+        sp[0] += t.split.ms_edges;
+        sp[1] += t.split.ms_diag;
+        sp[2] += t.split.ms_fan;
+        sp[3] += t.split.ms_apply;
+        sp[4] += t.split.ms_verify;
         skip_exact += b.bsp_skip_exact;
         skip_boxside += b.bsp_skip_boxside;
         split_actual += b.bsp_split_actual;
@@ -413,6 +420,7 @@ struct PairStruct {
           << skip_boxside << ' ' << (long long)ms_prepare << ' ' << (long long)ms_leaves;
         for (int k = 0; k < 6; ++k) o << ' ' << (long long)pre[k];
         o << ' ' << (long long)leaves_count << ' ' << leaves_calls << ' ' << leaves_tests;
+        for (int k = 0; k < 5; ++k) o << ' ' << (long long)sp[k];
     }
 };
 
