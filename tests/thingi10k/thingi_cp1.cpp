@@ -233,6 +233,7 @@ struct PairStruct {
     /// **版をまたいだ意味論の比較のため**: 3 演算の出力の 6 倍体積（浮動小数の篩）と、三角形数
     double vol3[3] = {0, 0, 0};
     std::size_t skip_box = 0, skip_exact = 0;
+    double fr_clip = 0, fr_prep = 0, fr_cut = 0, fr_commit = 0;
     std::size_t tri3[3] = {0, 0, 0};
     /// **除外できた演算の数**（0〜3）。`3` なら 3 演算すべてが除外の条件を満たす
     int excluded_ops = 0;
@@ -317,6 +318,10 @@ struct PairStruct {
         }
         split_attempts += b.bsp_split_attempts;
         skip_box += b.bsp_skip_box;
+        fr_clip += b.ms_fr_clip;
+        fr_prep += b.ms_fr_prep;
+        fr_cut += b.ms_fr_cut;
+        fr_commit += b.ms_fr_commit;
         skip_exact += b.bsp_skip_exact;
         split_actual += b.bsp_split_actual;
         uncut += b.frags_uncut;
@@ -389,7 +394,8 @@ struct PairStruct {
         o << ' ' << split_attempts << ' ' << split_actual << ' ' << uncut << ' ' << uncut_tris;
         for (int k = 0; k < 3; ++k) o << ' ' << std::setprecision(17) << vol3[k];
         for (int k = 0; k < 3; ++k) o << ' ' << tri3[k];
-        o << ' ' << skip_box << ' ' << skip_exact;
+        o << ' ' << skip_box << ' ' << skip_exact << ' ' << (long long)fr_clip << ' '
+          << (long long)fr_prep << ' ' << (long long)fr_cut << ' ' << (long long)fr_commit;
     }
 };
 
@@ -660,6 +666,7 @@ int main(int argc, char** argv) {
     // **並びは決定的**なので、再開しても同じ対になります。
     csg::BoolOptions o;
     o.measure_classify = true;   // 分類の内訳（§5.10.14.7。領域ごとに時計 4 回）
+    o.measure_frag = true;       // 断片の生成の内訳（§5.10.14.30。多角形ごとに時計 4 回）
     o.record_ray_levels = true;  // 索引の粒度（§5.10.14.11）
     o.ray_index_fine_cells = fine_k;
     // **第 10 引数: 記憶の上限（項目 / 三角形）から K を導く形**
@@ -669,7 +676,9 @@ int main(int argc, char** argv) {
     const std::size_t fine_mb = (argc > 11) ? std::strtoul(argv[11], nullptr, 10) : 16;
     o.ray_index_fine_bytes = fine_mb << 20;
     // **第 12 引数: O3 の判定（0 = 従来、1 = 整数の箱だけ、2 = 箱 + 厳密）。既定 0**
-    o.bsp_skip_disjoint = (argc > 12) ? std::atoi(argv[12]) : 0;
+    // **引数が無ければライブラリの既定（2）を使う。** 0
+    // を既定にすると既定の経路を測っていないことになる（実際に踏んだ）
+    if (argc > 12) o.bsp_skip_disjoint = std::atoi(argv[12]);
     o.depth = depth;
     o.adaptive = true;
     o.leaf_threshold = 0;

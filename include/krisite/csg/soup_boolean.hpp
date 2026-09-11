@@ -187,6 +187,10 @@ inline void merge_stats(BoolStats& a, const BoolStats& b) {
     a.ms_arr_frag += b.ms_arr_frag;
     a.ms_arr_coplanar += b.ms_arr_coplanar;
     a.ms_arr_stitch += b.ms_arr_stitch;
+    a.ms_fr_clip += b.ms_fr_clip;
+    a.ms_fr_prep += b.ms_fr_prep;
+    a.ms_fr_cut += b.ms_fr_cut;
+    a.ms_fr_commit += b.ms_fr_commit;
     a.leaf_nonempty += b.leaf_nonempty;
     a.leaf_single_src += b.leaf_single_src;
     a.bsp_cut_slots_single += b.bsp_cut_slots_single;
@@ -576,6 +580,25 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         (opt.pool != nullptr) ? opt.pool->size() : ((opt.threads <= 1) ? 1u : opt.threads);
     par::ThreadPool local_pool(opt.pool != nullptr ? 1u : nthreads);
     par::ThreadPool& pool = (opt.pool != nullptr) ? *opt.pool : local_pool;
+    // **断片の生成の内訳の時計**（`opt.measure_frag`）。スレッドごとに 4 区分の CPU を足す
+    std::vector<std::array<double, 4>> tl_fr(nthreads, std::array<double, 4>{0.0, 0.0, 0.0, 0.0});
+    struct FrTimer {
+        bool on;
+        std::array<double, 4>& acc;
+        Clock::time_point t;
+        int seg;
+        void mark(int s) {
+            if (!on) return;
+            const auto n = Clock::now();
+            acc[seg] += std::chrono::duration<double, std::milli>(n - t).count();
+            t = n;
+            seg = s;
+        }
+        ~FrTimer() {
+            if (!on) return;
+            acc[seg] += std::chrono::duration<double, std::milli>(Clock::now() - t).count();
+        }
+    };
     // **可変な器はスレッド局所に持ちます**（§1.1）。共有した瞬間に競合が入ります
     std::vector<PointCache> tl_cache(nthreads, PointCache(opt.point_cache_map));
     std::vector<BoolStats> tl_stats(nthreads);
@@ -899,6 +922,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         const bool reuse_pieces = (opt.alloc_reuse & 1u) != 0;
         std::vector<Fragment> pieces_buf, next_buf;
         for (std::size_t idx : here) {
+            FrTimer frt{opt.measure_frag, tl_fr[tid], Clock::now(), 0};
             Fragment frag = polys[idx].frag;
             bool alive = true;
             for (const CellPlane& cp : cps) {
@@ -909,6 +933,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 }
             }
             if (!alive) continue;
+            frt.mark(1);
 
             // **局所 BSP**（§5.4）。`local_bsp` を切ると過剰分割に戻ります
             // （CP3 までの挙動 = §10.1 の正解器）。
@@ -952,6 +977,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
             // 厳密な比較（値 2）は元の断片を読むので、そのときだけ複製を残す
             const Fragment frag_keep = (skip_mode >= 2) ? frag : Fragment{};
             pieces.push_back(std::move(frag));
+            frt.mark(2);
             KRISITE_ALLOC_TAG(14);  // 切断ループ（切断ごとの next と、split の中身）
             for (std::size_t ci = cut_begin; ci < cut_planes.size(); ++ci) {
                 const PlaneId q = cut_planes[ci];
@@ -1030,6 +1056,7 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
                 st.bsp_split_actual += next.size() - pieces.size();
                 pieces.swap(next);
             }
+            frt.mark(3);
             // **切断平面に一度も分けられなかった断片**（= 1 個のまま）。O2 の前提の計数
             if (pieces.size() == 1) ++st.frags_uncut;
             const bool uncut_here = (pieces.size() == 1);
@@ -1210,6 +1237,12 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
         }
     });
 
+    for (unsigned k = 0; k < nthreads; ++k) {
+        st.ms_fr_clip += tl_fr[k][0];
+        st.ms_fr_prep += tl_fr[k][1];
+        st.ms_fr_cut += tl_fr[k][2];
+        st.ms_fr_commit += tl_fr[k][3];
+    }
     // **葉の順に結合します**（§4.2 の正準な順序）。
     //
     // > **中核の出力は、実はこの順序に依存しません。** 縫合（§5）が構成点を

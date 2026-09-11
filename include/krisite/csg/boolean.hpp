@@ -325,6 +325,11 @@ struct BoolStats {
     double ms_arr_coplanar = 0.0;  ///< 共平面重複の突き合わせ（EMBER §4.3 の C4）
     double ms_arr_stitch =
         0.0;  ///< **縫合の葉ごとの部分**（鍵の重複除去 + 値の整列 + 境界の印。§5.10.13.3）
+    // **断片の生成の内訳**（`measure_frag` のときだけ。全スレッドの CPU の和）
+    double ms_fr_clip = 0.0;    ///< セル平面でのクリップ
+    double ms_fr_prep = 0.0;    ///< 切断集合の取得（`cuts_for`）と器の準備
+    double ms_fr_cut = 0.0;     ///< 切断ループ（O3 の判定 + `split_fragment_into`）
+    double ms_fr_commit = 0.0;  ///< 確定（葉の配列へ移す）
     // **分類の内訳**（`measure_classify` のときだけ。CPU の和 = 全スレッドぶん。壁時計は
     // `ms_cl_par_wall`）
     double ms_cl_prep = 0.0;      ///< 領域の代表断片の選択、強制値の確認
@@ -788,6 +793,8 @@ struct BoolOptions {
     bool stitch_parallel = true;
     /// **分類の中を刻む計測**（§5.10.14.7。既定 偽）。領域ごとに時計を 4 回読みます。
     bool measure_classify = false;
+    /// **断片の生成の中を刻む計測**（§5.10.14.30。既定 偽）。多角形ごとに時計を 4 回読みます。
+    bool measure_frag = false;
     bool tight_out_aabb = true;
     bool region_key_cuts = false;
     /// **仕分けは従来の鍵で行いつつ、切断の符号列とも突き合わせる**（**検査だけ**）。
