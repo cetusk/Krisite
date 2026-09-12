@@ -99,52 +99,89 @@ def npz_to_kmesh(npz_path, out_path):
     os.replace(tmp, out_path)
 
 
-def bundle(rows, which):
-    """**まとめた書庫（`Thingi10K_npz.tar.gz`、4.09 GB）を 1 回だけ取り、要る模型だけ `.kmesh` にする。**
+def fetch_resumable(url, path, tries=100):
+    """**切れたら続きから取る**（`Range`）。4 GB を 1 本の流れで通すと途中で切れます（実測: 587 s で切断）。
 
-    **`get` が遅いのは大きさではなく【往復の回数】です**（実測: 1 件 2.33 s のうち転送は 0.2 s、
-    残りは待ち時間。帯域は 2.1 MB/s）。5,535 件なら 3.6 時間ですが、**書庫なら 1 回・約 30〜60 分**です。
+    **書庫は `Accept-Ranges: bytes` を返す**ので、受け取った分の後ろから続けられます。
+    帯域を払い直さずに済むのが、流しながら変換する形との違いです。
+    """
+    with urllib.request.urlopen(urllib.request.Request(url, method="HEAD"), timeout=60) as r:
+        total = int(r.headers.get("Content-Length", 0))
+    got = os.path.getsize(path) if os.path.exists(path) else 0
+    print(f"  書庫 {total/1e9:.2f} GB、取得済み {got/1e9:.2f} GB", flush=True)
+    t0 = time.time()
+    for attempt in range(tries):
+        if got >= total:
+            break
+        try:
+            req = urllib.request.Request(url, headers={"Range": f"bytes={got}-"})
+            with urllib.request.urlopen(req, timeout=300) as r, open(path, "ab") as f:
+                while True:
+                    c = r.read(1 << 20)
+                    if not c:
+                        break
+                    f.write(c)
+                    got += len(c)
+                    if got % (256 << 20) < (1 << 20):
+                        print(f"    {got/1e9:.2f} / {total/1e9:.2f} GB（{got/max(1,time.time()-t0)/1e6:.1f} MB/s）", flush=True)
+        except Exception as e:  # noqa: BLE001 — 切断は想定内。続きから取り直す
+            got = os.path.getsize(path)
+            print(f"    切断（{e}）。{got/1e9:.2f} GB から再開（{attempt+1} 回目）", flush=True)
+    if got < total:
+        raise RuntimeError(f"書庫を取り切れませんでした: {got} / {total}")
+    print(f"  書庫の取得 完了 {got/1e9:.2f} GB / {time.time()-t0:.0f} s", flush=True)
+
+
+def bundle(rows, which, keep_archive=True):
+    """**まとめた書庫を 1 回だけ取り、要る模型だけ `.kmesh` にする。**
+
+    **`get` が遅いのは大きさではなく【往復の回数】です**（実測: 1 件 2.33 s のうち転送は 0.19 s、
+    残りは待ち時間。帯域は 2.1 MB/s）。5,535 件なら 3.6 時間ですが、**書庫なら約 30 分**です。
 
     **そして大量の個別取得は、提供側にとっても望ましくありません。**
     Hugging Face はこの書庫を**まとめ取り用に公開している**ので、そちらを使います。
 
-    書庫は `npz/<file_id>.npz` の並び。**gzip は途中から読めない**ので全体を流しますが、
-    **書き出すのは要る模型だけ**です（`.npz` は残しません。展開すると 14 GB になるため）。
-    中断したら、変換済みを飛ばして流し直します（帯域だけ払い直し）。
+    **2 段に分けます。**
+
+      1. 書庫を手元に取る（`Range` で**切れたら続きから**。流しながら変換すると、切れたとき帯域を払い直す）
+      2. 手元の書庫から、要る模型だけ取り出して変換する（何度でもやり直せる）
+
+    書庫は `npz/<file_id>.npz` の並び。**`.npz` は残しません**（全部展開すると 14 GB）。
     """
     need = {r["file_id"] for r in select(rows, which, 0, 20260830)}
     done = {os.path.splitext(f)[0] for f in os.listdir(MESH)} if os.path.isdir(MESH) else set()
     todo = need - done
-    print(f"{which}: 母集団 {len(need)} 模型、変換済み {len(need & done)}、これから {len(todo)} 件を書庫から取り出します")
+    print(f"{which}: 母集団 {len(need)} 模型、変換済み {len(need & done)}、これから {len(todo)} 件")
     if not todo:
         return
-    url = f"{HF}/Thingi10K_npz.tar.gz"
+    arc = os.path.join(ROOT, "Thingi10K_npz.tar.gz")
+    fetch_resumable(f"{HF}/Thingi10K_npz.tar.gz", arc)
     t0 = time.time()
     ok = err = seen = 0
-    with urllib.request.urlopen(url, timeout=300) as resp:
-        with tarfile.open(fileobj=resp, mode="r|gz") as tar:
-            for m in tar:
-                seen += 1
-                if seen % 1000 == 0:
-                    print(f"  書庫の {seen} 件目、取り出し {ok} 件、{time.time()-t0:.0f} s", flush=True)
-                if not m.isfile():
-                    continue
-                fid = os.path.splitext(os.path.basename(m.name))[0]
-                if fid not in todo:
-                    continue
-                try:
-                    data = tar.extractfile(m).read()
-                    with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tf:
-                        tf.write(data)
-                        tmp = tf.name
-                    npz_to_kmesh(tmp, os.path.join(MESH, f"{fid}.kmesh"))
-                    os.unlink(tmp)
-                    ok += 1
-                except Exception as e:  # noqa: BLE001 — 1 件の失敗で全体を止めない
-                    err += 1
-                    print(f"  変換に失敗 {fid}: {e}", file=sys.stderr)
-    el = time.time() - t0
-    print(f"{which}: 取り出し {ok} 件 / 失敗 {err} 件 / 書庫の {seen} 件を通過 / {el:.0f} s → {MESH}")
+    with tarfile.open(arc, mode="r:gz") as tar:
+        for m in tar:
+            seen += 1
+            if seen % 2000 == 0:
+                print(f"  書庫の {seen} 件目、取り出し {ok} 件、{time.time()-t0:.0f} s", flush=True)
+            if not m.isfile():
+                continue
+            fid = os.path.splitext(os.path.basename(m.name))[0]
+            if fid not in todo:
+                continue
+            try:
+                data = tar.extractfile(m).read()
+                with tempfile.NamedTemporaryFile(suffix=".npz", delete=False) as tf:
+                    tf.write(data)
+                    tmp = tf.name
+                npz_to_kmesh(tmp, os.path.join(MESH, f"{fid}.kmesh"))
+                os.unlink(tmp)
+                ok += 1
+            except Exception as e:  # noqa: BLE001 — 1 件の失敗で全体を止めない
+                err += 1
+                print(f"  変換に失敗 {fid}: {e}", file=sys.stderr)
+    print(f"{which}: 取り出し {ok} 件 / 失敗 {err} 件 / 書庫の {seen} 件を通過 / {time.time()-t0:.0f} s → {MESH}")
+    if not keep_archive:
+        os.unlink(arc)
 
 
 def load_meta():
