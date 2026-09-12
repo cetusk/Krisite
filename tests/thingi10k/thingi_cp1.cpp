@@ -812,6 +812,28 @@ int main(int argc, char** argv) {
                 verify_delta ? "（`SPEC-phase5.md` §3.2）"
                              : "（**§4.3.2 の EMBER 比較用。正しさの判定に使わないこと**）");
     std::printf("\n");
+    // ---- ★ `_only.txt` に書いた順に回します（`SPEC-phase5.md` §1.5.1.1 の層化）----
+    //
+    // **既定は面数の昇順**ですが、層化した一覧は「層を横断する順序」で書かれています。
+    // **昇順のままだと最上位の層が最後になり、途中で止めたとき大きい対を 1 つも見ていない**
+    // ことになります。層化した意味が消えるので、一覧がある場合はその順に従います。
+    if (!only.empty()) {
+        std::vector<std::size_t> ord2;
+        ord2.reserve(order.size());
+        for (const std::string& want : only) {
+            for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
+                if (ids[order[k]] + "x" + ids[order[k + 1]] == want) {
+                    ord2.push_back(order[k]);
+                    ord2.push_back(order[k + 1]);
+                    break;
+                }
+            }
+        }
+        std::printf("**一覧の順に回します**（%zu 対。面数の昇順ではありません）\n",
+                    ord2.size() / 2);
+        order.swap(ord2);
+    }
+
     const auto t0 = std::chrono::steady_clock::now();
     for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
         const std::size_t i = order[k], j = order[k + 1];
