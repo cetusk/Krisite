@@ -161,6 +161,10 @@ if(KRISITE_GMP_FOUND)
 
     # SPEC-phase2 §5.1.2.1 の radial sort。**正解器は簡約前の式を mpz でそのまま計算**し、
     # 向き合わせは **有理数（mpq）で実座標に直す除算経路**で照合する
+    # DESIGN-phase5-vertex-level §7。正解器は mpq で線分の媒介変数を求める別経路
+    krisite_add_test(edge_point_gmp geom/test_edge_point_gmp.cpp 200000)
+    target_link_libraries(edge_point_gmp PRIVATE krisite_gmp)
+
     krisite_add_test(radial_gmp     geom/test_radial_gmp.cpp 200000)
     target_link_libraries(radial_gmp PRIVATE krisite_gmp)
 
