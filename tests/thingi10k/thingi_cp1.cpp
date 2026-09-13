@@ -731,6 +731,23 @@ int main(int argc, char** argv) {
     // どこまで通ったかが残り、再開できます（§3.3 の追跡に要る）
     // **やり直しモードは別のファイルに書きます。** 追記すると再開の記録が濁ります
     // **やり直しは b ごとに別ファイル**。混ぜると意味が変わります
+    // **★ 対の一覧を書き出します**（`SPEC-phase5.md` §1.5.1.1 の層化）。
+    //
+    // **層化した一覧を外で作るには、駆動と同じ組み方が要ります。**
+    // 並べ方は「量子化後の三角形数、同数なら ID の文字列順」で、
+    // **量子化の種まで一致させないと再現できません**（実際にずれ、295 対のうち 90 対しか
+    // 回らない実行をしました）。**駆動に書かせれば、食い違いようがありません。**
+    {
+        std::ofstream pf(base + "_pairs.txt");
+        for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
+            const std::size_t x = order[k], y = order[k + 1];
+            pf << ids[x] << "x" << ids[y] << ' ' << prep[x].mesh.triangles.size() << ' '
+               << prep[y].mesh.triangles.size() << "\n";
+        }
+        std::printf("**対の一覧を %s_pairs.txt に書きました**（%zu 対）\n", base.c_str(),
+                    order.size() / 2);
+    }
+
     const std::string done_path =
         redo ? (base + "_struct_b" + std::to_string(KRISITE_COORD_BITS) + ".txt")
              : (base + "_results.txt");
