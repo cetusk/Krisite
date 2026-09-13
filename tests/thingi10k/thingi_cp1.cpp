@@ -724,6 +724,98 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
                                     src_cnt[1], dirs.c_str());
                         // **厳密な座標は全部の辺で出します**（埋め込みの確認は全件でやる）。
                         // リンクの経路は読むためのものなので 2 本までに留めます
+                        // **平面による構成が使えるか**（`DESIGN-phase5-vertex-level.md` §7）。
+                        // 両端の平面 3 つ組から、辺の線を張る 2 枚と、
+                        // 片方だけを通る 1 枚ずつが取れるかを厳密に判定します
+                        if (ue.a < pre.vertex_key.size() && ue.b < pre.vertex_key.size()) {
+                            std::set<csg::PlaneId> ids;
+                            for (int k = 0; k < 3; ++k) {
+                                ids.insert(pre.vertex_key[ue.a][k]);
+                                ids.insert(pre.vertex_key[ue.b][k]);
+                            }
+                            // **4 枚の三角形の支持平面も候補に入れます。**
+                            // 辺は 4 枚すべてに含まれるので、支持平面にも必ず載ります
+                            for (std::size_t t = 0; t < pre.triangles.size(); ++t) {
+                                const mesh::Tri& tr = pre.triangles[t];
+                                bool ha = false, hb = false;
+                                for (int k = 0; k < 3; ++k) {
+                                    if (tr[k] == ue.a) ha = true;
+                                    if (tr[k] == ue.b) hb = true;
+                                }
+                                if (!ha || !hb) continue;
+                                if (t < pre.tri_poly.size()) {
+                                    ids.insert(soup.polys[pre.tri_poly[t]].frag.support);
+                                }
+                            }
+                            int both = 0, only_a = 0, only_b = 0, neither = 0;
+                            for (csg::PlaneId pid : ids) {
+                                const geom::PlaneD& pl = soup.table.at(pid);
+                                const bool oa = geom::side(pl, pre.vertices[ue.a]) == 0;
+                                const bool ob = geom::side(pl, pre.vertices[ue.b]) == 0;
+                                if (oa && ob) {
+                                    ++both;
+                                } else if (oa) {
+                                    ++only_a;
+                                } else if (ob) {
+                                    ++only_b;
+                                } else {
+                                    ++neither;
+                                }
+                            }
+                            // **両方に載る平面のうち、平行でない組があるか**
+                            // （あれば辺の線が 2 枚で張れます）
+                            std::vector<geom::PlaneD> onboth;
+                            for (csg::PlaneId pid : ids) {
+                                const geom::PlaneD& pl = soup.table.at(pid);
+                                if (geom::side(pl, pre.vertices[ue.a]) == 0 &&
+                                    geom::side(pl, pre.vertices[ue.b]) == 0) {
+                                    onboth.push_back(pl);
+                                }
+                            }
+                            int indep = 0;
+                            for (std::size_t i = 0; i < onboth.size(); ++i) {
+                                for (std::size_t j = i + 1; j < onboth.size(); ++j) {
+                                    const auto c = geom::radial_dir(onboth[i], onboth[j]);
+                                    if (!arith::is_zero(c.x) || !arith::is_zero(c.y) ||
+                                        !arith::is_zero(c.z)) {
+                                        ++indep;
+                                    }
+                                }
+                            }
+                            std::printf(
+                                "        KEYS %u-%u 平面 %zu 枚: 両方に載る %d / a だけ %d"
+                                " / b だけ %d / どちらにも載らない %d / 平行でない組 %d\n",
+                                ue.a, ue.b, ids.size(), both, only_a, only_b, neither, indep);
+                            // **厳密な係数を出します**（Python の有理数演算で、
+                            // 平面による構成が本当に辺の内部に点を作るかを検算するため）
+                            std::printf("        EDGEPT %u %u\n", ue.a, ue.b);
+                            for (int k = 0; k < 2; ++k) {
+                                const geom::HPointD& h = pre.vertices[k == 0 ? ue.a : ue.b];
+                                std::printf("        EP %c ", k == 0 ? 'a' : 'b');
+                                dump_int(h.x);
+                                std::printf(" ");
+                                dump_int(h.y);
+                                std::printf(" ");
+                                dump_int(h.z);
+                                std::printf(" ");
+                                dump_int(h.w);
+                                std::printf("\n");
+                            }
+                            for (csg::PlaneId pid : ids) {
+                                const geom::PlaneD& pl = soup.table.at(pid);
+                                const int sa = geom::side(pl, pre.vertices[ue.a]);
+                                const int sb = geom::side(pl, pre.vertices[ue.b]);
+                                std::printf("        PL %u %d %d ", pid, sa, sb);
+                                dump_int(pl.a);
+                                std::printf(" ");
+                                dump_int(pl.b);
+                                std::printf(" ");
+                                dump_int(pl.c);
+                                std::printf(" ");
+                                dump_int(pl.d);
+                                std::printf("\n");
+                            }
+                        }
                         dump_exact_star(pre, ue.a);
                         dump_exact_star(pre, ue.b);
                         if (shown++ >= 2) continue;

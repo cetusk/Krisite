@@ -271,6 +271,23 @@ struct PolySoup {
     std::vector<std::vector<std::int32_t>> poly_w_front, poly_w_back;
     std::vector<std::uint8_t> nsi;
     std::vector<std::uint8_t> nnc;
+    /// **VM（頂点多様体）の印**（`SPEC-phase5.md` §5.10.14.57 の案 B）。
+    ///
+    /// **`sources` と同じ長さ。`nsi` / `nnc` と同じ形の印**ですが、
+    /// **3 値です** — `CLAUDE.md`「真偽値でも、1 つの値に 2 つの意味を持たせないでください」。
+    ///
+    ///   0   **未検査**（宣言が無い）
+    ///   1   検査して**多様体**
+    ///   2   検査して**非多様体**
+    ///
+    /// **何のためか**: 量子化後に頂点非多様体な入力があると、
+    /// **出口で分裂できない次数 4 の辺が残ることがあります**
+    /// （実測: 該当する 141 対のうち 8 対。非該当の 154 対では 0 対。
+    /// `DESIGN-phase5-vertex-level.md` §3.4）。
+    ///
+    /// **拒否には使いません。** 該当する 141 対のうち 133 対（94%）は成功します。
+    /// **「この入力では起こり得る」を呼び出し側に伝えるだけ**の印です。
+    std::vector<std::uint8_t> vm;
     /// 指示関数（§5.2）。**表ではなく関数**
     Indicator indicator;
 
@@ -314,6 +331,17 @@ struct FromMeshOptions {
     /// **模型ごとにキャッシュできません。対ごとに走ります**（`IMPL-phase5.md` §33）。
     /// 費用は実測 0.09 秒/模型。
     bool verify_nsi = false;
+
+    /// **頂点多様体性を検査し、`vm` に印を付ける**（案 B）。
+    ///
+    /// **既定は偽 = 検査しない = 未検査のまま。**
+    ///
+    /// **検査は量子化されたメッシュに対して行います** — `nsi` と同じく、
+    /// **量子化が多様体性を壊すことがある**ためです
+    /// （実測: cp2b の 2,668 模型のうち 756 模型が量子化後に非多様体）。
+    ///
+    /// 費用は `mesh::check_topology` 1 回で、**入力の規模にしか依りません。**
+    bool verify_vertex_manifold = false;
 };
 
 /// 上限なし（凸分割を最後まで行う）。
@@ -563,9 +591,16 @@ inline PolySoup from_mesh(const mesh::TriMesh& m, const FromMeshOptions& opt = {
     }
     s.nsi.assign(s.sources.size(), 0);
     s.nnc.assign(s.sources.size(), 0);
+    s.vm.assign(s.sources.size(), 0);
     // **検査が通ったときだけ宣言します。** 検査は健全側に倒れる（自己交差の疑いが
     // あれば真を返す）ので、**通ったものは確実に非自己交差**です。
     if (opt.verify_nsi) s.nsi[0] = mesh::is_self_intersecting(m) ? 0u : 1u;
+    // **3 値の印**（0 = 未検査 / 1 = 多様体 / 2 = 非多様体）。
+    // **辺と頂点の両方を見ます** — 辺非多様体なら頂点非多様体でもあります
+    if (opt.verify_vertex_manifold) {
+        const mesh::TopologyReport t = mesh::check_topology(m.triangles);
+        s.vm[0] = (t.edge_manifold && t.vertex_manifold) ? 1u : 2u;
+    }
     return s;
 }
 
