@@ -160,6 +160,10 @@ struct ToMeshOptions {
     ///
     /// **正解器です。** 既定の増分計算と答えが一致することを検査するために残しています。
     bool verify_split_naive = false;
+    /// **解けずに残った辺の構造を記録する**（`SplitOptions::diag_unresolved`）。
+    ///
+    /// **純粋な診断で、既定は偽です。** 本番の経路には乗せません。
+    bool diag_unresolved = false;
     /// **T 字接合の索引をセルで区切る**（`DESIGN-phase5-hotspots.md` §6.3 の A-3）。
     ///
     /// 平面ごとに全頂点を走査する代わりに、**多角形が属する葉の【閉じた箱】に
@@ -400,6 +404,7 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         // **頂点ごとに独立**（§3）。ID の割り当ては逐次なので決定的です
         mesh::SplitOptions sopt;
         sopt.reverse_fan = opt.reverse_fan;
+        sopt.diag_unresolved = opt.diag_unresolved;
         // **radial sort に要る幾何を渡します**（`SPEC-phase2.md` §5.1.2.1）。
         //
         // **外向き法線をここで揃えます** — `Fragment::flipped` は

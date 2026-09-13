@@ -88,11 +88,15 @@ int main(int argc, char** argv) {
     const unsigned depth = (argc > 2) ? static_cast<unsigned>(std::atoi(argv[2])) : 6;
     const unsigned nthreads = (argc > 3) ? static_cast<unsigned>(std::atoi(argv[3])) : 8;
     const std::string out_path = "data/thingi10k/selfunion_results.txt";
+    // **量子化の変換の種は「一覧での並び順」で決まります**（`thingi_cp1.cpp` と同じ規則）。
+    // **CP1 以外の母集団を回すときは、その母集団の一覧を渡してください。**
+    // 渡さないと種が変わり、**別の入力を測ることになります**
+    const std::string seed_list = (argc > 4) ? argv[4] : "data/thingi10k/cp1.txt";
 
     // **量子化の変換は CP1 と同じ**（`cp1.txt` の並び順が種）。**違えると別の入力になります。**
     std::map<std::string, std::size_t> idx;
     {
-        std::ifstream f("data/thingi10k/cp1.txt");
+        std::ifstream f(seed_list);
         std::string a, b;
         std::size_t i = 0;
         while (f >> a >> b) idx[a] = i++;
@@ -120,6 +124,7 @@ int main(int argc, char** argv) {
     std::printf("\n## self-union（自己交差する模型）\n\n");
     std::printf("| 設定 | 値 |\n|---|---|\n");
     std::printf("| 一覧 | `%s` |\n", list.c_str());
+    std::printf("| **種の一覧**（量子化の変換） | `%s` |\n", seed_list.c_str());
     std::printf("| 記録先 | `%s` |\n", out_path.c_str());
     std::printf("| 深度 | %u |\n", depth);
     std::printf("| スレッド | %u |\n", nthreads);

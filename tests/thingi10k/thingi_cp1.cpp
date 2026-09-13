@@ -23,6 +23,7 @@
 #include <fstream>
 #include <iomanip>
 #include <ostream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -99,6 +100,77 @@ Prepared prepare(const krithingi::RawMesh& raw, std::uint64_t seed) {
     return p;
 }
 
+/// **頂点まわりのリンクを出す**（`deduction.md` §3.1 の方向 3 — 1 つの出力を遡る）。
+///
+/// リンクは「$v$ 以外の頂点」を節、「$v$ に接する三角形」を枝とするグラフです。
+/// **過剰辺の相手 `w` だけが次数 4 で、他は次数 2** になります。
+/// この形なら、リンクは
+///
+///   (a) **`w` を通る閉路が 2 本**       → 頂点を 2 つに分けられる
+///   (b) **`w` を 2 度通る閉路が 1 本**  → 分けられない（八の字）
+///
+/// のどちらかです。**(a) と (b) は扇の数だけでは区別できません**（どちらも
+/// 「次数 2 の辺だけなら 2 個」）。**組と突き合わせて初めて分かります。**
+void dump_link(const csg::SoupMesh& pre, std::uint32_t v, std::uint32_t w) {
+    // 節 = v 以外の頂点、枝 = v に接する三角形
+    std::map<std::uint32_t, std::vector<std::size_t>> port;              // 節 → 接する三角形
+    std::map<std::size_t, std::pair<std::uint32_t, std::uint32_t>> arc;  // 三角形 → 両端の節
+    for (std::size_t t = 0; t < pre.triangles.size(); ++t) {
+        const mesh::Tri& tr = pre.triangles[t];
+        int at = -1;
+        for (int k = 0; k < 3; ++k) {
+            if (tr[k] == v) at = k;
+        }
+        if (at < 0) continue;
+        const std::uint32_t p = tr[(at + 1) % 3], q = tr[(at + 2) % 3];
+        arc[t] = {p, q};
+        port[p].push_back(t);
+        port[q].push_back(t);
+    }
+    std::printf("        リンク（頂点 %u、三角形 %zu 枚、節 %zu 個）\n", v, arc.size(),
+                port.size());
+    std::size_t deg_other = 0;
+    for (const auto& kv : port) {
+        if (kv.first != w && kv.second.size() != 2) ++deg_other;
+    }
+    std::printf("          節 %u の次数 %zu ／ **次数が 2 でない他の節 %zu 個**\n", w,
+                port.count(w) != 0 ? port[w].size() : 0, deg_other);
+    // w を取り除いて道を辿る
+    std::map<std::size_t, int> used;
+    std::vector<std::string> walks;
+    if (port.count(w) != 0) {
+        for (std::size_t t0 : port[w]) {
+            if (used[t0] != 0) continue;
+            std::string sline;
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%u", w);
+            sline += buf;
+            std::size_t t = t0;
+            std::uint32_t cur = w;
+            while (true) {
+                used[t] = 1;
+                const std::uint32_t nxt = (arc[t].first == cur) ? arc[t].second : arc[t].first;
+                std::snprintf(buf, sizeof(buf), " -[t%zu]- %u", t, nxt);
+                sline += buf;
+                if (nxt == w) break;
+                const std::vector<std::size_t>& nb = port[nxt];
+                std::size_t adv = nb.size();
+                for (std::size_t c : nb) {
+                    if (used[c] == 0) adv = c;
+                }
+                if (adv == nb.size()) break;
+                t = adv;
+                cur = nxt;
+            }
+            walks.push_back(sline);
+        }
+    }
+    std::printf("          **%s を通る道 %zu 本**\n", "w", walks.size());
+    for (const std::string& sline : walks) {
+        std::printf("            %s\n", sline.c_str());
+    }
+}
+
 struct Counts {
     std::size_t pairs = 0, accepted = 0, failed = 0, halted = 0;
     std::size_t reject[6] = {0, 0, 0, 0, 0, 0};
@@ -109,6 +181,44 @@ struct Counts {
 /// 出力のバイト単位のハッシュ。**同一版の中の比較に使います**（`CLAUDE.md`）。
 ///
 /// 索引（`ray_index`）は厳密な絞り込みなので、**有無で 1 ビットも変わってはいけません。**
+/// **分裂の後に残った非多様体の辺の構造を出す**（`IMPL-phase5.md` §98 の機構が
+/// 13 演算すべてで同じ形かを確かめる。`SPEC-phase5.md` §5.10.14.51）。
+///
+/// **`unresolved_post` は「演算」の数であって「辺」の数ではありません。** 辺はここで数えます。
+void dump_nonmanifold(const char* tag, const csg::SoupMesh& m) {
+    std::map<std::pair<std::uint32_t, std::uint32_t>, std::size_t> et;
+    std::map<std::uint32_t, std::size_t> at;
+    for (const mesh::Tri& tr : m.triangles) {
+        for (int k = 0; k < 3; ++k) {
+            const std::uint32_t a = tr[k], b = tr[(k + 1) % 3];
+            ++et[{std::min(a, b), std::max(a, b)}];
+            ++at[tr[k]];
+        }
+    }
+    std::map<std::uint32_t, std::size_t> nm_at;
+    std::vector<std::pair<std::pair<std::uint32_t, std::uint32_t>, std::size_t>> bad;
+    for (const auto& kv : et) {
+        if (kv.second == 2) continue;
+        bad.push_back({kv.first, kv.second});
+        ++nm_at[kv.first.first];
+        ++nm_at[kv.first.second];
+    }
+    std::printf("    %s: **非多様体の辺 %zu 本**（三角形 %zu / 頂点 %zu）\n", tag, bad.size(),
+                m.triangles.size(), m.vertices.size());
+    std::size_t shown = 0;
+    for (const auto& b : bad) {
+        if (shown++ >= 12) {
+            std::printf("      …残り %zu 本は省略\n", bad.size() - 12);
+            break;
+        }
+        const std::uint32_t u = b.first.first, v = b.first.second;
+        std::printf(
+            "      辺 %u-%u 次数 %zu | %u: 三角形 %zu・非多様体の辺 %zu | %u: 三角形 "
+            "%zu・非多様体の辺 %zu\n",
+            u, v, b.second, u, at[u], nm_at[u], v, at[v], nm_at[v]);
+    }
+}
+
 unsigned long long hash_mesh(const csg::SoupMesh& m) {
     unsigned long long h = 1469598103934665603ull;
     const auto mix = [&h](unsigned long long v) {
@@ -427,7 +537,8 @@ struct PairStruct {
 /// §3.1 の検査。**解析的期待値は使えない**ので恒等式と位相で見ます。
 bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOptions& o,
                par::ThreadPool* pool, std::string* why, unsigned long long* hash_out = nullptr,
-               PairStruct* ps = nullptr, int nsi_decl = 0, bool verify_delta = true) {
+               PairStruct* ps = nullptr, int nsi_decl = 0, bool verify_delta = true,
+               bool dump_nm = false) {
     // **NSI は呼び出し側が宣言します**（`SPEC-phase3.md` §5.6、EMBER §4.5.1）。
     // ライブラリは検証しません。**宣言してよいかを確かめるのは呼び出し側の仕事**で、
     // `from_mesh` の `verify_nsi` がその補助です。
@@ -472,6 +583,7 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     // > **測る目的が違うので、引数で切り替えます。**
     // > **CP1〜CP3 では既定（真）のまま回してください。**
     tm.verify_split_delta = verify_delta;
+    tm.diag_unresolved = dump_nm;
     // **対ごとの構造を採ります**（`SPEC-phase5.md` §1.5.0）。3 演算ぶんを合算。
     csg::SoupMesh out3[3];
     int k3 = 0;
@@ -516,6 +628,86 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_tp)
                     .count();
             ps->add(bs, ts, tr, soup.polys.size());
+            if (dump_nm && !tr.empty && (!tr.edge_manifold || !tr.vertex_manifold)) {
+                dump_nonmanifold(kOpName[k3], out3[k3]);
+                // **分裂の【前】の構造**（`IMPL-phase5.md` §98 との突き合わせ）。
+                // 過剰辺の本数と、2 通りの扇の数を並べます
+                for (const auto& ue : ts.split.unresolved_detail) {
+                    std::printf(
+                        "      分裂前 %u-%u 次数 %zu | %u: 三角形 %zu・過剰辺 %zu・扇 %zu→%zu"
+                        " | %u: 三角形 %zu・過剰辺 %zu・扇 %zu→%zu | 組 %zu: "
+                        "(t%zu,t%zu)(t%zu,t%zu)\n",
+                        ue.a, ue.b, ue.degree, ue.a, ue.inc_a, ue.excess_a, ue.fans2_a, ue.fans_a,
+                        ue.b, ue.inc_b, ue.excess_b, ue.fans2_b, ue.fans_b, ue.pair_groups,
+                        ue.pair_tris[0], ue.pair_tris[1], ue.pair_tris[2], ue.pair_tris[3]);
+                }
+                // **分裂の【前】のメッシュでリンクを辿ります**（方向 3）。
+                // 分裂は三角形の順序と枚数を変えないので、番号がそのまま対応します
+                if (!ts.split.unresolved_detail.empty()) {
+                    csg::ToMeshOptions tm_pre = tm;
+                    tm_pre.split_contacts = false;
+                    tm_pre.diag_unresolved = false;
+                    const csg::SoupMesh pre = csg::to_mesh(soup, tm_pre, nullptr);
+                    std::size_t shown = 0;
+                    for (const auto& ue : ts.split.unresolved_detail) {
+                        // **4 枚がどの source から来たか**（自己接触か 2 立体の接触か）。
+                        // **4 枚が辺をどちら向きに通るか**（向きが整合する組は
+                        // 「向きが逆どうし」でなければなりません）
+                        int src_cnt[2] = {0, 0};
+                        std::string dirs;
+                        for (std::size_t t = 0; t < pre.triangles.size(); ++t) {
+                            const mesh::Tri& tr = pre.triangles[t];
+                            for (int k = 0; k < 3; ++k) {
+                                const std::uint32_t x = tr[k], y = tr[(k + 1) % 3];
+                                if ((x != ue.a || y != ue.b) && (x != ue.b || y != ue.a)) continue;
+                                const int sc = (t < pre.tri_src.size()) ? pre.tri_src[t] : -1;
+                                if (sc == 0 || sc == 1) ++src_cnt[sc];
+                                char bb[48];
+                                std::snprintf(bb, sizeof(bb), " t%zu:%c/s%d", t,
+                                              (x == ue.a) ? '+' : '-', sc);
+                                dirs += bb;
+                            }
+                        }
+                        std::printf("        %u-%u source(A %d, B %d)%s\n", ue.a, ue.b, src_cnt[0],
+                                    src_cnt[1], dirs.c_str());
+                        if (shown++ >= 2) continue;
+                        dump_link(pre, ue.a, ue.b);
+                        dump_link(pre, ue.b, ue.a);
+                        // **近傍の座標**（最小化のため。近似値で構わない — 形を見ます）
+                        std::set<std::uint32_t> nv;
+                        for (const mesh::Tri& tr : pre.triangles) {
+                            bool touch = false;
+                            for (int k = 0; k < 3; ++k) {
+                                if (tr[k] == ue.a || tr[k] == ue.b) touch = true;
+                            }
+                            if (!touch) continue;
+                            for (int k = 0; k < 3; ++k) nv.insert(tr[k]);
+                        }
+                        // **★ 幾何として一致する頂点が近傍にあるか**（記録されない自己接触）。
+                        // `to_mesh` の「値で併合」が取りこぼしていれば、ここで見えます
+                        std::vector<std::uint32_t> nvv(nv.begin(), nv.end());
+                        std::size_t same = 0;
+                        for (std::size_t i = 0; i < nvv.size(); ++i) {
+                            for (std::size_t j = i + 1; j < nvv.size(); ++j) {
+                                if (geom::h_equal(pre.vertices[nvv[i]], pre.vertices[nvv[j]])) {
+                                    ++same;
+                                    std::printf("          **v%u と v%u が幾何として同一**\n",
+                                                nvv[i], nvv[j]);
+                                }
+                            }
+                        }
+                        std::printf("        近傍の頂点 %zu 個（幾何として一致する組 %zu）\n",
+                                    nv.size(), same);
+                        for (std::uint32_t vi : nv) {
+                            const geom::HPointD& h = pre.vertices[vi];
+                            const double w = kritest::to_double(h.w);
+                            std::printf("          v%u = (%.6f, %.6f, %.6f)\n", vi,
+                                        kritest::to_double(h.x) / w, kritest::to_double(h.y) / w,
+                                        kritest::to_double(h.z) / w);
+                        }
+                    }
+                }
+            }
         }
         ++k3;
     }
@@ -706,6 +898,8 @@ int main(int argc, char** argv) {
     if (argc > 12) o.bsp_skip_disjoint = std::atoi(argv[12]);
     // **第 13 引数: 箱が片側なら飛ばす（1 = 既定、0 = 切る）**
     if (argc > 13) o.bsp_skip_boxside = std::atoi(argv[13]) != 0;
+    // **第 14 引数: 分裂の後に残った非多様体の辺の構造を出す**（§5.10.14.51 の調査）
+    const bool dump_nm = (argc > 14) && (std::atoi(argv[14]) != 0);
     o.depth = depth;
     o.adaptive = true;
     o.leaf_threshold = 0;
@@ -874,8 +1068,9 @@ int main(int argc, char** argv) {
         std::string why;
         unsigned long long h = 0;
         PairStruct ps;
-        const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
-                                  nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1), verify_delta);
+        const bool ok =
+            check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
+                      nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1), verify_delta, dump_nm);
         if (ps.nsi_a >= 0) {
             (ps.nsi_a ? nsi_declared : nsi_rejected) += 1;
             (ps.nsi_b ? nsi_declared : nsi_rejected) += 1;
