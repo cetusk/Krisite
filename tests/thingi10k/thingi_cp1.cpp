@@ -100,6 +100,58 @@ Prepared prepare(const krithingi::RawMesh& raw, std::uint64_t seed) {
     return p;
 }
 
+/// **多倍長整数を 16 進で出す**（Python 側で厳密な有理数に戻すため）。
+///
+/// **2 の補数のまま出すと符号の扱いを 2 箇所に分けることになる**ので、
+/// **符号と絶対値**に分けて出します。
+template <std::size_t N>
+void dump_int(const krisite::arith::fixed_int<N>& v) {
+    krisite::arith::fixed_int<N> a = v;
+    const int sg = krisite::arith::sign(v);
+    if (sg < 0) a = krisite::arith::neg(v);
+    std::printf("%c", sg < 0 ? '-' : '+');
+    for (std::size_t i = N; i-- > 0;) std::printf("%016llx", (unsigned long long)a[i]);
+}
+
+/// **頂点 v に接する三角形を、厳密な座標つきで出す**（埋め込みの直接確認）。
+///
+/// **リンクが埋め込まれていないなら、交わりは v のいくらでも近くで起きます。**
+/// したがって**調べるのは v に接する三角形だけで足ります**（`DESIGN-phase5-vertex-level.md`
+/// §3.2）。
+void dump_exact_star(const csg::SoupMesh& pre, std::uint32_t v) {
+    std::printf("        STAR %u\n", v);
+    for (std::size_t t = 0; t < pre.triangles.size(); ++t) {
+        const mesh::Tri& tr = pre.triangles[t];
+        bool touch = false;
+        for (int k = 0; k < 3; ++k) {
+            if (tr[k] == v) touch = true;
+        }
+        if (!touch) continue;
+        std::printf("        TRI %zu %u %u %u\n", t, tr[0], tr[1], tr[2]);
+    }
+    std::set<std::uint32_t> vs;
+    for (const mesh::Tri& tr : pre.triangles) {
+        bool touch = false;
+        for (int k = 0; k < 3; ++k) {
+            if (tr[k] == v) touch = true;
+        }
+        if (!touch) continue;
+        for (int k = 0; k < 3; ++k) vs.insert(tr[k]);
+    }
+    for (std::uint32_t vi : vs) {
+        const geom::HPointD& h = pre.vertices[vi];
+        std::printf("        VTX %u ", vi);
+        dump_int(h.x);
+        std::printf(" ");
+        dump_int(h.y);
+        std::printf(" ");
+        dump_int(h.z);
+        std::printf(" ");
+        dump_int(h.w);
+        std::printf("\n");
+    }
+}
+
 /// **頂点まわりのリンクを出す**（`deduction.md` §3.1 の方向 3 — 1 つの出力を遡る）。
 ///
 /// リンクは「$v$ 以外の頂点」を節、「$v$ に接する三角形」を枝とするグラフです。
@@ -670,6 +722,10 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
                         }
                         std::printf("        %u-%u source(A %d, B %d)%s\n", ue.a, ue.b, src_cnt[0],
                                     src_cnt[1], dirs.c_str());
+                        // **厳密な座標は全部の辺で出します**（埋め込みの確認は全件でやる）。
+                        // リンクの経路は読むためのものなので 2 本までに留めます
+                        dump_exact_star(pre, ue.a);
+                        dump_exact_star(pre, ue.b);
                         if (shown++ >= 2) continue;
                         dump_link(pre, ue.a, ue.b);
                         dump_link(pre, ue.b, ue.a);
