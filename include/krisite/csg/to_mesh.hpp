@@ -34,6 +34,16 @@
 namespace krisite::csg {
 
 /// 出力メッシュ（構成点 + 三角形）。`boolean.hpp` の `BoolMesh` と同じ形です。
+/// **細分した辺 1 本の由来**（`DESIGN-phase5-vertex-level.md` §9.3）。
+struct EdgeSplitSource {
+    std::uint32_t v = 0, w = 0;            ///< 細分した辺の両端（細分の【前】の番号）
+    PlaneId p1 = kNoPlane, p2 = kNoPlane;  ///< 辺の載る直線を張る 2 枚
+    PlaneId p3 = kNoPlane, p4 = kNoPlane;  ///< v だけ / w だけを通る 1 枚ずつ
+    std::int8_t sign = 0;                  ///< $Q = P_3 + \mathrm{sign}\cdot P_4$
+};
+/// `vertex_split_src` の「細分点ではない」印。
+inline constexpr std::uint32_t kNoEdgeSplit = static_cast<std::uint32_t>(-1);
+
 struct SoupMesh {
     std::vector<geom::HPointD> vertices;
     std::vector<mesh::Tri> triangles;
@@ -75,6 +85,16 @@ struct SoupMesh {
     /// **2 以上なら「4 枚以上の平面が 1 点で交わった」**ということです。
     /// **別位置の 2 本の辺が 1 本に束ねられていないか**を調べるのに要ります。
     std::vector<std::uint32_t> vertex_merged;
+    /// **細分した辺の由来**（`DESIGN-phase5-vertex-level.md` §9.3）。
+    ///
+    /// **$Q = P_3 \pm P_4$ そのものは持ちません** — 4 枚と符号から復元できます。
+    /// `PlaneTable` は `PlaneD` の表なので、`PlaneSum` は入れられません。
+    std::vector<EdgeSplitSource> edge_split;
+    /// **頂点 → `edge_split` の添字**（細分点でなければ `kNoEdgeSplit`）。
+    ///
+    /// **細分点の `vertex_key` は 2 枚しか持ちません**（3 枚目が表に無い型のため）。
+    /// **位置を復元するには、こちらを辿って 4 枚と符号を得てください。**
+    std::vector<std::uint32_t> vertex_split_src;
     bool empty() const noexcept { return triangles.empty(); }
 };
 
@@ -164,6 +184,14 @@ struct ToMeshOptions {
     ///
     /// **純粋な診断で、既定は偽です。** 本番の経路には乗せません。
     bool diag_unresolved = false;
+    /// **解けずに残った次数 4 の辺を、細分して直す**（`DESIGN-phase5-vertex-level.md` §9）。
+    ///
+    /// **既定は真です。** **偽にすると完全に外れ、従来の失敗が再現します**
+    /// （`CLAUDE.md`「機構を追加したら、それを外す経路も用意してください」）。
+    ///
+    /// **失敗したときだけ走ります。** 分裂の後に非多様体な辺が残らなければ、
+    /// **1 バイトも費用が増えません。**
+    bool repair_unresolved = true;
     /// **T 字接合の索引をセルで区切る**（`DESIGN-phase5-hotspots.md` §6.3 の A-3）。
     ///
     /// 平面ごとに全頂点を走査する代わりに、**多角形が属する葉の【閉じた箱】に
@@ -210,6 +238,177 @@ struct ToMeshOptions {
 };
 
 /// スープを三角メッシュにする（`SPEC-phase3.md` §6）。
+namespace detail {
+
+/// **解けずに残った次数 4 の辺を細分して直す**（`DESIGN-phase5-vertex-level.md` §9）。
+///
+/// **辺 1 本につき、頂点 2 個・三角形 4 枚が増えます。**
+/// $v$ も $w$ も複製しません — **扇は 1 個のままが正しい**（§3.4.4）。
+///
+/// **点どうしの中点は作りません。** 平面の和 $Q = P_3 \pm P_4$ の交点です（§7）。
+inline void repair_unresolved_edges(const PolySoup& s, SoupMesh& out, ToMeshStats& st) {
+    const std::size_t merged = st.merged_points;
+    /// **既存の頂点と幾何として一致しないか**を二分探索で確かめる。
+    ///
+    /// **`out.vertices` の先頭 `merged_points` 個は `lex_less` で整列済み**です
+    /// （値による併合が整列順に代表を積むため）。
+    /// **その後ろは分裂の複製なので、位置は必ず先頭の中に居ます。**
+    const auto collides = [&](const geom::HPointD& m) {
+        std::size_t lo = 0, hi = merged;
+        while (lo < hi) {
+            const std::size_t mid = lo + (hi - lo) / 2;
+            if (geom::lex_less(out.vertices[mid], m)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return lo < merged && geom::h_equal(out.vertices[lo], m);
+    };
+
+    // **長さを `vertices` にそろえます**（`SoupMesh` の不変条件）
+    out.vertex_split_src.assign(out.vertices.size(), kNoEdgeSplit);
+    for (const auto& ue : st.split.unresolved_detail) {
+        // **組が 2 つ作れていない辺は細分しても直りません**（4 枚が 1 つの中点に寄る）。
+        // `unsplit_edges` に数えられた辺がこれに当たります
+        if (ue.pair_groups != 2) {
+            ++st.split.repair_no_pair;
+            continue;
+        }
+        const std::uint32_t a = ue.out_a, b = ue.out_b;
+        if (a >= out.vertices.size() || b >= out.vertices.size()) continue;
+        // ---- 候補の平面を集める ----
+        //
+        // **頂点の 3 つ組だけでは足りません**（値による併合で代表しか残らないため。
+        // 実測で 34 / 67）。**4 枚の三角形の支持平面を足すと 67 / 67** になります。
+        // **辺は 4 枚すべてに含まれるので、その支持平面にも必ず載ります。**
+        std::vector<PlaneId> ids;
+        const auto push_id = [&ids](PlaneId p) {
+            if (p == kNoPlane) return;
+            for (PlaneId q : ids) {
+                if (q == p) return;
+            }
+            ids.push_back(p);
+        };
+        if (a < out.vertex_key.size() && b < out.vertex_key.size()) {
+            for (int k = 0; k < 3; ++k) {
+                push_id(out.vertex_key[a][static_cast<std::size_t>(k)]);
+                push_id(out.vertex_key[b][static_cast<std::size_t>(k)]);
+            }
+        }
+        std::vector<std::size_t> tris4;
+        for (std::size_t t = 0; t < out.triangles.size(); ++t) {
+            const mesh::Tri& tr = out.triangles[t];
+            bool ha = false, hb = false;
+            for (int k = 0; k < 3; ++k) {
+                if (tr[static_cast<std::size_t>(k)] == a) ha = true;
+                if (tr[static_cast<std::size_t>(k)] == b) hb = true;
+            }
+            if (!ha || !hb) continue;
+            tris4.push_back(t);
+            if (t < out.tri_poly.size()) push_id(s.polys[out.tri_poly[t]].frag.support);
+        }
+        if (tris4.size() != 4) {
+            ++st.split.repair_no_planes;
+            continue;
+        }
+        // ---- 線を張る 2 枚と、片側だけを通る 1 枚ずつ ----
+        const geom::HPointD& V = out.vertices[a];
+        const geom::HPointD& W = out.vertices[b];
+        std::vector<PlaneId> both, only_a, only_b;
+        for (PlaneId pid : ids) {
+            const geom::PlaneD& pl = s.table.at(pid);
+            const bool oa = geom::side(pl, V) == 0;
+            const bool ob = geom::side(pl, W) == 0;
+            if (oa && ob) {
+                both.push_back(pid);
+            } else if (oa) {
+                only_a.push_back(pid);
+            } else if (ob) {
+                only_b.push_back(pid);
+            }
+        }
+        // **平行でない組を総当たりで探します。** 先頭 2 枚が平行なこともあります
+        PlaneId i1 = kNoPlane, i2 = kNoPlane;
+        for (std::size_t i = 0; i < both.size() && i2 == kNoPlane; ++i) {
+            for (std::size_t j = i + 1; j < both.size() && i2 == kNoPlane; ++j) {
+                const auto d = geom::radial_dir(s.table.at(both[i]), s.table.at(both[j]));
+                if (!arith::is_zero(d.x) || !arith::is_zero(d.y) || !arith::is_zero(d.z)) {
+                    i1 = both[i];
+                    i2 = both[j];
+                }
+            }
+        }
+        const geom::PlaneD* p1 = (i1 != kNoPlane) ? &s.table.at(i1) : nullptr;
+        const geom::PlaneD* p2 = (i2 != kNoPlane) ? &s.table.at(i2) : nullptr;
+        const PlaneId i3 = only_a.empty() ? kNoPlane : only_a.front();
+        const PlaneId i4 = only_b.empty() ? kNoPlane : only_b.front();
+        const geom::PlaneD* p3 = (i3 != kNoPlane) ? &s.table.at(i3) : nullptr;
+        const geom::PlaneD* p4 = (i4 != kNoPlane) ? &s.table.at(i4) : nullptr;
+        if (p1 == nullptr || p2 == nullptr || p3 == nullptr || p4 == nullptr) {
+            ++st.split.repair_no_planes;
+            continue;
+        }
+        const geom::HPointD m = geom::edge_interior_point(*p1, *p2, *p3, *p4, V, W);
+        // ---- 同一視の検査（§9.4）----
+        //
+        // **見つかったら併合してはいけません。** 併合すると辺が分かれず修復になりません。
+        // **記録して諦めます**（`CLAUDE.md`「後段で埋める機構は上流の誤りを覆い隠す」）
+        if (collides(m)) {
+            ++st.split.repair_collisions;
+            continue;
+        }
+        // ---- 細分する ----
+        const auto m1 = static_cast<std::uint32_t>(out.vertices.size());
+        const auto m2 = static_cast<std::uint32_t>(out.vertices.size() + 1);
+        for (int rep = 0; rep < 2; ++rep) {
+            out.vertices.push_back(m);
+            // **3 つ組は 2 枚しか持てません**（$Q$ は `PlaneTable` に無い型）。
+            // **由来は `edge_split` が持ちます**
+            out.vertex_key.push_back(std::array<PlaneId, 3>{i1, i2, kNoPlane});
+            out.vertex_merged.push_back(1);
+            out.vertex_split_src.push_back(static_cast<std::uint32_t>(out.edge_split.size()));
+        }
+        EdgeSplitSource src{};
+        src.v = a;
+        src.w = b;
+        src.p1 = i1;
+        src.p2 = i2;
+        src.p3 = i3;
+        src.p4 = i4;
+        src.sign = static_cast<std::int8_t>(-geom::side(*p4, V) * geom::side(*p3, W));
+        out.edge_split.push_back(src);
+
+        for (std::size_t t : tris4) {
+            // **組で m1 / m2 を決めます**（`radial_pair` が作った組）
+            const bool first =
+                (ue.pair_groups >= 2) && (t == ue.pair_tris[0] || t == ue.pair_tris[1]);
+            const std::uint32_t mm = first ? m1 : m2;
+            mesh::Tri& tr = out.triangles[t];
+            int i = -1;
+            for (int k = 0; k < 3; ++k) {
+                const std::uint32_t x = tr[static_cast<std::size_t>(k)];
+                const std::uint32_t y = tr[static_cast<std::size_t>((k + 1) % 3)];
+                if ((x == a && y == b) || (x == b && y == a)) i = k;
+            }
+            if (i < 0) continue;
+            const std::uint32_t x = tr[static_cast<std::size_t>(i)];
+            const std::uint32_t y = tr[static_cast<std::size_t>((i + 1) % 3)];
+            const std::uint32_t z = tr[static_cast<std::size_t>((i + 2) % 3)];
+            // **向きを保ちます**: (x,y,z) → (x,m,z) と (m,y,z)
+            tr = mesh::Tri{x, mm, z};
+            out.triangles.push_back(mesh::Tri{mm, y, z});
+            // **添えた配列も親から複製します**（洗い出しの結果、枚数に依る検査は 0 件）
+            if (t < out.tri_src.size()) out.tri_src.push_back(out.tri_src[t]);
+            if (t < out.tri_tag.size()) out.tri_tag.push_back(out.tri_tag[t]);
+            if (t < out.tri_poly.size()) out.tri_poly.push_back(out.tri_poly[t]);
+        }
+        ++st.split.repair_edges;
+    }
+}
+
+}  // namespace detail
+
 inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
                         ToMeshStats* stats = nullptr) {
     ToMeshStats st;
@@ -404,7 +603,9 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
         // **頂点ごとに独立**（§3）。ID の割り当ては逐次なので決定的です
         mesh::SplitOptions sopt;
         sopt.reverse_fan = opt.reverse_fan;
-        sopt.diag_unresolved = opt.diag_unresolved;
+        // **修復には `unresolved_detail` が要ります**（辺の両端と、組の三角形）。
+        // **収集は「分裂の後に非多様体だった」ときだけ走る**ので、費用は失敗時のみです
+        sopt.diag_unresolved = opt.diag_unresolved || opt.repair_unresolved;
         // **radial sort に要る幾何を渡します**（`SPEC-phase2.md` §5.1.2.1）。
         //
         // **外向き法線をここで揃えます** — `Fragment::flipped` は
@@ -441,6 +642,28 @@ inline SoupMesh to_mesh(const PolySoup& s, const ToMeshOptions& opt = {},
             out.vertices.push_back(out.vertices[o]);
             out.vertex_key.push_back(out.vertex_key[o]);
             out.vertex_merged.push_back(out.vertex_merged[o]);
+        }
+        // ---- 5. 修復: 解けずに残った次数 4 の辺を細分する（§9.5）------------
+        //
+        // **辺の 2 枚のシートは【剥がすべきで、頂点は割るべきではありません】**
+        // （`DESIGN-phase5-vertex-level.md` §3.4.4）。
+        // 索引付き三角形メッシュで表すには、**辺の途中に頂点が要ります。**
+        //
+        // **点どうしの中点は作りません**（EMBER §3.2 / `LOG-phase3-design.md` §2.1）。
+        // **平面の和 $Q = P_3 \pm P_4$ の交点**として作ります（§7）。
+        st.split.unresolved_before_repair = st.split.unresolved_detail.size();
+        if (opt.repair_unresolved && !st.split.unresolved_detail.empty()) {
+            detail::repair_unresolved_edges(s, out, st);
+            // **修復の後は、増分計算の前提（`out` は `tris` の複製）が崩れます。**
+            // **素直に検査し直します**（走るのは失敗したときだけなので安い）
+            const mesh::TopologyReport after = mesh::check_topology(out.triangles);
+            if (after.edge_manifold && after.vertex_manifold) {
+                // **`split_contacts` が事後の検査で加えた 1 件を取り下げます**
+                if (st.split.unresolved_post > 0) {
+                    --st.split.unresolved_post;
+                    if (st.split.unresolved > 0) --st.split.unresolved;
+                }
+            }
         }
     }
 

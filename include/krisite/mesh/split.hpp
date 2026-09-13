@@ -120,6 +120,9 @@ struct SplitStats {
     ///
     /// **頂点番号は分裂の【前】のもの**です（出力の番号から `origin` で戻します）。
     struct UnresolvedEdge {
+        /// **出力での両端**（分裂の【後】の番号）。**修復の段はこちらを使います** —
+        /// 分裂で複製された頂点があると、`a` / `b`（分裂前）とは違う番号になります
+        VertexId out_a = 0, out_b = 0;
         VertexId a = 0, b = 0;                   ///< 分裂前の両端
         std::size_t degree = 0;                  ///< 出力での辺の次数
         std::size_t inc_a = 0, inc_b = 0;        ///< 分裂前に接する三角形の数
@@ -134,6 +137,22 @@ struct SplitStats {
     };
     /// **診断の旗が真のときだけ積みます。** 既定では空です
     std::vector<UnresolvedEdge> unresolved_detail;
+
+    // ---- 修復の段（`DESIGN-phase5-vertex-level.md` §9.5）----
+    //
+    // **後段で埋める機構は、上流の誤りを覆い隠します**（`CLAUDE.md`）。
+    // **だから「修復の前」も記録します。** 無いと「修復で隠れた」のか
+    // 「そもそも起きなかった」のかが区別できません。
+    /// **修復の【前】に残っていた非多様体の辺の数**
+    std::size_t unresolved_before_repair = 0;
+    /// **実際に細分した辺の数**
+    std::size_t repair_edges = 0;
+    /// **細分点が既存の頂点と幾何として一致したので諦めた辺の数**
+    std::size_t repair_collisions = 0;
+    /// **平面が足りず諦めた辺の数**（線を張る 2 枚、片側だけの 1 枚ずつが揃わない）
+    std::size_t repair_no_planes = 0;
+    /// **組が 2 つ作れていないので諦めた辺の数**（`unsplit_edges` に当たる辺）
+    std::size_t repair_no_pair = 0;
 
     /// **early-out で arrangement を省いたセル由来の三角形に接する頂点が分裂した回数**
     /// （SPEC-phase2 §13 の CP5）。
@@ -1023,6 +1042,8 @@ inline std::vector<Tri> split_contacts(
                 for (const auto& kv : deg) {
                     if (kv.second == 2) continue;
                     SplitStats::UnresolvedEdge ue;
+                    ue.out_a = kv.first.first;
+                    ue.out_b = kv.first.second;
                     ue.a = orig(kv.first.first);
                     ue.b = orig(kv.first.second);
                     ue.degree = kv.second;

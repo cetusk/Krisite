@@ -365,6 +365,9 @@ struct PairStruct {
     /// **`IMPL-phase5.md` §98 の残件はこちらです。分けて数えないと区別できません。**
     std::size_t unresolved_post = 0;
     std::size_t unsplit_edges = 0;  ///< 対応付けできず、分裂させずに残した辺
+    // ---- 修復の段（`DESIGN-phase5-vertex-level.md` §9.5）----
+    std::size_t unresolved_before_repair = 0, repair_edges = 0, repair_collisions = 0;
+    std::size_t repair_no_planes = 0, repair_no_pair = 0;
     // ---- ★ 出口の 5 段（`SPEC-phase5.md` §5.11.1 / §6）------------------------
     //
     // **§6 が「出口の内訳」を要求しているのに、記録項目に入っていませんでした。**
@@ -454,6 +457,11 @@ struct PairStruct {
         split_vertices += t.split.split_vertices;
         unresolved_post += t.split.unresolved_post;
         unsplit_edges += t.split.unsplit_edges;
+        unresolved_before_repair += t.split.unresolved_before_repair;
+        repair_edges += t.split.repair_edges;
+        repair_collisions += t.split.repair_collisions;
+        repair_no_planes += t.split.repair_no_planes;
+        repair_no_pair += t.split.repair_no_pair;
         ms_construct += t.ms_construct;
         ms_merge += t.ms_merge;
         ms_index += t.ms_index;
@@ -558,6 +566,10 @@ struct PairStruct {
           // **§1.5.0 が要求していたのに入っていなかった項目**（2026-09-07 追加。`IMPL-v2.md` §3）
           << ' ' << split_vertices << ' ' << unresolved_post << ' '
           << unsplit_edges
+          // **修復の段**（2026-09-13 追加。`DESIGN-phase5-vertex-level.md` §9.5.2）
+          << ' ' << unresolved_before_repair << ' ' << repair_edges << ' ' << repair_collisions
+          << ' ' << repair_no_planes << ' '
+          << repair_no_pair
           // **出口の 5 段と、入口・中核・出口の合計**（2026-09-08 追加。§5.11.1）
           << ' ' << (long long)ms_construct << ' ' << (long long)ms_merge << ' '
           << (long long)ms_index << ' ' << (long long)ms_tri << ' ' << (long long)ms_split << ' '
@@ -590,7 +602,7 @@ struct PairStruct {
 bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOptions& o,
                par::ThreadPool* pool, std::string* why, unsigned long long* hash_out = nullptr,
                PairStruct* ps = nullptr, int nsi_decl = 0, bool verify_delta = true,
-               bool dump_nm = false) {
+               bool dump_nm = false, bool repair = true) {
     // **NSI は呼び出し側が宣言します**（`SPEC-phase3.md` §5.6、EMBER §4.5.1）。
     // ライブラリは検証しません。**宣言してよいかを確かめるのは呼び出し側の仕事**で、
     // `from_mesh` の `verify_nsi` がその補助です。
@@ -636,6 +648,7 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     // > **CP1〜CP3 では既定（真）のまま回してください。**
     tm.verify_split_delta = verify_delta;
     tm.diag_unresolved = dump_nm;
+    tm.repair_unresolved = repair;
     // **対ごとの構造を採ります**（`SPEC-phase5.md` §1.5.0）。3 演算ぶんを合算。
     csg::SoupMesh out3[3];
     int k3 = 0;
@@ -1048,6 +1061,9 @@ int main(int argc, char** argv) {
     if (argc > 13) o.bsp_skip_boxside = std::atoi(argv[13]) != 0;
     // **第 14 引数: 分裂の後に残った非多様体の辺の構造を出す**（§5.10.14.51 の調査）
     const bool dump_nm = (argc > 14) && (std::atoi(argv[14]) != 0);
+    /// **修復の段を外す旗**（`DESIGN-phase5-vertex-level.md` §9.5.3）。
+    /// **既定は入れる。** 外した側で従来の失敗が再現することを確かめるために要ります
+    const bool repair = (argc <= 15) || (std::atoi(argv[15]) != 0);
     o.depth = depth;
     o.adaptive = true;
     o.leaf_threshold = 0;
@@ -1150,6 +1166,7 @@ int main(int argc, char** argv) {
     std::printf("| 一覧 | `%s` |\n", list.c_str());
     std::printf("| 記録先 | `%s` |\n", done_path.c_str());
     std::printf("| 深度 | %u |\n", depth);
+    std::printf("| **修復の段（案 H）** | **%s** |\n", repair ? "入れる" : "外す");
     std::printf("| スレッド | %u |\n", nthreads);
     std::printf("| b（座標ビット） | %d |\n", KRISITE_COORD_BITS);
     std::printf("| **NSI の扱い** | **%d = %s** |\n", nsi_mode,
@@ -1218,7 +1235,7 @@ int main(int argc, char** argv) {
         PairStruct ps;
         const bool ok =
             check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
-                      nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1), verify_delta, dump_nm);
+                      nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1), verify_delta, dump_nm, repair);
         if (ps.nsi_a >= 0) {
             (ps.nsi_a ? nsi_declared : nsi_rejected) += 1;
             (ps.nsi_b ? nsi_declared : nsi_rejected) += 1;
