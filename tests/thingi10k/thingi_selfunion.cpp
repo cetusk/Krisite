@@ -19,8 +19,10 @@
 
 #include "krisite/csg/soup_boolean.hpp"
 #include "krisite/csg/to_mesh.hpp"
+#include "krisite/geom/plane.hpp"
 #include "krisite/geom/predicates.hpp"
 #include "krisite/mesh/self_intersect.hpp"
+#include "krisite/mesh/split.hpp"
 #include "krisite/mesh/topology.hpp"
 
 #include "thingi10k/loader.hpp"
@@ -88,11 +90,18 @@ int main(int argc, char** argv) {
     const unsigned depth = (argc > 2) ? static_cast<unsigned>(std::atoi(argv[2])) : 6;
     const unsigned nthreads = (argc > 3) ? static_cast<unsigned>(std::atoi(argv[3])) : 8;
     const std::string out_path = "data/thingi10k/selfunion_results.txt";
+    // **量子化の変換の種は「一覧での並び順」で決まります**（`thingi_cp1.cpp` と同じ規則）。
+    // **CP1 以外の母集団を回すときは、その母集団の一覧を渡してください。**
+    // 渡さないと種が変わり、**別の入力を測ることになります**
+    const std::string seed_list = (argc > 4) ? argv[4] : "data/thingi10k/cp1.txt";
+    /// **入口で入力に `split_contacts` を掛けてから演算する**
+    /// （`DESIGN-phase5-vertex-level.md` §4 の案 C）。**既定は偽。**
+    const bool presplit = (argc > 5) && (std::atoi(argv[5]) != 0);
 
     // **量子化の変換は CP1 と同じ**（`cp1.txt` の並び順が種）。**違えると別の入力になります。**
     std::map<std::string, std::size_t> idx;
     {
-        std::ifstream f("data/thingi10k/cp1.txt");
+        std::ifstream f(seed_list);
         std::string a, b;
         std::size_t i = 0;
         while (f >> a >> b) idx[a] = i++;
@@ -120,12 +129,15 @@ int main(int argc, char** argv) {
     std::printf("\n## self-union（自己交差する模型）\n\n");
     std::printf("| 設定 | 値 |\n|---|---|\n");
     std::printf("| 一覧 | `%s` |\n", list.c_str());
+    std::printf("| **種の一覧**（量子化の変換） | `%s` |\n", seed_list.c_str());
     std::printf("| 記録先 | `%s` |\n", out_path.c_str());
     std::printf("| 深度 | %u |\n", depth);
     std::printf("| スレッド | %u |\n", nthreads);
     std::printf("| b（座標ビット） | %d |\n", KRISITE_COORD_BITS);
     std::printf("| **NSI** | **宣言しない**（対象が自己交差しているので宣言できません） |\n");
-    std::printf("| 接触の分裂 | 有効 |\n\n");
+    std::printf("| 接触の分裂 | 有効 |\n");
+    std::printf("| **入口で入力を分裂させる（案 C）** | **%s** |\n\n",
+                presplit ? "する" : "しない");
     std::printf("**これから %zu 模型を回します**（一覧 %zu / 既済 %zu）\n\n", planned, ids.size(),
                 done.size());
 
@@ -136,11 +148,34 @@ int main(int argc, char** argv) {
     for (const std::string& id : ids) {
         if (done.count(id)) continue;
         ++n;
-        const auto q =
-            krithingi::quantize(krithingi::load_kmesh("data/thingi10k/kmesh/" + id + ".kmesh"),
-                                krithingi::make_transform(1000 + idx.at(id)));
-        std::printf("  [%zu/%zu] %s（三角形 %zu）… ", n, planned, id.c_str(),
-                    q.mesh.triangles.size());
+        auto q = krithingi::quantize(krithingi::load_kmesh("data/thingi10k/kmesh/" + id + ".kmesh"),
+                                     krithingi::make_transform(1000 + idx.at(id)));
+        std::size_t pre_split_added = 0;
+        if (presplit) {
+            // **案 C**: 入力の接触を先に分裂させる。**座標は変えません**（複製するだけ）
+            std::vector<geom::PlaneD> nrm(q.mesh.triangles.size());
+            for (std::size_t i = 0; i < q.mesh.triangles.size(); ++i) {
+                const mesh::Tri& tr = q.mesh.triangles[i];
+                nrm[i] = geom::plane_from_triangle(q.mesh.vertices[tr[0]], q.mesh.vertices[tr[1]],
+                                                   q.mesh.vertices[tr[2]]);
+            }
+            std::vector<geom::HPointD> hv(q.mesh.vertices.size());
+            for (std::size_t i = 0; i < q.mesh.vertices.size(); ++i) {
+                hv[i] = geom::to_homogeneous(q.mesh.vertices[i]);
+            }
+            mesh::RadialGeom rg;
+            rg.normal = &nrm;
+            rg.vertices = &hv;
+            mesh::SplitStats sst;
+            std::vector<std::uint32_t> sorigin;
+            q.mesh.triangles =
+                mesh::split_contacts(q.mesh.triangles, q.mesh.vertices.size(), &sorigin, &sst,
+                                     nullptr, nullptr, nullptr, mesh::SplitOptions{}, &rg);
+            for (std::uint32_t o : sorigin) q.mesh.vertices.push_back(q.mesh.vertices[o]);
+            pre_split_added = sorigin.size();
+        }
+        std::printf("  [%zu/%zu] %s（三角形 %zu、入口の分裂で増えた頂点 %zu）… ", n, planned,
+                    id.c_str(), q.mesh.triangles.size(), pre_split_added);
         std::fflush(stdout);
         const auto t0 = std::chrono::steady_clock::now();
         // self-union = **同じスープを 2 度使う和**（`test_winding.cpp` の `self_union` と同形）

@@ -353,6 +353,21 @@ struct BoolStats {
     /// **NSI の宣言で局所 BSP を省いたセル**（`SPEC-phase3.md` §5.6）。
     /// **0 なら機構が空回りしています**（`CLAUDE.md`）。
     std::size_t bsp_cells_skipped_nsi = 0;
+    /// **量子化後に頂点非多様体だと【検査で分かった】入力の数**
+    /// （`SPEC-phase5.md` §5.10.14.57 の案 B）。
+    ///
+    /// **非零なら、出口で分裂できない次数 4 の辺が残ることがあります**
+    /// （実測: 該当する 141 対のうち 8 対（5.7%）。非該当の 154 対では 0 対。
+    /// `DESIGN-phase5-vertex-level.md` §3.4）。
+    ///
+    /// **拒否の条件ではありません** — 該当しても 94% は成功します。
+    std::size_t inputs_vertex_nonmanifold = 0;
+    /// **頂点多様体性を検査していない入力の数**（`FromMeshOptions::verify_vertex_manifold`）。
+    ///
+    /// **`inputs_vertex_nonmanifold == 0` を「多様体だった」と読んではいけません。**
+    /// **この数が非零なら、単に検査していないだけ**です
+    /// （`CLAUDE.md`「1 つの値に 2 つの意味を持たせない」）。
+    std::size_t inputs_vertex_unchecked = 0;
     /// **単一 source の葉を割る規則（§3.1 の訂正）が発火した回数**。
     /// **0 なら `single_src_sq` は空回りしています**（`IMPL-phase5.md` §81）
     std::size_t single_src_splits = 0;

@@ -44,13 +44,44 @@ namespace bits {
 
 inline constexpr std::size_t b = kCoordBits;
 
-inline constexpr std::size_t kCoord = b;             ///< 入力座標
-inline constexpr std::size_t kDiff = b + 1;          ///< 座標差
-inline constexpr std::size_t kNormal = 2 * b + 3;    ///< 法線成分
-inline constexpr std::size_t kOffset = 3 * b + 5;    ///< 平面オフセット d = -N・p1
-inline constexpr std::size_t kHomoW = 6 * b + 12;    ///< 構成点の w
-inline constexpr std::size_t kHomoXyz = 7 * b + 14;  ///< 構成点の x,y,z
-inline constexpr std::size_t kSide = 9 * b + 20;     ///< side() の被符号値
+inline constexpr std::size_t kCoord = b;           ///< 入力座標
+inline constexpr std::size_t kDiff = b + 1;        ///< 座標差
+inline constexpr std::size_t kNormal = 2 * b + 3;  ///< 法線成分
+inline constexpr std::size_t kOffset = 3 * b + 5;  ///< 平面オフセット d = -N・p1
+/// **平面 2 枚の【和】の法線成分**（`DESIGN-phase5-vertex-level.md` §7）。
+///
+/// $Q = P_3 \pm P_4$ は係数どうしの和なので、**1 ビット増える**だけです。
+///
+/// **入力平面の型（`PlaneD`）に入れてはいけません。** `PlaneD` の幅の主張は
+/// 「入力三角形から作った平面」に対するもので、和はそれを超えます
+/// （`CLAUDE.md`「型でビット幅を表現する」）。**別の型 `PlaneS` を使います。**
+inline constexpr std::size_t kSumNormal = 2 * b + 4;
+/// **平面 2 枚の和のオフセット**。同じく 1 ビット増。
+inline constexpr std::size_t kSumOffset = 3 * b + 6;
+
+/// 構成点の w = $\det(N_1,N_2,N_3)$。
+///
+/// **★ 2026-09-13 に 1 ビット広げました**（$6b{+}12 \to 6b{+}13$）。
+/// 案 H の細分点は **3 枚目が `PlaneS`**（$2b{+}4$）なので、
+/// $\;(2b{+}3)+(2b{+}3)+(2b{+}4)+3 = 6b+13$ です。
+///
+/// **リム数は変わりません**（$b{=}21$ で 138 → 139 ビット、どちらも 3 リム。
+/// $b{=}26$ で 168 → 169、どちらも 3 リム）。
+inline constexpr std::size_t kHomoW = 6 * b + 13;
+/// 構成点の x,y,z = 1 列を $-d$ に置換した行列式。
+///
+/// **★ 2026-09-13 に 1 ビット広げました**（$7b{+}14 \to 7b{+}15$）。
+/// 積の最大は「オフセット 1 つ + 法線 2 つ」で、
+/// `PlaneS` がどの位置に来ても $(3b{+}6)+(2b{+}3)+(2b{+}3) = 7b{+}12$ または
+/// $(3b{+}5)+(2b{+}3)+(2b{+}4) = 7b{+}12$。行列式で $+3$ して $7b{+}15$。
+///
+/// **リム数は変わりません**（$b{=}21$ で 3、$b{=}26$ で 4）。
+inline constexpr std::size_t kHomoXyz = 7 * b + 15;
+/// `side()` の被符号値。
+///
+/// $N\cdot X + d\,w$ は $(2b{+}3)+(7b{+}15) = 9b{+}18$ と
+/// $(3b{+}5)+(6b{+}13) = 9b{+}18$ の和 4 項で $9b{+}20$。**安全側に +1。**
+inline constexpr std::size_t kSide = 9 * b + 21;
 inline constexpr std::size_t kOrient3d = 3 * b + 5;  ///< orient3d の行列式（差分形）
 inline constexpr std::size_t kOrient2d = 2 * b + 3;  ///< orient2d の行列式（差分形）
 
@@ -95,13 +126,14 @@ inline constexpr std::size_t kPlaneAabb = 3 * b + 7;
 /// **乗算 2 回・$13b{+}27$ ビット（5 リム）**です。**相手の $w$ が 1 だと分かっていれば
 /// 乗算 1 回で済みます**（実測で 2.34 分の 1。`BENCH.md`）。
 ///
-///   x         kHomoXyz = 7b+14
+///   x         kHomoXyz = 7b+15
 ///   c         b+1（kAxisOffset。セル境界も渡せるように）
-///   c*w       (b+1) + (6b+12) = 7b+13
-///   x - c*w   max(7b+14, 7b+13) + 1 = **7b+15**
+///   c*w       (b+1) + (6b+13) = 7b+14
+///   x - c*w   max(7b+15, 7b+14) + 1 = **7b+16**
 ///
-/// b = 21 で 162 ビット / **3 リム**、b = 26 で 197 ビット / 4 リム。
-inline constexpr std::size_t kAxisIntCmp = 7 * b + 15;
+/// b = 21 で 163 ビット / **3 リム**、b = 26 で 198 ビット / 4 リム。
+/// **★ 2026-09-13 に 1 ビット広げました**（構成点が 1 ビット広がったため）。
+inline constexpr std::size_t kAxisIntCmp = 7 * b + 16;
 
 /// 三角形とセルの箱の**厳密な**交差判定（分離軸定理）。
 /// `DESIGN-phase5-hotspots.md` §10。**まだ実装していません。導出だけ先に置きます。**
@@ -180,12 +212,12 @@ inline constexpr std::size_t kRadialDot = 4 * b + 8;
 /// $\mathbf{d} = N_a \times N_b$ は $(a,b)$ の選び方で向きが変わるので、
 /// **頂点の順序（索引の小さいほうを $u$）に合わせて正準化します。**
 ///
-///   e = w_u V_v - w_v V_u   max(kHomoW + kHomoXyz) + 1 = (6b+12)+(7b+14)+1 = 13b+27
+///   e = w_u V_v - w_v V_u   max(kHomoW + kHomoXyz) + 1 = (6b+13)+(7b+15)+1 = 13b+29
 ///   d・e（3 項）             (4b+7) + (13b+27) + 2 = **17b+36**
 ///
 /// b = 21 で 393 ビット / **7 リム**、b = 26 で 478 ビット / 8 リム。
 /// **辺ごとに 1 回なので、幅が広くても総費用は小さい**（比較は 8b+16 のほう）。
-inline constexpr std::size_t kRadialAlign = 17 * b + 36;
+inline constexpr std::size_t kRadialAlign = 17 * b + 38;
 
 /// **(2) 三角形の法線 1 軸。** N = E0 × E1 で |N| <= 2^(2b+9)。
 ///
@@ -222,13 +254,14 @@ inline constexpr std::size_t kInputVolume6 = kTetraVolume6 + kMaxTrianglesLog2;
 ///   O = (b.y-a.y)*(p.z - a.z*p.w) - (b.z-a.z)*(p.y - a.y*p.w)
 ///   実座標での向き = O / p.w なので、符号は sign(O) * sign(p.w)
 ///
-///   |p.z| < 2^(7b+13)、|a.z*p.w| < 2^(7b+10) → 差は 7b+15 ビット
-///   |b.y-a.y| は b+1 ビット → 積が 8b+15、差でさらに +1 して 8b+16
-///   安全側に +1 して 8b+17（b=21 で 185 ビット / 3 リム、b=26 で 225 / 4）
+///   |p.z| < 2^(7b+14)、|a.z*p.w| < 2^(7b+11) → 差は 7b+16 ビット
+///   |b.y-a.y| は b+1 ビット → 積が 8b+17、差でさらに +1 して 8b+18
+///   安全側に +1 して 8b+19（b=21 で 187 ビット / 3 リム、b=26 で 227 / 4）
+///   **★ 2026-09-13 に 2 ビット広げました**（構成点が 1 ビット広がったため）
 ///
 /// **キャスト元が入力頂点（IPoint）なら既存の orient2d（2b+3）で済みます。**
 /// 同次点にフォールバックしたときだけこの幅が要ります。
-inline constexpr std::size_t kOrient2dH = 8 * b + 17;
+inline constexpr std::size_t kOrient2dH = 8 * b + 19;
 
 // レイの前方交差の判定は side(plane, ·) と法線成分の符号で決まるので、
 // 新しい述語は要りません。キャスト元は ∂B 上に無いことを保証するので
@@ -236,12 +269,15 @@ inline constexpr std::size_t kOrient2dH = 8 * b + 17;
 
 /// cmp_h() の被符号値 w2*x1 - w1*x2。SPEC §3.1「同次点の比較述語」:
 ///
-///   w2*x1 : (6b+12) + (7b+14) = 13b + 26
-///   差分   : 13b + 27
+///   w2*x1 : (6b+13) + (7b+15) = 13b + 28
+///   差分   : 13b + 29
 ///
-/// b = 21 で 300 ビット（5 リム）。side() の 209 ビット（4 リム）より広い。
+/// b = 21 で 302 ビット（5 リム）。side() の 210 ビット（4 リム）より広い。
 /// すなわち **Phase 0 で最大幅を要求するのは side() ではなく cmp_h()** である（§3.3）。
-inline constexpr std::size_t kCmpH = 13 * b + 27;
+///
+/// **★ 2026-09-13 に 2 ビット広げました**（構成点の x と w が 1 ビットずつ広がったため）。
+/// **リム数は変わりません**（b=21 で 5、b=26 で 6）。
+inline constexpr std::size_t kCmpH = 13 * b + 29;
 
 /// **中点系・重心系の述語は Phase 3 の段 0 で削除しました**（`SPEC-phase3.md` §2.1）。
 ///
@@ -311,6 +347,8 @@ inline constexpr std::size_t kCoord = limbs_for(bits::kCoord);
 inline constexpr std::size_t kDiff = limbs_for(bits::kDiff);
 inline constexpr std::size_t kNormal = limbs_for(bits::kNormal);
 inline constexpr std::size_t kOffset = limbs_for(bits::kOffset);
+inline constexpr std::size_t kSumNormal = limbs_for(bits::kSumNormal);
+inline constexpr std::size_t kSumOffset = limbs_for(bits::kSumOffset);
 inline constexpr std::size_t kHomoW = limbs_for(bits::kHomoW);
 inline constexpr std::size_t kHomoXyz = limbs_for(bits::kHomoXyz);
 inline constexpr std::size_t kSide = limbs_for(bits::kSide);
@@ -354,6 +392,25 @@ inline constexpr std::size_t kMaxPredicate = max_limbs(kSide, kCmpH);
 
 // 平面係数を共通幅で扱うために kOffset >= kNormal が要る。3b+5 > 2b+3 なので常に成立。
 static_assert(limbs::kOffset >= limbs::kNormal, "kOffset は kNormal 以上のはず");
+// ---- 案 H: 平面の和と、そこから作る構成点（`DESIGN-phase5-vertex-level.md` §7）----
+static_assert(bits::kSumNormal >= bits::kNormal + 1, "kSumNormal が法線 2 枚の和を収められない");
+static_assert(bits::kSumOffset >= bits::kOffset + 1,
+              "kSumOffset がオフセット 2 枚の和を収められない");
+// **`PlaneS` を `intersect3` に渡せること。** リムの並びが `PlaneD` と同じでなければ
+// 行列式を最大幅にそろえる既存の実装が使えません
+static_assert(limbs::kSumNormal == limbs::kNormal && limbs::kSumOffset == limbs::kOffset,
+              "PlaneS のリム数が PlaneD と違う（b の設定を見直すこと）");
+// **3 平面のうち 1 枚が `PlaneS` でも収まること**（行列式は 6 項なので +3）
+static_assert(bits::kHomoW >= 2 * bits::kNormal + bits::kSumNormal + 3,
+              "kHomoW が PlaneS 込みの det(N) を収められない");
+static_assert(bits::kHomoXyz >= bits::kSumOffset + 2 * bits::kNormal + 3 &&
+                  bits::kHomoXyz >= bits::kOffset + bits::kNormal + bits::kSumNormal + 3,
+              "kHomoXyz が PlaneS 込みの det を収められない");
+static_assert(bits::kSide >= bits::kNormal + bits::kHomoXyz + 2 &&
+                  bits::kSide >= bits::kOffset + bits::kHomoW + 2,
+              "kSide が広がった構成点を収められない");
+static_assert(bits::kCmpH >= bits::kHomoW + bits::kHomoXyz + 1,
+              "kCmpH が広がった構成点を収められない");
 static_assert(64 * limbs::kPlaneMinor >= bits::kPlaneMinor, "kPlaneMinor のリム数不足");
 static_assert(64 * limbs::kPlaneOrder >= bits::kPlaneOrder, "kPlaneOrder のリム数不足");
 static_assert(64 * limbs::kInputVolume6 >= bits::kInputVolume6, "kInputVolume6 のリム数不足");

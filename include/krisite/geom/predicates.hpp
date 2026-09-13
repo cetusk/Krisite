@@ -179,6 +179,27 @@ inline arith::fixed_int<limbs::kSide> side_value(const PlaneD& pl, const HPointD
     return acc;
 }
 
+/// **`PlaneS`（平面 2 枚の和）に対する `side`**（`DESIGN-phase5-vertex-level.md` §7）。
+///
+/// **`kSide` は `PlaneS` の幅も収めます**（`widths.hpp` の静的検査）。
+/// 案 H で $Q$ の符号を選ぶときと、選んだ結果を検算するときに要ります。
+inline arith::fixed_int<limbs::kSide> side_value(const PlaneSum& pl, const HPointD& v) noexcept {
+    using namespace arith;
+    constexpr std::size_t LS = limbs::kSide;
+    static_assert(64 * LS >= bits::kSide, "kSide のリム数が §3.1 の上界を下回っている");
+    auto acc = resize<LS>(mul(pl.a, v.x));
+    acc = add(acc, resize<LS>(mul(pl.b, v.y)));
+    acc = add(acc, resize<LS>(mul(pl.c, v.z)));
+    acc = add(acc, resize<LS>(mul(pl.d, v.w)));
+    return acc;
+}
+
+inline int side(const PlaneSum& pl, const HPointD& v) noexcept {
+    KRISITE_COUNT(side_calls);
+    KRISITE_CHECK(!arith::is_zero(v.w), "side: HPoint の w == 0（不変条件違反）");
+    return arith::sign(v.w) * arith::sign(side_value(pl, v));
+}
+
 #if defined(KRISITE_COUNT_PREDICATES)
 namespace detail {
 
@@ -734,6 +755,38 @@ inline arith::fixed_int<3 * limbs::kCoord + 1> tetra_volume6(const IPoint& a, co
          arith::from_i64<limbs::kCoord>(c.z)},
     };
     return arith::det3(m);
+}
+
+/// **辺の【内部】の点を、平面だけで構成する**（`DESIGN-phase5-vertex-level.md` §7）。
+///
+/// **点どうしの中点を作りません。** EMBER §3.2 が「固定精度では一般に計算できない」と
+/// 名指しし、`LOG-phase3-design.md` §2.1 で Krisite が取り下げた操作です。
+/// **そのとき採った解（構成を平面ベースに戻す）をここでも使います。**
+///
+/// **前提**（呼び出し側が保証すること）:
+///
+///   - `p1`, `p2` は**両端 $v,w$ を通り、平行でない** → 交線 $L$ が辺の載る直線
+///   - `p3` は **$v$ を通り $w$ を通らない**
+///   - `p4` は **$w$ を通り $v$ を通らない**
+///
+/// **符号の選び方**: $L$ 上で $P_3(v)=0$、$P_4(w)=0$ なので
+/// $Q(v) = s_4 P_4(v)$、$Q(w) = P_3(w)$。
+/// **両者が逆符号になるのは $s_4 = -\mathrm{sign}(P_4(v))\cdot\mathrm{sign}(P_3(w))$** のとき。
+/// $P_4(v) \ne 0$ と $P_3(w) \ne 0$ は前提から出るので、**符号は必ず決まります。**
+///
+/// $Q(v)$ と $Q(w)$ が逆符号なら、$L \cap Q$ は $v$ と $w$ の**間**にあります。
+inline HPointD edge_interior_point(const PlaneD& p1, const PlaneD& p2, const PlaneD& p3,
+                                   const PlaneD& p4, const HPointD& v, const HPointD& w) noexcept {
+    const int s4v = side(p4, v);
+    const int s3w = side(p3, w);
+    KRISITE_CHECK(s4v != 0, "edge_interior_point: p4 が v を通っている（前提違反）");
+    KRISITE_CHECK(s3w != 0, "edge_interior_point: p3 が w を通っている（前提違反）");
+    const PlaneSum q = plane_sum(p3, p4, -s4v * s3w);
+    const HPointD m = intersect3(p1, p2, q);
+    // **前提が守られていれば、ここは必ず通ります。**
+    // **通らないなら呼び出し側の前提が破れています**（`CLAUDE.md`「前提を書いたら検査も」）
+    KRISITE_CHECK(side(q, v) * side(q, w) < 0, "edge_interior_point: Q が辺を分けていない");
+    return m;
 }
 
 }  // namespace krisite::geom

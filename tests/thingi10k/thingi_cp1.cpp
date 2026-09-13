@@ -23,6 +23,7 @@
 #include <fstream>
 #include <iomanip>
 #include <ostream>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -99,6 +100,129 @@ Prepared prepare(const krithingi::RawMesh& raw, std::uint64_t seed) {
     return p;
 }
 
+/// **多倍長整数を 16 進で出す**（Python 側で厳密な有理数に戻すため）。
+///
+/// **2 の補数のまま出すと符号の扱いを 2 箇所に分けることになる**ので、
+/// **符号と絶対値**に分けて出します。
+template <std::size_t N>
+void dump_int(const krisite::arith::fixed_int<N>& v) {
+    krisite::arith::fixed_int<N> a = v;
+    const int sg = krisite::arith::sign(v);
+    if (sg < 0) a = krisite::arith::neg(v);
+    std::printf("%c", sg < 0 ? '-' : '+');
+    for (std::size_t i = N; i-- > 0;) std::printf("%016llx", (unsigned long long)a[i]);
+}
+
+/// **頂点 v に接する三角形を、厳密な座標つきで出す**（埋め込みの直接確認）。
+///
+/// **リンクが埋め込まれていないなら、交わりは v のいくらでも近くで起きます。**
+/// したがって**調べるのは v に接する三角形だけで足ります**（`DESIGN-phase5-vertex-level.md`
+/// §3.2）。
+void dump_exact_star(const csg::SoupMesh& pre, std::uint32_t v) {
+    std::printf("        STAR %u\n", v);
+    for (std::size_t t = 0; t < pre.triangles.size(); ++t) {
+        const mesh::Tri& tr = pre.triangles[t];
+        bool touch = false;
+        for (int k = 0; k < 3; ++k) {
+            if (tr[k] == v) touch = true;
+        }
+        if (!touch) continue;
+        std::printf("        TRI %zu %u %u %u\n", t, tr[0], tr[1], tr[2]);
+    }
+    std::set<std::uint32_t> vs;
+    for (const mesh::Tri& tr : pre.triangles) {
+        bool touch = false;
+        for (int k = 0; k < 3; ++k) {
+            if (tr[k] == v) touch = true;
+        }
+        if (!touch) continue;
+        for (int k = 0; k < 3; ++k) vs.insert(tr[k]);
+    }
+    for (std::uint32_t vi : vs) {
+        const geom::HPointD& h = pre.vertices[vi];
+        std::printf("        VTX %u ", vi);
+        dump_int(h.x);
+        std::printf(" ");
+        dump_int(h.y);
+        std::printf(" ");
+        dump_int(h.z);
+        std::printf(" ");
+        dump_int(h.w);
+        std::printf("\n");
+    }
+}
+
+/// **頂点まわりのリンクを出す**（`deduction.md` §3.1 の方向 3 — 1 つの出力を遡る）。
+///
+/// リンクは「$v$ 以外の頂点」を節、「$v$ に接する三角形」を枝とするグラフです。
+/// **過剰辺の相手 `w` だけが次数 4 で、他は次数 2** になります。
+/// この形なら、リンクは
+///
+///   (a) **`w` を通る閉路が 2 本**       → 頂点を 2 つに分けられる
+///   (b) **`w` を 2 度通る閉路が 1 本**  → 分けられない（八の字）
+///
+/// のどちらかです。**(a) と (b) は扇の数だけでは区別できません**（どちらも
+/// 「次数 2 の辺だけなら 2 個」）。**組と突き合わせて初めて分かります。**
+void dump_link(const csg::SoupMesh& pre, std::uint32_t v, std::uint32_t w) {
+    // 節 = v 以外の頂点、枝 = v に接する三角形
+    std::map<std::uint32_t, std::vector<std::size_t>> port;              // 節 → 接する三角形
+    std::map<std::size_t, std::pair<std::uint32_t, std::uint32_t>> arc;  // 三角形 → 両端の節
+    for (std::size_t t = 0; t < pre.triangles.size(); ++t) {
+        const mesh::Tri& tr = pre.triangles[t];
+        int at = -1;
+        for (int k = 0; k < 3; ++k) {
+            if (tr[k] == v) at = k;
+        }
+        if (at < 0) continue;
+        const std::uint32_t p = tr[(at + 1) % 3], q = tr[(at + 2) % 3];
+        arc[t] = {p, q};
+        port[p].push_back(t);
+        port[q].push_back(t);
+    }
+    std::printf("        リンク（頂点 %u、三角形 %zu 枚、節 %zu 個）\n", v, arc.size(),
+                port.size());
+    std::size_t deg_other = 0;
+    for (const auto& kv : port) {
+        if (kv.first != w && kv.second.size() != 2) ++deg_other;
+    }
+    std::printf("          節 %u の次数 %zu ／ **次数が 2 でない他の節 %zu 個**\n", w,
+                port.count(w) != 0 ? port[w].size() : 0, deg_other);
+    // w を取り除いて道を辿る
+    std::map<std::size_t, int> used;
+    std::vector<std::string> walks;
+    if (port.count(w) != 0) {
+        for (std::size_t t0 : port[w]) {
+            if (used[t0] != 0) continue;
+            std::string sline;
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "%u", w);
+            sline += buf;
+            std::size_t t = t0;
+            std::uint32_t cur = w;
+            while (true) {
+                used[t] = 1;
+                const std::uint32_t nxt = (arc[t].first == cur) ? arc[t].second : arc[t].first;
+                std::snprintf(buf, sizeof(buf), " -[t%zu]- %u", t, nxt);
+                sline += buf;
+                if (nxt == w) break;
+                const std::vector<std::size_t>& nb = port[nxt];
+                std::size_t adv = nb.size();
+                for (std::size_t c : nb) {
+                    if (used[c] == 0) adv = c;
+                }
+                if (adv == nb.size()) break;
+                t = adv;
+                cur = nxt;
+            }
+            walks.push_back(sline);
+        }
+    }
+    std::printf("          **%s を通る道 %zu 本**\n", "w", walks.size());
+    for (const std::string& sline : walks) {
+        std::printf("            %s\n", sline.c_str());
+    }
+}
+
 struct Counts {
     std::size_t pairs = 0, accepted = 0, failed = 0, halted = 0;
     std::size_t reject[6] = {0, 0, 0, 0, 0, 0};
@@ -109,6 +233,44 @@ struct Counts {
 /// 出力のバイト単位のハッシュ。**同一版の中の比較に使います**（`CLAUDE.md`）。
 ///
 /// 索引（`ray_index`）は厳密な絞り込みなので、**有無で 1 ビットも変わってはいけません。**
+/// **分裂の後に残った非多様体の辺の構造を出す**（`IMPL-phase5.md` §98 の機構が
+/// 13 演算すべてで同じ形かを確かめる。`SPEC-phase5.md` §5.10.14.51）。
+///
+/// **`unresolved_post` は「演算」の数であって「辺」の数ではありません。** 辺はここで数えます。
+void dump_nonmanifold(const char* tag, const csg::SoupMesh& m) {
+    std::map<std::pair<std::uint32_t, std::uint32_t>, std::size_t> et;
+    std::map<std::uint32_t, std::size_t> at;
+    for (const mesh::Tri& tr : m.triangles) {
+        for (int k = 0; k < 3; ++k) {
+            const std::uint32_t a = tr[k], b = tr[(k + 1) % 3];
+            ++et[{std::min(a, b), std::max(a, b)}];
+            ++at[tr[k]];
+        }
+    }
+    std::map<std::uint32_t, std::size_t> nm_at;
+    std::vector<std::pair<std::pair<std::uint32_t, std::uint32_t>, std::size_t>> bad;
+    for (const auto& kv : et) {
+        if (kv.second == 2) continue;
+        bad.push_back({kv.first, kv.second});
+        ++nm_at[kv.first.first];
+        ++nm_at[kv.first.second];
+    }
+    std::printf("    %s: **非多様体の辺 %zu 本**（三角形 %zu / 頂点 %zu）\n", tag, bad.size(),
+                m.triangles.size(), m.vertices.size());
+    std::size_t shown = 0;
+    for (const auto& b : bad) {
+        if (shown++ >= 12) {
+            std::printf("      …残り %zu 本は省略\n", bad.size() - 12);
+            break;
+        }
+        const std::uint32_t u = b.first.first, v = b.first.second;
+        std::printf(
+            "      辺 %u-%u 次数 %zu | %u: 三角形 %zu・非多様体の辺 %zu | %u: 三角形 "
+            "%zu・非多様体の辺 %zu\n",
+            u, v, b.second, u, at[u], nm_at[u], v, at[v], nm_at[v]);
+    }
+}
+
 unsigned long long hash_mesh(const csg::SoupMesh& m) {
     unsigned long long h = 1469598103934665603ull;
     const auto mix = [&h](unsigned long long v) {
@@ -203,6 +365,9 @@ struct PairStruct {
     /// **`IMPL-phase5.md` §98 の残件はこちらです。分けて数えないと区別できません。**
     std::size_t unresolved_post = 0;
     std::size_t unsplit_edges = 0;  ///< 対応付けできず、分裂させずに残した辺
+    // ---- 修復の段（`DESIGN-phase5-vertex-level.md` §9.5）----
+    std::size_t unresolved_before_repair = 0, repair_edges = 0, repair_collisions = 0;
+    std::size_t repair_no_planes = 0, repair_no_pair = 0;
     // ---- ★ 出口の 5 段（`SPEC-phase5.md` §5.11.1 / §6）------------------------
     //
     // **§6 が「出口の内訳」を要求しているのに、記録項目に入っていませんでした。**
@@ -292,6 +457,11 @@ struct PairStruct {
         split_vertices += t.split.split_vertices;
         unresolved_post += t.split.unresolved_post;
         unsplit_edges += t.split.unsplit_edges;
+        unresolved_before_repair += t.split.unresolved_before_repair;
+        repair_edges += t.split.repair_edges;
+        repair_collisions += t.split.repair_collisions;
+        repair_no_planes += t.split.repair_no_planes;
+        repair_no_pair += t.split.repair_no_pair;
         ms_construct += t.ms_construct;
         ms_merge += t.ms_merge;
         ms_index += t.ms_index;
@@ -396,6 +566,10 @@ struct PairStruct {
           // **§1.5.0 が要求していたのに入っていなかった項目**（2026-09-07 追加。`IMPL-v2.md` §3）
           << ' ' << split_vertices << ' ' << unresolved_post << ' '
           << unsplit_edges
+          // **修復の段**（2026-09-13 追加。`DESIGN-phase5-vertex-level.md` §9.5.2）
+          << ' ' << unresolved_before_repair << ' ' << repair_edges << ' ' << repair_collisions
+          << ' ' << repair_no_planes << ' '
+          << repair_no_pair
           // **出口の 5 段と、入口・中核・出口の合計**（2026-09-08 追加。§5.11.1）
           << ' ' << (long long)ms_construct << ' ' << (long long)ms_merge << ' '
           << (long long)ms_index << ' ' << (long long)ms_tri << ' ' << (long long)ms_split << ' '
@@ -427,7 +601,8 @@ struct PairStruct {
 /// §3.1 の検査。**解析的期待値は使えない**ので恒等式と位相で見ます。
 bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOptions& o,
                par::ThreadPool* pool, std::string* why, unsigned long long* hash_out = nullptr,
-               PairStruct* ps = nullptr, int nsi_decl = 0, bool verify_delta = true) {
+               PairStruct* ps = nullptr, int nsi_decl = 0, bool verify_delta = true,
+               bool dump_nm = false, bool repair = true) {
     // **NSI は呼び出し側が宣言します**（`SPEC-phase3.md` §5.6、EMBER §4.5.1）。
     // ライブラリは検証しません。**宣言してよいかを確かめるのは呼び出し側の仕事**で、
     // `from_mesh` の `verify_nsi` がその補助です。
@@ -472,6 +647,8 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
     // > **測る目的が違うので、引数で切り替えます。**
     // > **CP1〜CP3 では既定（真）のまま回してください。**
     tm.verify_split_delta = verify_delta;
+    tm.diag_unresolved = dump_nm;
+    tm.repair_unresolved = repair;
     // **対ごとの構造を採ります**（`SPEC-phase5.md` §1.5.0）。3 演算ぶんを合算。
     csg::SoupMesh out3[3];
     int k3 = 0;
@@ -516,6 +693,182 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_tp)
                     .count();
             ps->add(bs, ts, tr, soup.polys.size());
+            if (dump_nm && !tr.empty && (!tr.edge_manifold || !tr.vertex_manifold)) {
+                dump_nonmanifold(kOpName[k3], out3[k3]);
+                // **分裂の【前】の構造**（`IMPL-phase5.md` §98 との突き合わせ）。
+                // 過剰辺の本数と、2 通りの扇の数を並べます
+                for (const auto& ue : ts.split.unresolved_detail) {
+                    std::printf(
+                        "      分裂前 %u-%u 次数 %zu | %u: 三角形 %zu・過剰辺 %zu・扇 %zu→%zu"
+                        " | %u: 三角形 %zu・過剰辺 %zu・扇 %zu→%zu | 組 %zu: "
+                        "(t%zu,t%zu)(t%zu,t%zu)\n",
+                        ue.a, ue.b, ue.degree, ue.a, ue.inc_a, ue.excess_a, ue.fans2_a, ue.fans_a,
+                        ue.b, ue.inc_b, ue.excess_b, ue.fans2_b, ue.fans_b, ue.pair_groups,
+                        ue.pair_tris[0], ue.pair_tris[1], ue.pair_tris[2], ue.pair_tris[3]);
+                }
+                // **分裂の【前】のメッシュでリンクを辿ります**（方向 3）。
+                // 分裂は三角形の順序と枚数を変えないので、番号がそのまま対応します
+                if (!ts.split.unresolved_detail.empty()) {
+                    csg::ToMeshOptions tm_pre = tm;
+                    tm_pre.split_contacts = false;
+                    tm_pre.diag_unresolved = false;
+                    const csg::SoupMesh pre = csg::to_mesh(soup, tm_pre, nullptr);
+                    std::size_t shown = 0;
+                    for (const auto& ue : ts.split.unresolved_detail) {
+                        // **4 枚がどの source から来たか**（自己接触か 2 立体の接触か）。
+                        // **4 枚が辺をどちら向きに通るか**（向きが整合する組は
+                        // 「向きが逆どうし」でなければなりません）
+                        int src_cnt[2] = {0, 0};
+                        std::string dirs;
+                        for (std::size_t t = 0; t < pre.triangles.size(); ++t) {
+                            const mesh::Tri& tr = pre.triangles[t];
+                            for (int k = 0; k < 3; ++k) {
+                                const std::uint32_t x = tr[k], y = tr[(k + 1) % 3];
+                                if ((x != ue.a || y != ue.b) && (x != ue.b || y != ue.a)) continue;
+                                const int sc = (t < pre.tri_src.size()) ? pre.tri_src[t] : -1;
+                                if (sc == 0 || sc == 1) ++src_cnt[sc];
+                                char bb[48];
+                                std::snprintf(bb, sizeof(bb), " t%zu:%c/s%d", t,
+                                              (x == ue.a) ? '+' : '-', sc);
+                                dirs += bb;
+                            }
+                        }
+                        std::printf("        %u-%u source(A %d, B %d)%s\n", ue.a, ue.b, src_cnt[0],
+                                    src_cnt[1], dirs.c_str());
+                        // **厳密な座標は全部の辺で出します**（埋め込みの確認は全件でやる）。
+                        // リンクの経路は読むためのものなので 2 本までに留めます
+                        // **平面による構成が使えるか**（`DESIGN-phase5-vertex-level.md` §7）。
+                        // 両端の平面 3 つ組から、辺の線を張る 2 枚と、
+                        // 片方だけを通る 1 枚ずつが取れるかを厳密に判定します
+                        if (ue.a < pre.vertex_key.size() && ue.b < pre.vertex_key.size()) {
+                            std::set<csg::PlaneId> ids;
+                            for (int k = 0; k < 3; ++k) {
+                                ids.insert(pre.vertex_key[ue.a][k]);
+                                ids.insert(pre.vertex_key[ue.b][k]);
+                            }
+                            // **4 枚の三角形の支持平面も候補に入れます。**
+                            // 辺は 4 枚すべてに含まれるので、支持平面にも必ず載ります
+                            for (std::size_t t = 0; t < pre.triangles.size(); ++t) {
+                                const mesh::Tri& tr = pre.triangles[t];
+                                bool ha = false, hb = false;
+                                for (int k = 0; k < 3; ++k) {
+                                    if (tr[k] == ue.a) ha = true;
+                                    if (tr[k] == ue.b) hb = true;
+                                }
+                                if (!ha || !hb) continue;
+                                if (t < pre.tri_poly.size()) {
+                                    ids.insert(soup.polys[pre.tri_poly[t]].frag.support);
+                                }
+                            }
+                            int both = 0, only_a = 0, only_b = 0, neither = 0;
+                            for (csg::PlaneId pid : ids) {
+                                const geom::PlaneD& pl = soup.table.at(pid);
+                                const bool oa = geom::side(pl, pre.vertices[ue.a]) == 0;
+                                const bool ob = geom::side(pl, pre.vertices[ue.b]) == 0;
+                                if (oa && ob) {
+                                    ++both;
+                                } else if (oa) {
+                                    ++only_a;
+                                } else if (ob) {
+                                    ++only_b;
+                                } else {
+                                    ++neither;
+                                }
+                            }
+                            // **両方に載る平面のうち、平行でない組があるか**
+                            // （あれば辺の線が 2 枚で張れます）
+                            std::vector<geom::PlaneD> onboth;
+                            for (csg::PlaneId pid : ids) {
+                                const geom::PlaneD& pl = soup.table.at(pid);
+                                if (geom::side(pl, pre.vertices[ue.a]) == 0 &&
+                                    geom::side(pl, pre.vertices[ue.b]) == 0) {
+                                    onboth.push_back(pl);
+                                }
+                            }
+                            int indep = 0;
+                            for (std::size_t i = 0; i < onboth.size(); ++i) {
+                                for (std::size_t j = i + 1; j < onboth.size(); ++j) {
+                                    const auto c = geom::radial_dir(onboth[i], onboth[j]);
+                                    if (!arith::is_zero(c.x) || !arith::is_zero(c.y) ||
+                                        !arith::is_zero(c.z)) {
+                                        ++indep;
+                                    }
+                                }
+                            }
+                            std::printf(
+                                "        KEYS %u-%u 平面 %zu 枚: 両方に載る %d / a だけ %d"
+                                " / b だけ %d / どちらにも載らない %d / 平行でない組 %d\n",
+                                ue.a, ue.b, ids.size(), both, only_a, only_b, neither, indep);
+                            // **厳密な係数を出します**（Python の有理数演算で、
+                            // 平面による構成が本当に辺の内部に点を作るかを検算するため）
+                            std::printf("        EDGEPT %u %u\n", ue.a, ue.b);
+                            for (int k = 0; k < 2; ++k) {
+                                const geom::HPointD& h = pre.vertices[k == 0 ? ue.a : ue.b];
+                                std::printf("        EP %c ", k == 0 ? 'a' : 'b');
+                                dump_int(h.x);
+                                std::printf(" ");
+                                dump_int(h.y);
+                                std::printf(" ");
+                                dump_int(h.z);
+                                std::printf(" ");
+                                dump_int(h.w);
+                                std::printf("\n");
+                            }
+                            for (csg::PlaneId pid : ids) {
+                                const geom::PlaneD& pl = soup.table.at(pid);
+                                const int sa = geom::side(pl, pre.vertices[ue.a]);
+                                const int sb = geom::side(pl, pre.vertices[ue.b]);
+                                std::printf("        PL %u %d %d ", pid, sa, sb);
+                                dump_int(pl.a);
+                                std::printf(" ");
+                                dump_int(pl.b);
+                                std::printf(" ");
+                                dump_int(pl.c);
+                                std::printf(" ");
+                                dump_int(pl.d);
+                                std::printf("\n");
+                            }
+                        }
+                        dump_exact_star(pre, ue.a);
+                        dump_exact_star(pre, ue.b);
+                        if (shown++ >= 2) continue;
+                        dump_link(pre, ue.a, ue.b);
+                        dump_link(pre, ue.b, ue.a);
+                        // **近傍の座標**（最小化のため。近似値で構わない — 形を見ます）
+                        std::set<std::uint32_t> nv;
+                        for (const mesh::Tri& tr : pre.triangles) {
+                            bool touch = false;
+                            for (int k = 0; k < 3; ++k) {
+                                if (tr[k] == ue.a || tr[k] == ue.b) touch = true;
+                            }
+                            if (!touch) continue;
+                            for (int k = 0; k < 3; ++k) nv.insert(tr[k]);
+                        }
+                        // **★ 幾何として一致する頂点が近傍にあるか**（記録されない自己接触）。
+                        // `to_mesh` の「値で併合」が取りこぼしていれば、ここで見えます
+                        std::vector<std::uint32_t> nvv(nv.begin(), nv.end());
+                        std::size_t same = 0;
+                        for (std::size_t i = 0; i < nvv.size(); ++i) {
+                            for (std::size_t j = i + 1; j < nvv.size(); ++j) {
+                                if (geom::h_equal(pre.vertices[nvv[i]], pre.vertices[nvv[j]])) {
+                                    ++same;
+                                    std::printf("          **v%u と v%u が幾何として同一**\n",
+                                                nvv[i], nvv[j]);
+                                }
+                            }
+                        }
+                        std::printf("        近傍の頂点 %zu 個（幾何として一致する組 %zu）\n",
+                                    nv.size(), same);
+                        for (std::uint32_t vi : nv) {
+                            const geom::HPointD& h = pre.vertices[vi];
+                            const double w = kritest::to_double(h.w);
+                            std::printf("          v%u = (%.6f, %.6f, %.6f)\n", vi,
+                                        kritest::to_double(h.x) / w, kritest::to_double(h.y) / w,
+                                        kritest::to_double(h.z) / w);
+                        }
+                    }
+                }
+            }
         }
         ++k3;
     }
@@ -706,6 +1059,11 @@ int main(int argc, char** argv) {
     if (argc > 12) o.bsp_skip_disjoint = std::atoi(argv[12]);
     // **第 13 引数: 箱が片側なら飛ばす（1 = 既定、0 = 切る）**
     if (argc > 13) o.bsp_skip_boxside = std::atoi(argv[13]) != 0;
+    // **第 14 引数: 分裂の後に残った非多様体の辺の構造を出す**（§5.10.14.51 の調査）
+    const bool dump_nm = (argc > 14) && (std::atoi(argv[14]) != 0);
+    /// **修復の段を外す旗**（`DESIGN-phase5-vertex-level.md` §9.5.3）。
+    /// **既定は入れる。** 外した側で従来の失敗が再現することを確かめるために要ります
+    const bool repair = (argc <= 15) || (std::atoi(argv[15]) != 0);
     o.depth = depth;
     o.adaptive = true;
     o.leaf_threshold = 0;
@@ -731,6 +1089,23 @@ int main(int argc, char** argv) {
     // どこまで通ったかが残り、再開できます（§3.3 の追跡に要る）
     // **やり直しモードは別のファイルに書きます。** 追記すると再開の記録が濁ります
     // **やり直しは b ごとに別ファイル**。混ぜると意味が変わります
+    // **★ 対の一覧を書き出します**（`SPEC-phase5.md` §1.5.1.1 の層化）。
+    //
+    // **層化した一覧を外で作るには、駆動と同じ組み方が要ります。**
+    // 並べ方は「量子化後の三角形数、同数なら ID の文字列順」で、
+    // **量子化の種まで一致させないと再現できません**（実際にずれ、295 対のうち 90 対しか
+    // 回らない実行をしました）。**駆動に書かせれば、食い違いようがありません。**
+    {
+        std::ofstream pf(base + "_pairs.txt");
+        for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
+            const std::size_t x = order[k], y = order[k + 1];
+            pf << ids[x] << "x" << ids[y] << ' ' << prep[x].mesh.triangles.size() << ' '
+               << prep[y].mesh.triangles.size() << "\n";
+        }
+        std::printf("**対の一覧を %s_pairs.txt に書きました**（%zu 対）\n", base.c_str(),
+                    order.size() / 2);
+    }
+
     const std::string done_path =
         redo ? (base + "_struct_b" + std::to_string(KRISITE_COORD_BITS) + ".txt")
              : (base + "_results.txt");
@@ -791,6 +1166,7 @@ int main(int argc, char** argv) {
     std::printf("| 一覧 | `%s` |\n", list.c_str());
     std::printf("| 記録先 | `%s` |\n", done_path.c_str());
     std::printf("| 深度 | %u |\n", depth);
+    std::printf("| **修復の段（案 H）** | **%s** |\n", repair ? "入れる" : "外す");
     std::printf("| スレッド | %u |\n", nthreads);
     std::printf("| b（座標ビット） | %d |\n", KRISITE_COORD_BITS);
     std::printf("| **NSI の扱い** | **%d = %s** |\n", nsi_mode,
@@ -812,6 +1188,28 @@ int main(int argc, char** argv) {
                 verify_delta ? "（`SPEC-phase5.md` §3.2）"
                              : "（**§4.3.2 の EMBER 比較用。正しさの判定に使わないこと**）");
     std::printf("\n");
+    // ---- ★ `_only.txt` に書いた順に回します（`SPEC-phase5.md` §1.5.1.1 の層化）----
+    //
+    // **既定は面数の昇順**ですが、層化した一覧は「層を横断する順序」で書かれています。
+    // **昇順のままだと最上位の層が最後になり、途中で止めたとき大きい対を 1 つも見ていない**
+    // ことになります。層化した意味が消えるので、一覧がある場合はその順に従います。
+    if (!only.empty()) {
+        std::vector<std::size_t> ord2;
+        ord2.reserve(order.size());
+        for (const std::string& want : only) {
+            for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
+                if (ids[order[k]] + "x" + ids[order[k + 1]] == want) {
+                    ord2.push_back(order[k]);
+                    ord2.push_back(order[k + 1]);
+                    break;
+                }
+            }
+        }
+        std::printf("**一覧の順に回します**（%zu 対。面数の昇順ではありません）\n",
+                    ord2.size() / 2);
+        order.swap(ord2);
+    }
+
     const auto t0 = std::chrono::steady_clock::now();
     for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
         const std::size_t i = order[k], j = order[k + 1];
@@ -835,8 +1233,9 @@ int main(int argc, char** argv) {
         std::string why;
         unsigned long long h = 0;
         PairStruct ps;
-        const bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
-                                  nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1), verify_delta);
+        const bool ok =
+            check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
+                      nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1), verify_delta, dump_nm, repair);
         if (ps.nsi_a >= 0) {
             (ps.nsi_a ? nsi_declared : nsi_rejected) += 1;
             (ps.nsi_b ? nsi_declared : nsi_rejected) += 1;

@@ -40,6 +40,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -114,6 +115,45 @@ struct SplitStats {
     ///
     /// **実データで何割に出るかが radial sort の優先度を決めます。** 必ず記録すること。
     std::size_t unsplit_edges = 0;
+
+    /// **解けずに残った辺 1 本ぶんの構造**（`SplitOptions::diag_unresolved` のときだけ）。
+    ///
+    /// **頂点番号は分裂の【前】のもの**です（出力の番号から `origin` で戻します）。
+    struct UnresolvedEdge {
+        /// **出力での両端**（分裂の【後】の番号）。**修復の段はこちらを使います** —
+        /// 分裂で複製された頂点があると、`a` / `b`（分裂前）とは違う番号になります
+        VertexId out_a = 0, out_b = 0;
+        VertexId a = 0, b = 0;                   ///< 分裂前の両端
+        std::size_t degree = 0;                  ///< 出力での辺の次数
+        std::size_t inc_a = 0, inc_b = 0;        ///< 分裂前に接する三角形の数
+        std::size_t excess_a = 0, excess_b = 0;  ///< 接する過剰辺（次数 ≥3）の本数
+        std::size_t fans2_a = 0, fans2_b = 0;    ///< **次数 2 の辺だけ**で数えた扇
+        std::size_t fans_a = 0, fans_b = 0;      ///< **組も入れて**数えた扇（実際の値）
+        /// **radial sort が作った組**（次数 4 なら 2 組 × 2 枚）。
+        /// **三角形の番号は分裂の前後で変わりません**（`split_contacts` は添字を
+        /// 書き換えるだけ）。呼び出し側で分裂前のメッシュと突き合わせられます
+        std::size_t pair_tris[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+        std::size_t pair_groups = 0;  ///< 組の数（0 なら組が作られていない）
+    };
+    /// **診断の旗が真のときだけ積みます。** 既定では空です
+    std::vector<UnresolvedEdge> unresolved_detail;
+
+    // ---- 修復の段（`DESIGN-phase5-vertex-level.md` §9.5）----
+    //
+    // **後段で埋める機構は、上流の誤りを覆い隠します**（`CLAUDE.md`）。
+    // **だから「修復の前」も記録します。** 無いと「修復で隠れた」のか
+    // 「そもそも起きなかった」のかが区別できません。
+    /// **修復の【前】に残っていた非多様体の辺の数**
+    std::size_t unresolved_before_repair = 0;
+    /// **実際に細分した辺の数**
+    std::size_t repair_edges = 0;
+    /// **細分点が既存の頂点と幾何として一致したので諦めた辺の数**
+    std::size_t repair_collisions = 0;
+    /// **平面が足りず諦めた辺の数**（線を張る 2 枚、片側だけの 1 枚ずつが揃わない）
+    std::size_t repair_no_planes = 0;
+    /// **組が 2 つ作れていないので諦めた辺の数**（`unsplit_edges` に当たる辺）
+    std::size_t repair_no_pair = 0;
+
     /// **early-out で arrangement を省いたセル由来の三角形に接する頂点が分裂した回数**
     /// （SPEC-phase2 §13 の CP5）。
     ///
@@ -534,6 +574,15 @@ struct SplitOptions {
     /// > **「機構が動く」こと自体がスケジューラ依存**でした（`IMPL-phase5.md` §37）。
     /// > **確率性は消えず、番人の側へ移っていただけ**です。
     bool reverse_fan = false;
+
+    /// **解けずに残った辺の構造を記録する**（`IMPL-phase5.md` §98 との突き合わせ）。
+    ///
+    /// **既定は偽です。純粋な診断で、本番の経路には乗せません**
+    /// （`CLAUDE.md`「計測の機構にも外す経路を用意してください」）。
+    ///
+    /// 真にすると `SplitStats::unresolved_detail` に、分裂の【後】に非多様体だった
+    /// 辺ごとに、**分裂の前の**両端の頂点の扇の数と過剰辺の本数を積みます。
+    bool diag_unresolved = false;
 };
 
 /// 接触を分裂させ、新しい三角形列を返す（§5.1）。
@@ -939,6 +988,80 @@ inline std::vector<Tri> split_contacts(
         if (!tris.empty() && !ok_manifold) {
             ++st.unresolved;
             ++st.unresolved_post;
+            // **純粋な診断**（`SplitOptions::diag_unresolved`。既定では走りません）。
+            // 出力で非多様体な辺を拾い、**分裂の前の**頂点に戻して構造を記録します。
+            // `IMPL-phase5.md` §98 が言う「複数の辺の組が扇を推移的に繋ぐ」形かを、
+            // **過剰辺の本数**と**2 通りの扇の数**の差で見分けるためのものです。
+            if (sopt.diag_unresolved) {
+                const auto orig = [&](VertexId x) {
+                    const std::size_t xx = static_cast<std::size_t>(x);
+                    return (xx < vertex_count) ? x : new_origin[xx - vertex_count];
+                };
+                std::map<std::pair<VertexId, VertexId>, std::size_t> deg;
+                for (const Tri& tr : out) {
+                    for (int k = 0; k < 3; ++k) {
+                        ++deg[detail::undirected(tr[k], tr[(k + 1) % 3])];
+                    }
+                }
+                const auto fill = [&](VertexId v, std::size_t* inc, std::size_t* excess,
+                                      std::size_t* fans2, std::size_t* fans) {
+                    const std::size_t vv = static_cast<std::size_t>(v);
+                    if (vv >= vertex_count) return;
+                    const std::vector<std::size_t>& lst = at[vv];
+                    *inc = lst.size();
+                    const auto idx = [&lst](std::size_t t) {
+                        for (std::size_t i = 0; i < lst.size(); ++i) {
+                            if (lst[i] == t) return i;
+                        }
+                        return lst.size();
+                    };
+                    detail::SmallDsu d(lst.size());
+                    std::set<std::pair<VertexId, VertexId>> seen;
+                    for (std::size_t t : lst) {
+                        for (int k = 0; k < 3; ++k) {
+                            const VertexId a = tris[t][k], b = tris[t][(k + 1) % 3];
+                            if (a != v && b != v) continue;
+                            const auto key = detail::undirected(a, b);
+                            if (!seen.insert(key).second) continue;
+                            const auto it = edge_tris.find(key);
+                            if (it == edge_tris.end()) continue;
+                            if (it->second.size() > 2) {
+                                ++*excess;
+                            } else if (it->second.size() == 2) {
+                                const std::size_t i0 = idx(it->second[0]);
+                                const std::size_t i1 = idx(it->second[1]);
+                                if (i0 < lst.size() && i1 < lst.size()) d.unite(i0, i1);
+                            }
+                        }
+                    }
+                    std::set<std::size_t> roots;
+                    for (std::size_t i = 0; i < lst.size(); ++i) roots.insert(d.find(i));
+                    *fans2 = roots.size();
+                    *fans = (plan[vv].fans == 0) ? 1 : plan[vv].fans;
+                };
+                for (const auto& kv : deg) {
+                    if (kv.second == 2) continue;
+                    SplitStats::UnresolvedEdge ue;
+                    ue.out_a = kv.first.first;
+                    ue.out_b = kv.first.second;
+                    ue.a = orig(kv.first.first);
+                    ue.b = orig(kv.first.second);
+                    ue.degree = kv.second;
+                    fill(ue.a, &ue.inc_a, &ue.excess_a, &ue.fans2_a, &ue.fans_a);
+                    fill(ue.b, &ue.inc_b, &ue.excess_b, &ue.fans2_b, &ue.fans_b);
+                    const auto git = edge_groups.find(detail::undirected(ue.a, ue.b));
+                    if (git != edge_groups.end()) {
+                        ue.pair_groups = git->second.size();
+                        std::size_t gi = 0;
+                        for (const auto& grp : git->second) {
+                            for (std::size_t t : grp) {
+                                if (gi < 8) ue.pair_tris[gi++] = t;
+                            }
+                        }
+                    }
+                    st.unresolved_detail.push_back(ue);
+                }
+            }
         }
         if (sopt.verify_delta) {
             // (3) **純粋な診断**（§5.5 の予測との突き合わせ）。

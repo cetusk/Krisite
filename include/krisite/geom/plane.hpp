@@ -32,6 +32,37 @@ struct Plane {
 /// Phase 0 の既定の平面型（リム数は §3 から導出）。
 using PlaneD = Plane<limbs::kNormal, limbs::kOffset>;
 
+/// **平面 2 枚の【和】**（`DESIGN-phase5-vertex-level.md` §7）。
+///
+/// **`PlaneD` と別の型です。** `PlaneD` の幅の主張（$2b{+}3$ / $3b{+}5$）は
+/// 「入力三角形から作った平面」に対するもので、**和はそれを 1 ビット超えます。**
+/// 同じ型に入れると、`side` などの導出が黙って破れます
+/// （`CLAUDE.md`「型でビット幅を表現する」）。
+///
+/// > **★ `Plane<kSumNormal, kSumOffset>` という別名では足りません。**
+/// > **リム数が `PlaneD` と同じなので、別名は同じ型に潰れます**
+/// > （$b{=}21$ / $b{=}26$ のどちらでも）。**別の構造体にして初めて型が分かれます。**
+struct PlaneSum {
+    arith::fixed_int<limbs::kSumNormal> a, b, c;  ///< 法線（$2b{+}4$）
+    arith::fixed_int<limbs::kSumOffset> d;        ///< オフセット（$3b{+}6$）
+};
+
+/// **2 枚の平面の和**（`sign` は $+1$ か $-1$）。
+///
+/// $Q = P_3 + \mathrm{sign}\cdot P_4$。**係数どうしの和なので 1 ビット増えます。**
+inline PlaneSum plane_sum(const PlaneD& p3, const PlaneD& p4, int sign) noexcept {
+    using namespace arith;
+    const auto combine = [sign](const auto& x, const auto& y) {
+        return (sign >= 0) ? add_widen(x, y) : sub_widen(x, y);
+    };
+    PlaneSum q{};
+    q.a = resize<limbs::kSumNormal>(combine(p3.a, p4.a));
+    q.b = resize<limbs::kSumNormal>(combine(p3.b, p4.b));
+    q.c = resize<limbs::kSumNormal>(combine(p3.c, p4.c));
+    q.d = resize<limbs::kSumOffset>(combine(p3.d, p4.d));
+    return q;
+}
+
 /// 法線が零ベクトル（= 退化三角形から作られた平面）か。
 template <std::size_t NB, std::size_t DB>
 inline bool is_degenerate(const Plane<NB, DB>& pl) noexcept {
@@ -248,11 +279,18 @@ inline bool is_null(const Plane<NB, DB>& pl) noexcept {
 ///
 /// 前提: 3 平面が一点で交わること（呼び出し側が保証）。
 /// w == 0 は契約違反であり、検査ビルドでは停止する。
-inline HPointD intersect3(const PlaneD& p1, const PlaneD& p2, const PlaneD& p3) noexcept {
+/// **3 枚目だけ型が違ってよい**（`PlaneS` を渡すため。`DESIGN-phase5-vertex-level.md` §7）。
+///
+/// **リムの並びは `widths.hpp` の静的検査で `PlaneD` と同じことが保証されています。**
+/// 幅の主張が違うだけなので、行列式の計算はそのまま使えます。
+template <class P3>
+inline HPointD intersect3(const PlaneD& p1, const PlaneD& p2, const P3& p3) noexcept {
     KRISITE_COUNT(intersect3_calls);
     using namespace arith;
     // 列によって幅が違うので、行列式は最大幅にそろえて計算する（正しさ優先。SPEC §0）。
-    constexpr std::size_t L = max_limbs(limbs::kNormal, limbs::kOffset);
+    constexpr std::size_t L = max_limbs(
+        max_limbs(limbs::kNormal, limbs::kOffset),
+        max_limbs(std::decay_t<decltype(p3.a)>::kLimbs, std::decay_t<decltype(p3.d)>::kLimbs));
 
     const fixed_int<L> a[3] = {widen<L>(p1.a), widen<L>(p2.a), widen<L>(p3.a)};
     const fixed_int<L> b[3] = {widen<L>(p1.b), widen<L>(p2.b), widen<L>(p3.b)};

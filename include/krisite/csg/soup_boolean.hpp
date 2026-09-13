@@ -255,8 +255,16 @@ inline PolySoup boolean(const PolySoup& X, const PolySoup& Y, BoolOp op, const B
     out.nsi.insert(out.nsi.end(), Y.nsi.begin(), Y.nsi.end());
     out.nnc = X.nnc;
     out.nnc.insert(out.nnc.end(), Y.nnc.begin(), Y.nnc.end());
+    out.vm = X.vm;
+    out.vm.insert(out.vm.end(), Y.vm.begin(), Y.vm.end());
     out.nsi.resize(out.sources.size(), 0);
     out.nnc.resize(out.sources.size(), 0);
+    out.vm.resize(out.sources.size(), 0);
+    // **印を数えて統計に残します**（案 B）。**拒否はしません。**
+    for (std::uint8_t f : out.vm) {
+        if (f == 2u) ++st.inputs_vertex_nonmanifold;
+        if (f == 0u) ++st.inputs_vertex_unchecked;
+    }
     const auto off = static_cast<std::uint32_t>(X.sources.size());
     const Compose how = (op == BoolOp::Union)          ? Compose::Union
                         : (op == BoolOp::Intersection) ? Compose::Intersection
