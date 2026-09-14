@@ -89,7 +89,8 @@ struct Run {
     std::size_t restored = 0;
 };
 
-std::size_t exact_volume_checks = 0;
+std::size_t exact_volume_computes = 0;  ///< 体積を【計算】した回数
+std::size_t exact_volume_compares = 0;  ///< 厳密な体積を【比べた】回数（番人はこちら）
 
 #if defined(KRISITE_TEST_EXACT_VOLUME)
 /// **整数同次座標から有理数の体積を作る**（`volume_gmp.hpp`）。文字列で返して比べます。
@@ -103,7 +104,7 @@ std::string exact_volume6(const csg::SoupMesh& m) {
     mp_get_memory_functions(nullptr, nullptr, &fr);
     fr(p, r.size() + 1);
     mpq_clear(v);
-    ++exact_volume_checks;
+    ++exact_volume_computes;
     return r;
 }
 #endif
@@ -233,6 +234,7 @@ int main() {
             // **倍精度の等値は篩です**（`SPEC-phase5.md` §5.10.14.74）
             expect(on.vol == off.vol, "体積（倍精度の篩）が変わっていない");
 #if defined(KRISITE_TEST_EXACT_VOLUME)
+            ++exact_volume_compares;
             expect(on.exact_vol == off.exact_vol, "**厳密な有理数の体積が変わっていない**");
 #endif
             // **保存した由来から点を復元できること**（§12.3.3）
@@ -257,11 +259,13 @@ int main() {
     }
 #if defined(KRISITE_TEST_EXACT_VOLUME)
     // **厳密比較が実際に走ったことを確かめます**（走っていなければ検査していないのと同じ）
-    if (exact_volume_checks == 0) {
-        std::printf("\n**GMP の厳密比較が 1 度も走っていません**\n");
+    // **番人は「比べた回数」です**（計算しただけでは検査になりません）
+    if (exact_volume_compares == 0) {
+        std::printf("\n**GMP の厳密【比較】が 1 度も走っていません**\n");
         ++failures;
     } else {
-        std::printf("\n**厳密な体積を %zu 回比べました**\n", exact_volume_checks);
+        std::printf("\n**厳密な体積を %zu 回【計算】し、%zu 回【比較】しました**\n",
+                    exact_volume_computes, exact_volume_compares);
     }
 #endif
     std::printf("\n**不一致 %d 件**\n", failures);

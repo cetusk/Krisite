@@ -152,31 +152,62 @@ Fixture make(bool extra) {
 }
 
 /// **その候補の処理で、メッシュの内容が変わっていないこと。**
+///
+/// **長さだけでなく、補助配列の【内容】も比べます。**
 struct Snap {
-    std::size_t nv, nt, nk, nm, nsrc, ntag, npoly, nsplit, nvsrc;
     std::vector<geom::HPointD> verts;
     std::vector<mesh::Tri> tris;
+    std::vector<std::array<csg::PlaneId, 3>> keys;
+    std::vector<std::uint32_t> merged, tpoly, vsrc, ttag;
+    std::vector<int> tsrc;
+    std::vector<csg::EdgeSplitSource> esplit;
 };
 
 Snap snap(const csg::SoupMesh& m) {
-    return Snap{
-        m.vertices.size(),         m.triangles.size(), m.vertex_key.size(), m.vertex_merged.size(),
-        m.tri_src.size(),          m.tri_tag.size(),   m.tri_poly.size(),   m.edge_split.size(),
-        m.vertex_split_src.size(), m.vertices,         m.triangles};
+    Snap s;
+    s.verts = m.vertices;
+    s.tris = m.triangles;
+    s.keys = m.vertex_key;
+    s.merged = m.vertex_merged;
+    s.tpoly = m.tri_poly;
+    s.vsrc = m.vertex_split_src;
+    s.ttag = m.tri_tag;
+    s.tsrc = m.tri_src;
+    s.esplit = m.edge_split;
+    return s;
 }
 
+bool same_edge_split(const csg::EdgeSplitSource& a, const csg::EdgeSplitSource& b) {
+    return a.v == b.v && a.w == b.w && a.p1 == b.p1 && a.p2 == b.p2 && a.p3 == b.p3 &&
+           a.p4 == b.p4 && a.sign == b.sign;
+}
+
+/// **すべての配列を、長さと内容で比べます。**
 bool same_content(const Snap& s, const csg::SoupMesh& m) {
-    if (s.nv != m.vertices.size() || s.nt != m.triangles.size()) return false;
-    if (s.nk != m.vertex_key.size() || s.nm != m.vertex_merged.size()) return false;
-    if (s.nsrc != m.tri_src.size() || s.ntag != m.tri_tag.size()) return false;
-    if (s.npoly != m.tri_poly.size() || s.nsplit != m.edge_split.size()) return false;
-    for (std::size_t i = 0; i < s.tris.size(); ++i) {
-        if (s.tris[i] != m.triangles[i]) return false;
+    if (s.verts.size() != m.vertices.size() || s.tris.size() != m.triangles.size()) return false;
+    if (s.keys.size() != m.vertex_key.size() || s.esplit.size() != m.edge_split.size()) {
+        return false;
     }
     for (std::size_t i = 0; i < s.verts.size(); ++i) {
         if (!geom::h_equal(s.verts[i], m.vertices[i])) return false;
     }
+    for (std::size_t i = 0; i < s.tris.size(); ++i) {
+        if (s.tris[i] != m.triangles[i]) return false;
+    }
+    for (std::size_t i = 0; i < s.keys.size(); ++i) {
+        if (s.keys[i] != m.vertex_key[i]) return false;
+    }
+    if (s.merged != m.vertex_merged || s.tpoly != m.tri_poly) return false;
+    if (s.vsrc != m.vertex_split_src || s.ttag != m.tri_tag || s.tsrc != m.tri_src) return false;
+    for (std::size_t i = 0; i < s.esplit.size(); ++i) {
+        if (!same_edge_split(s.esplit[i], m.edge_split[i])) return false;
+    }
     return true;
+}
+
+/// **成功した候補の影響と、拒否した候補の影響を分ける**ための対照。
+bool same_mesh(const csg::SoupMesh& a, const csg::SoupMesh& b) {
+    return same_content(snap(a), b);
 }
 
 }  // namespace
@@ -279,18 +310,27 @@ int main() {
     }
 
     // ---- 4. 別の辺の細分点との衝突 ----
+    //
+    // **対照**: 同じ初期状態から **1 本目だけ**処理した結果と比べます。
+    // **これで「成功した候補の影響」と「拒否した候補の影響」を分けられます。**
     {
+        Fixture ctl = make(true);
+        ctl.st.split.unresolved_detail.resize(1);
+        csg::detail::repair_unresolved_edges(ctl.soup, ctl.mesh, ctl.st);
+
         Fixture f = make(true);
         csg::detail::repair_unresolved_edges(f.soup, f.mesh, f.st);
         const auto& sp = f.st.split;
+        const bool same = same_mesh(ctl.mesh, f.mesh);
         std::printf(
             "| 4 | 別の辺の細分点と一致 | `repair_collisions` | %zu | %zu | %zu | %zu |"
-            " %zu | — |\n",
+            " %zu | %s |\n",
             sp.repair_edges, sp.repair_collisions, sp.repair_no_planes, sp.repair_no_pair,
-            sp.repair_collide_probes);
+            sp.repair_collide_probes, same ? "はい" : "**いいえ**");
         expect(sp.repair_edges == 1, "4: 1 本目だけ細分した");
         expect(sp.repair_collisions == 1, "4: **2 本目を衝突として数えた**");
         expect(f.mesh.edge_split.size() == 1, "4: 由来は 1 件だけ");
+        expect(same, "4: **2 本目は、1 本目だけ処理した対照と 1 バイトも違わない**");
     }
 
     std::printf("\n**不一致 %d 件**\n", failures);

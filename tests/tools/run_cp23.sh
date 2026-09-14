@@ -4,12 +4,20 @@
 # **前提が揃わなければ計算を始めません。段が失敗したら次段を起動しません。**
 #
 #   bash tests/tools/run_cp23.sh            新規（結果ファイルが空であること）
-#   bash tests/tools/run_cp23.sh --resume   再開（meta が一致し、FAIL が無いこと）
+#   bash tests/tools/run_cp23.sh --resume   再開（承認済みの基準と一致すること）
 #
 # **対応範囲は sbx の中（Linux / bash）だけ**です。Windows 側では動かしません。
 #
+# ## 承認済みの基準（`KRI_MANIFEST`。**追跡しません**。機械ごとの値）
+#
+#   bin=<sha256>                  投入を承認したバイナリ
+#   <base> keys=<sha256> n=<件数>  投入を承認した標本（並べ替えた一覧のハッシュ）
+#
+# **一覧から作った値どうしを比べても、誤った一覧を弾けません。**
+# **独立した基準と照合します。**
+#
 # 差し替え用（自己検査が使います。既定は実物）:
-#   KRI_ROOT / KRI_BIN / KRI_SHA / KRI_ARGS / KRI_BASES
+#   KRI_ROOT / KRI_BIN / KRI_MANIFEST / KRI_ARGS / KRI_BASES
 set -u
 
 fail() { printf '**中止**: %s\n' "$1" >&2; exit 2; }
@@ -18,42 +26,82 @@ ROOT="${KRI_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 cd "$ROOT" || fail "作業ディレクトリへ移動できません: $ROOT"
 
 BIN="${KRI_BIN:-build/thingi_cp1_o3}"
-SHA="${KRI_SHA:-tests/tools/run_cp23.sha256}"
+MANIFEST="${KRI_MANIFEST:-tests/tools/run_cp23.manifest}"
 ARGS="${KRI_ARGS:-0 6 8 1 0 1 1 0 0 16 2 1 0 1}"
 BASES="${KRI_BASES:-cp2b cp3}"
 RESUME=0
 [ "${1:-}" = "--resume" ] && RESUME=1
 
+meta_of() { printf 'data/thingi10k/%s_results.meta' "$1"; }
+res_of()  { printf 'data/thingi10k/%s_results.txt'  "$1"; }
+only_of() { printf 'data/thingi10k/%s_only.txt'     "$1"; }
+list_of() { printf 'data/thingi10k/%s.txt'          "$1"; }
+
+# ---- 結果の行の検査（起動前と終了時で【同じもの】を使います）----------------
+#
+# **「FAIL が無い」と「全件が成功」は別です。**
+# 書式が崩れた行・途中で切れた行・知らない状態は、どちらでも拒否します。
+check_rows() {  # check_rows <ファイル> <require_ok: 0/1>
+    local f="$1" need_ok="$2"
+    awk -v need_ok="$need_ok" '
+        {
+            if (NF < 6)                       { print "列が足りない行: " NR > "/dev/stderr"; bad=1; next }
+            if ($1 !~ /^[0-9]+x[0-9]+$/)      { print "キーの形が違う行: " NR > "/dev/stderr"; bad=1; next }
+            if ($2 != "ok" && $2 != "FAIL")   { print "知らない状態の行: " NR > "/dev/stderr"; bad=1; next }
+            if ($3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/) { print "三角形数が数でない行: " NR > "/dev/stderr"; bad=1; next }
+            if ($6 !~ /^[0-9a-f]{16}$/)       { print "ハッシュの形が違う行: " NR > "/dev/stderr"; bad=1; next }
+            if (need_ok == 1 && $2 != "ok")   { print "成功していない行: " NR > "/dev/stderr"; bad=1; next }
+        }
+        END { exit bad ? 1 : 0 }
+    ' "$f"
+}
+
 # ---- 起動前の検査（ここで止まれば計算は 1 秒も走りません）--------------------
 [ -x "$BIN" ] || fail "実行ファイルがありません: $BIN"
-# **指紋は機械ごとの値なので追跡しません。** 投入の直前に作ってください:
-#   sha256sum build/thingi_cp1_o3 > tests/tools/run_cp23.sha256
-[ -f "$SHA" ] || fail "指紋のファイルがありません: $SHA（sha256sum で作ってください）"
-sha256sum -c "$SHA" > /dev/null 2>&1 || fail "指紋が一致しません（$SHA）"
+[ -f "$MANIFEST" ] || fail "承認済みの基準がありません: $MANIFEST"
 
-meta_of() { printf '%s_results.meta' "data/thingi10k/$1"; }
-res_of()  { printf '%s_results.txt'  "data/thingi10k/$1"; }
-only_of() { printf '%s_only.txt'     "data/thingi10k/$1"; }
+# **実際に起動するバイナリと、承認済みのハッシュを直接照合します**
+bin_now="$(sha256sum "$BIN" | cut -d' ' -f1)"
+bin_want="$(awk -F= '$1=="bin"{print $2}' "$MANIFEST")"
+[ -n "$bin_want" ] || fail "基準に bin= がありません: $MANIFEST"
+[ "$bin_now" = "$bin_want" ] || fail "起動するバイナリが承認済みの指紋と違います（$BIN）"
 
 for base in $BASES; do
-    only="$(only_of "$base")"
+    only="$(only_of "$base")"; list="$(list_of "$base")"
+    [ -f "$list" ] || fail "入力の一覧がありません: $list"
     [ -f "$only" ] || fail "標本の一覧がありません: $only"
-    n=$(grep -c . "$only" || true)
-    [ "$n" -gt 0 ] || fail "標本の一覧が空です: $only"
-    # **版と予定キー集合**。開始時刻は履歴であって、一致判定には使いません
-    want="$(sha256sum "$BIN" | cut -d' ' -f1) args=${ARGS} keys=$(sort "$only" | sha256sum | cut -d' ' -f1) n=${n}"
-    res="$(res_of "$base")"
-    meta="$(meta_of "$base")"
+    n_now=$(grep -c . "$only" || true)
+    keys_now="$(sort "$only" | sha256sum | cut -d' ' -f1)"
+    line="$(awk -v b="$base" '$1==b{print}' "$MANIFEST")"
+    [ -n "$line" ] || fail "基準に ${base} の行がありません: $MANIFEST"
+    keys_want="$(echo "$line" | sed -n 's/.*keys=\([0-9a-f]*\).*/\1/p')"
+    n_want="$(echo "$line" | sed -n 's/.*n=\([0-9]*\).*/\1/p')"
+    [ "$n_now" = "$n_want" ] || fail "${base}: 標本の件数が基準と違います（${n_now} 対 ${n_want}）"
+    [ "$keys_now" = "$keys_want" ] || fail "${base}: 標本のハッシュが基準と違います"
+    sort "$only" | uniq -d | grep -q . && fail "${base}: 標本にキーの重複があります"
+
+    res="$(res_of "$base")"; meta="$(meta_of "$base")"
+    # **開始時刻は履歴です。一致判定には使いません**
+    want="bin=${bin_now} args=${ARGS} keys=${keys_now} n=${n_now}"
     if [ -s "$res" ]; then
         [ "$RESUME" = 1 ] || fail "結果が残っています（新規なら空にしてください）: $res"
         [ -f "$meta" ] || fail "再開なのに meta がありません: $meta"
-        got="$(grep -v '^started=' "$meta" || true)"
-        [ "$got" = "$want" ] || fail "再開の meta が一致しません: $meta"
-        awk '{print $1}' "$res" | sort | uniq -d | grep -q . && fail "結果にキーの重複があります: $res"
-        awk 'NF<3{exit 1}' "$res" || fail "結果に不正な行があります: $res"
-        grep -q ' FAIL ' "$res" && fail "結果に既存の FAIL があります: $res"
+        [ "$(grep -v '^started=\|^head=\|^b=' "$meta" || true)" = "$want" ] \
+            || fail "再開の meta が一致しません: $meta"
+        check_rows "$res" 0 || fail "${base}: 既存の結果に不正な行があります"
+        awk '{print $1}' "$res" | sort | uniq -d | grep -q . \
+            && fail "${base}: 既存の結果にキーの重複があります"
+        grep -q ' FAIL ' "$res" && fail "${base}: 既存の結果に FAIL があります"
+        # **再開の結果は、予定キー集合の部分集合でなければなりません**
+        if [ -n "$(comm -23 <(awk '{print $1}' "$res" | sort -u) <(sort -u "$only"))" ]; then
+            fail "${base}: 既存の結果に、予定に無いキーがあります"
+        fi
     else
-        printf '%s\nstarted=%s\n' "$want" "$(date -Is)" > "$meta" || fail "meta を書けません: $meta"
+        # **HEAD と b は記録しますが、バイナリのビルド元の証明ではありません**
+        printf '%s\nhead=%s\nb=%s\nstarted=%s\n' "$want" \
+            "$(git rev-parse --short HEAD 2>/dev/null || echo unknown)" \
+            "${KRISITE_COORD_BITS:-21}" "$(date -Is)" > "$meta" \
+            || fail "meta を書けません: $meta"
     fi
 done
 
@@ -62,25 +110,22 @@ for base in $BASES; do
     printf '\n=== %s を回します（%s）===\n' "$base" "$(date -Is)"
     log="data/thingi10k/${base}_run.log"
     set -o pipefail
-    "$BIN" "data/thingi10k/${base}.txt" $ARGS 2>&1 | tee "$log"
-    # **★ 直後に配列ごと保存します。** 先に `PIPESTATUS[0]` を代入すると、
+    "$BIN" "$(list_of "$base")" $ARGS 2>&1 | tee "$log"
+    # **★ 直後に配列ごと保存します。** 先に `PIPESTATUS[0]` を代入すると
     # その代入自体が `PIPESTATUS` を書き換えて `[1]` が消えます
     rc=("${PIPESTATUS[@]}")
     set +o pipefail
-    rc_run=${rc[0]:-1}
-    rc_tee=${rc[1]:-1}
-    [ "$rc_run" = 0 ] || fail "${base}: 計算側が異常終了しました（exit ${rc_run}）"
-    [ "$rc_tee" = 0 ] || fail "${base}: 記録（tee）が失敗しました（exit ${rc_tee}）"
+    [ "${rc[0]:-1}" = 0 ] || fail "${base}: 計算側が異常終了しました（exit ${rc[0]:-?}）"
+    [ "${rc[1]:-1}" = 0 ] || fail "${base}: 記録（tee）が失敗しました（exit ${rc[1]:-?}）"
 
     # ---- 完了の検査（終了コードだけでは判定しません）----
     res="$(res_of "$base")"; only="$(only_of "$base")"
     [ -s "$res" ] || fail "${base}: 結果が空です"
+    check_rows "$res" 1 || fail "${base}: 結果に不正な行か、成功していない行があります"
     awk '{print $1}' "$res" | sort | uniq -d | grep -q . && fail "${base}: 結果にキーの重複"
     if ! diff -q <(sort "$only") <(awk '{print $1}' "$res" | sort) > /dev/null; then
         fail "${base}: 予定キー集合と結果のキー集合が一致しません"
     fi
-    nf=$(awk '$2=="FAIL"' "$res" | wc -l)
-    [ "$nf" = 0 ] || fail "${base}: FAIL が ${nf} 件あります"
     printf '%s: 予定 %s 件すべてが成功しました\n' "$base" "$(grep -c . "$only")"
 done
 printf '\n完了（%s）\n' "$(date -Is)"

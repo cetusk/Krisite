@@ -423,6 +423,8 @@ jobs:
             -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
       - run: cmake --build build --target uaf_repair_pinch repair_realloc
+      - name: 判定器そのものの検査（模擬ログ）
+        run: bash tests/tools/negctl_check_selftest.sh
       - name: 旧経路が use-after-free を起こすこと（期待失敗）
         run: |
           set +e
@@ -431,12 +433,10 @@ jobs:
           set -e
           echo "--- 旧経路の出力（末尾）---"; tail -40 negctl.log
           test "$rc" -ne 0 || { echo "**旧経路が異常終了しませんでした**"; exit 1; }
-          # **ASan の診断が、その読み出し箇所を指していること。**
-          # 「ログのどこかに両方の語がある」では合格にしません
-          awk '/ERROR: AddressSanitizer: heap-use-after-free/{f=1}
-               f && /to_mesh\.hpp/{found=1}
-               END{exit found?0:1}' negctl.log \
-            || { echo "**use-after-free の診断が to_mesh.hpp を指していません**"; exit 1; }
+          # **問題の【読み出しのスタック】だけを見ます。**
+          # 解放側・確保側に名前があっても受理しません（判定器は自己検査つき）
+          bash tests/tools/negctl_check.sh negctl.log to_mesh.hpp \
+            || { echo "**use-after-free の読み出しが to_mesh.hpp を指していません**"; exit 1; }
           # **再確保が発火した証拠**（問題の読み出しより前に出力済み）
           grep -q 'NEGCTL realloc=1' negctl.log \
             || { echo "**再確保が発火していません**"; exit 1; }
