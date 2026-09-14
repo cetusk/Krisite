@@ -35,6 +35,33 @@ BASES="${KRI_BASES:-cp2b cp3}"
 RESUME=0
 [ "${1:-}" = "--resume" ] && RESUME=1
 
+# **前処理は一時ファイルに落とし、【各段の終了状態】を見ます。**
+# **`sort "$f" | sha256sum` の形は、`sort` が失敗しても成功を返します**
+# （パイプの終了状態は最後のコマンドのもの）。**空入力のハッシュが返ります。**
+# **「重複なし」「差分なし」と取り違えないために、段ごとに確かめます。**
+TDIR="$(mktemp -d)"
+trap 'rm -rf "$TDIR"' EXIT
+
+sorted_of() {  # sorted_of <入力> <出力>
+    [ -r "$1" ] || fail "読めません: $1"
+    sort "$1" > "$2" || fail "並べ替えに失敗しました: $1"
+}
+sha_of() {  # sha_of <ファイル> → ハッシュ
+    local h
+    h="$(sha256sum < "$1")" || fail "ハッシュを作れません: $1"
+    printf '%s' "${h%% *}"
+}
+dups_of() {  # dups_of <整列済み> → 重複行（空なら重複なし）
+    local d
+    d="$(uniq -d < "$1")" || fail "重複の検査に失敗しました: $1"
+    printf '%s' "$d"
+}
+keys_of_results() {  # keys_of_results <結果> <出力（整列済み）>
+    [ -r "$1" ] || fail "読めません: $1"
+    awk '{print $1}' "$1" > "$TDIR/k.raw" || fail "キーを取り出せません: $1"
+    sort "$TDIR/k.raw" > "$2" || fail "キーの並べ替えに失敗しました: $1"
+}
+
 meta_of() { printf 'data/thingi10k/%s_results.meta' "$1"; }
 res_of()  { printf 'data/thingi10k/%s_results.txt'  "$1"; }
 only_of() { printf 'data/thingi10k/%s_only.txt'     "$1"; }
@@ -83,8 +110,7 @@ bin_want="$(awk -F= '$1=="bin"{print $2}' "$MANIFEST")"
 # **版がずれたときに黙って外れるのを防ぎます**（計算は始めません）
 # **取得そのものの成功を先に確かめます。**
 # **`|| true` で握り潰すと、値が合っていても異常終了した版で本計算を始めます。**
-COLERR="$(mktemp)"
-trap 'rm -f "$COLERR"' EXIT
+COLERR="$TDIR/cols.err"
 bin_cols="$("$BIN" --cols 2>"$COLERR")"
 rc_cols=$?
 if [ "$rc_cols" != 0 ]; then
@@ -101,8 +127,9 @@ for base in $BASES; do
     only="$(only_of "$base")"; list="$(list_of "$base")"
     [ -f "$list" ] || fail "入力の一覧がありません: $list"
     [ -f "$only" ] || fail "標本の一覧がありません: $only"
-    n_now=$(grep -c . "$only" || true)
-    keys_now="$(sort "$only" | sha256sum | cut -d' ' -f1)"
+    sorted_of "$only" "$TDIR/only.sorted"
+    n_now="$(grep -c . "$TDIR/only.sorted")" || n_now=0
+    keys_now="$(sha_of "$TDIR/only.sorted")"
     line="$(awk -v b="$base" '$1==b{print}' "$MANIFEST")"
     [ -n "$line" ] || fail "基準に ${base} の行がありません: $MANIFEST"
     keys_want="$(echo "$line" | sed -n 's/.*keys=\([0-9a-f]*\).*/\1/p')"
@@ -121,7 +148,7 @@ for base in $BASES; do
     [ "$keys_now" = "$keys_want" ] || fail "${base}: 標本のハッシュが基準と違います"
     [ "$bin_cols" = "$cols_want" ] \
         || fail "${base}: バイナリの列数（${bin_cols}）が基準の cols（${cols_want}）と違います"
-    sort "$only" | uniq -d | grep -q . && fail "${base}: 標本にキーの重複があります"
+    [ -z "$(dups_of "$TDIR/only.sorted")" ] || fail "${base}: 標本にキーの重複があります"
 
     res="$(res_of "$base")"; meta="$(meta_of "$base")"
     # **開始時刻は履歴です。一致判定には使いません**
@@ -135,12 +162,15 @@ for base in $BASES; do
         # **文字列 ' FAIL ' の検索では、タブ区切りの FAIL がすり抜けます**
         check_rows "$res" 1 "$cols_want" \
             || fail "${base}: 既存の結果に不正な行か、成功していない行があります"
-        awk '{print $1}' "$res" | sort | uniq -d | grep -q . \
-            && fail "${base}: 既存の結果にキーの重複があります"
-        # **再開の結果は、予定キー集合の部分集合でなければなりません**
-        if [ -n "$(comm -23 <(awk '{print $1}' "$res" | sort -u) <(sort -u "$only"))" ]; then
-            fail "${base}: 既存の結果に、予定に無いキーがあります"
-        fi
+        keys_of_results "$res" "$TDIR/res.sorted"
+        [ -z "$(dups_of "$TDIR/res.sorted")" ] \
+            || fail "${base}: 既存の結果にキーの重複があります"
+        # **再開の結果は、予定キー集合の【部分集合】でなければなりません**
+        uniq < "$TDIR/res.sorted" > "$TDIR/res.uniq" || fail "${base}: 既存の結果を読めません"
+        uniq < "$TDIR/only.sorted" > "$TDIR/only.uniq" || fail "${base}: 標本を読めません"
+        extra="$(comm -23 "$TDIR/res.uniq" "$TDIR/only.uniq")" \
+            || fail "${base}: 集合の比較に失敗しました"
+        [ -z "$extra" ] || fail "${base}: 既存の結果に、予定に無いキーがあります"
     else
         # **HEAD と b は記録しますが、バイナリのビルド元の証明ではありません**
         printf '%s\nhead=%s\nb=%s\nstarted=%s\n' "$want" \
@@ -167,12 +197,22 @@ for base in $BASES; do
     res="$(res_of "$base")"; only="$(only_of "$base")"
     cols_of_base="$(awk -v b="$base" '$1==b{print}' "$MANIFEST" | sed -n 's/.*cols=\([0-9]*\).*/\1/p')"
     [ -s "$res" ] || fail "${base}: 結果が空です"
+    # **読めないことを「行が不正」と混同しない**（理由を取り違えると診断が遠回りになります）
+    [ -r "$res" ] || fail "${base}: 結果を読めません: $res"
     check_rows "$res" 1 "$cols_of_base" \
         || fail "${base}: 結果に不正な行か、成功していない行があります"
-    awk '{print $1}' "$res" | sort | uniq -d | grep -q . && fail "${base}: 結果にキーの重複"
-    if ! diff -q <(sort "$only") <(awk '{print $1}' "$res" | sort) > /dev/null; then
-        fail "${base}: 予定キー集合と結果のキー集合が一致しません"
-    fi
+    sorted_of "$only" "$TDIR/only.sorted"
+    keys_of_results "$res" "$TDIR/res.sorted"
+    [ -z "$(dups_of "$TDIR/res.sorted")" ] || fail "${base}: 結果にキーの重複"
+    # **`cmp` の終了状態は 0（一致）/ 1（不一致）/ 2 以上（エラー）。**
+    # **エラーを「一致」と取り違えないよう、3 つを分けます**
+    cmp -s "$TDIR/only.sorted" "$TDIR/res.sorted"
+    rc_cmp=$?
+    case "$rc_cmp" in
+        0) ;;
+        1) fail "${base}: 予定キー集合と結果のキー集合が一致しません" ;;
+        *) fail "${base}: キー集合の比較に失敗しました（exit ${rc_cmp}）" ;;
+    esac
     printf '%s: 予定 %s 件すべてが成功しました\n' "$base" "$(grep -c . "$only")"
 done
 printf '\n完了（%s）\n' "$(date -Is)"

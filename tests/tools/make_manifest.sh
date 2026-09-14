@@ -24,8 +24,8 @@ BASES="${*:-cp2b cp3}"
 [ "$FORCE" = 1 ] || [ ! -e "$OUT" ] || fail "既に存在します（置き換えるなら --force）: $OUT"
 
 # **列数の取得は、終了状態を先に見ます**
-COLERR="$(mktemp)"; TMP="$(mktemp)"
-trap 'rm -f "$COLERR" "$TMP"' EXIT
+COLERR="$(mktemp)"; TMP="$(mktemp)"; SORTED=""
+trap 'rm -f "$COLERR" "$TMP" "$SORTED"' EXIT
 cols="$("$BIN" --cols 2>"$COLERR")"
 rc=$?
 if [ "$rc" != 0 ]; then
@@ -35,15 +35,28 @@ fi
 case "${cols:-x}" in ''|*[!0-9]*) fail "--cols が数を返しません（${cols}）: $BIN" ;; esac
 [ "$cols" -ge 7 ] && [ "$cols" -le 4096 ] || fail "--cols が範囲の外です（${cols}）"
 
-bin_sha="$(sha256sum "$BIN" | cut -d' ' -f1)" || fail "指紋を作れません: $BIN"
+# ---- 前処理は一時ファイルに落とし、【各段の終了状態】を見ます ----------------
+#
+# **`sort "$f" | sha256sum` の形は、`sort` が失敗しても成功を返します**
+# （パイプの終了状態は最後のコマンドのもの）。**空入力のハッシュが返ります。**
+# **「重複なし」「差分なし」と取り違えないために、段ごとに確かめます。**
+SORTED="$(mktemp)"
+trap 'rm -f "$COLERR" "$TMP" "$SORTED"' EXIT
+
+bin_sha="$(sha256sum "$BIN")" || fail "指紋を作れません: $BIN"
+bin_sha="${bin_sha%% *}"
 printf 'bin=%s\n' "$bin_sha" >> "$TMP" || fail "一時ファイルに書けません"
 for b in $BASES; do
     only="data/thingi10k/${b}_only.txt"
     [ -f "$only" ] || fail "標本の一覧がありません: $only"
-    n="$(grep -c . "$only")" || fail "件数を数えられません: $only"
+    [ -r "$only" ] || fail "標本の一覧を読めません: $only"
+    sort "$only" > "$SORTED" || fail "標本の並べ替えに失敗しました: $only"
+    n="$(grep -c . "$SORTED")" || n=0
     [ "$n" -gt 0 ] || fail "標本の一覧が空です: $only"
-    sort "$only" | uniq -d | grep -q . && fail "標本にキーの重複があります: $only"
-    keys="$(sort "$only" | sha256sum | cut -d' ' -f1)" || fail "ハッシュを作れません: $only"
+    dups="$(uniq -d < "$SORTED")" || fail "重複の検査に失敗しました: $only"
+    [ -z "$dups" ] || fail "標本にキーの重複があります: $only"
+    keys="$(sha256sum < "$SORTED")" || fail "ハッシュを作れません: $only"
+    keys="${keys%% *}"
     printf '%s keys=%s n=%s cols=%s\n' "$b" "$keys" "$n" "$cols" >> "$TMP" \
         || fail "一時ファイルに書けません"
 done
@@ -57,8 +70,10 @@ for b in $BASES; do
         || fail "作った基準の ${b} の行が不正です: $line"
 done
 
+# **ここまで一度も `$OUT` に触れていません。** 失敗していれば既存の基準はそのままです
 mv "$TMP" "$OUT" || fail "確定できません: $OUT"
-trap 'rm -f "$COLERR"' EXIT
+TMP=""
+trap 'rm -f "$COLERR" "$SORTED"' EXIT
 chmod 0644 "$OUT"
 printf '作りました: %s\n' "$OUT"
 cat "$OUT"

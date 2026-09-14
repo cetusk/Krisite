@@ -51,6 +51,7 @@ while read -r k; do
             printf '%s\n' "$row" >> "$res" || exit 4 ;;
     esac
 done < "$only"
+[ "$mode" = "lockres" ] && chmod 000 "$res"
 echo "模擬: ${base} 完了"
 MOCK
     chmod +x "$d/build/mock"
@@ -196,6 +197,16 @@ check "25 cols が範囲の外" 2 "$(run "$d")" "cols が範囲の外" "$d" no n
 # 26: **正しい列数を出すが、--cols が非零で終わる** → 起動前に拒否
 d=$(setup c29); MOCK_COLS_RC=7; export MOCK_COLS_RC; g=$(run "$d"); unset MOCK_COLS_RC
 check "26 --cols が非零終了（値は正しい）" 2 "$g" "--cols が異常終了" "$d" no no_run
+
+# ---- 前処理の失敗を「正常」と取り違えないこと ----
+# 27: 標本を読めない → 起動前に止まり、本計算は走らない
+d=$(setup c30); chmod 000 "$d/data/thingi10k/cp2b_only.txt"
+g=$(run "$d"); chmod 644 "$d/data/thingi10k/cp2b_only.txt"
+check "27 標本を読めない（起動前）" 2 "$g" "読めません" "$d" no no_run
+# 28: 結果を読めない → 完了の検査で止まる（「差分なし」と取り違えない）
+d=$(setup c31); MOCK_MODE=lockres; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
+chmod 644 "$d/data/thingi10k/"*_results.txt 2>/dev/null
+check "28 結果を読めない（完了の検査）" 2 "$g" "読めません" "$d" no
 
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]

@@ -75,5 +75,16 @@ rc=$?; started=$([ -s "$d/calls.log" ] && echo 1 || echo 0)
 chk "10 旧バイナリを名指し → 起動前に拒否" 2 "$rc"
 chk "10b そのとき本計算は起動していない" 0 "$started"
 
+# ---- 11: 標本を読めない → 失敗し、既存の基準は残る ----
+d=$(setup m11)
+( cd "$d" && bash "$MK" build/cand keep.manifest > /dev/null 2>&1 ) || true
+before="$(sha256sum "$d/keep.manifest" | cut -d' ' -f1)"
+chmod 000 "$d/data/thingi10k/cp2b_only.txt"
+( cd "$d" && bash "$MK" --force build/cand keep.manifest > log 2>&1 ); rc=$?
+chmod 644 "$d/data/thingi10k/cp2b_only.txt"
+after="$(sha256sum "$d/keep.manifest" | cut -d' ' -f1)"
+chk "11 標本を読めない" 2 "$rc"
+chk "11b そのとき既存の基準は変わらない" "$before" "$after"
+
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]
