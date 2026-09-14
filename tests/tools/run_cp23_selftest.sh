@@ -24,6 +24,8 @@ setup() {  # setup <名前> [各一覧の件数]
 #!/bin/bash
 # 模擬の計算側。**起動を記録**し、`<base>_only.txt` を読んで結果行を書く
 set -u
+cols="${MOCK_COLS:-8}"
+[ "${1:-}" = "--cols" ] && { echo "$cols"; exit 0; }
 list="$1"; base="${list%.txt}"
 only="${base}_only.txt"; res="${base}_results.txt"
 printf '%s\n' "$(basename "$base")" >> "${MOCK_CALLS:-/dev/null}"
@@ -41,7 +43,11 @@ while read -r k; do
         badtime) printf '%s %s 10 10 -1 0123456789abcdef 1 2\n' "$out" "$st" >> "$res" || exit 4 ;;
         cutrow)  printf '%s %s 10 10 0.1 0123456789abcdef 1\n' "$out" "$st" >> "$res" || exit 4 ;;
         badcol)  printf '%s %s 10 10 0.1 0123456789abcdef 1 x\n' "$out" "$st" >> "$res" || exit 4 ;;
-        *)       printf '%s %s 10 10 0.1 0123456789abcdef 1 2\n' "$out" "$st" >> "$res" || exit 4 ;;
+        *)  # **cols 列ぶんの行**（先頭 6 列 + 構造の記録）
+            row="$out $st 10 10 0.1 0123456789abcdef"
+            i=7; while [ "$i" -le "$cols" ]; do row="$row $i"; i=$((i+1)); done
+            [ "$mode" = "withwhy" ] && row="$row 体積の篩"
+            printf '%s\n' "$row" >> "$res" || exit 4 ;;
     esac
 done < "$only"
 echo "模擬: ${base} 完了"
@@ -60,25 +66,26 @@ write_manifest() {  # 承認済みの基準（いまの一覧から作る = 正�
     local d="$1"
     { printf 'bin=%s\n' "$(sha256sum "$d/build/mock" | cut -d' ' -f1)"
       for b in cp2b cp3; do
-          printf '%s keys=%s n=%s cols=8\n' "$b" \
+          printf '%s keys=%s n=%s cols=%s\n' "$b" \
               "$(sort "$d/data/thingi10k/${b}_only.txt" | sha256sum | cut -d' ' -f1)" \
-              "$(grep -c . "$d/data/thingi10k/${b}_only.txt")"
+              "$(grep -c . "$d/data/thingi10k/${b}_only.txt")" "${MOCK_COLS:-8}"
       done
     } > "$d/manifest"
 }
 
 write_meta() {  # write_meta <dir> <base>
     local d="$1" b="$2"
-    printf 'bin=%s args=0 keys=%s n=%s\nhead=x\nb=21\nstarted=x\n' \
+    printf 'bin=%s args=0 keys=%s n=%s cols=%s\nhead=x\nb=21\nstarted=x\n' \
         "$(sha256sum "$d/build/mock" | cut -d' ' -f1)" \
         "$(sort "$d/data/thingi10k/${b}_only.txt" | sha256sum | cut -d' ' -f1)" \
-        "$(grep -c . "$d/data/thingi10k/${b}_only.txt")" \
+        "$(grep -c . "$d/data/thingi10k/${b}_only.txt")" "${MOCK_COLS:-8}" \
         > "$d/data/thingi10k/${b}_results.meta"
 }
 
 run() {  # run <dir> [引数...]
     ( cd "$1" && KRI_ROOT="$1" KRI_BIN="$1/build/mock" KRI_MANIFEST="$1/manifest" \
         KRI_ARGS="0" KRI_BASES="cp2b cp3" MOCK_CALLS="$1/calls.log" \
+        MOCK_COLS="${MOCK_COLS:-8}" \
         bash "$RUN" "${@:2}" > "$1/out.txt" 2>&1 )
     echo $?
 }
@@ -161,6 +168,24 @@ check "18 タブ区切りの FAIL（再開）" 2 "$(run "$d" --resume)" "成功�
 # 19: 基準に cols が無い
 d=$(setup c22); sed -i 's/ cols=8//' "$d/manifest"
 check "19 基準に cols が無い" 2 "$(run "$d")" "cols= がありません" "$d" no
+
+# ---- 現行の固定部 184 列での構成（`--cols` が報告する値）----
+export MOCK_COLS=184
+d=$(setup c23); check "20 正常（184 列）" 0 "$(run "$d")" "すべてが成功" "$d" yes
+d=$(setup c24); MOCK_MODE=withwhy; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
+check "21 理由の語つき（184 列 + 1）" 0 "$g" "すべてが成功" "$d" yes
+d=$(setup c25); MOCK_MODE=cutrow; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
+check "22 途中欠落（184 列に足りない）" 2 "$g" "不正な行か、成功していない行" "$d" no
+unset MOCK_COLS
+# 23: バイナリの列数が基準と違う
+d=$(setup c26); sed -i 's/cols=8/cols=9/g' "$d/manifest"
+check "23 バイナリの列数が基準と違う" 2 "$(run "$d")" "が基準の cols" "$d" no
+# 24: cols が数でない（接頭辞だけの受理を防ぐ）
+d=$(setup c27); sed -i 's/cols=8/cols=8junk/g' "$d/manifest"
+check "24 cols が数でない" 2 "$(run "$d")" "cols が数ではありません" "$d" no
+# 25: cols が範囲の外
+d=$(setup c28); sed -i 's/cols=8/cols=3/g' "$d/manifest"
+check "25 cols が範囲の外" 2 "$(run "$d")" "cols が範囲の外" "$d" no
 
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]

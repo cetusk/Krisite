@@ -24,6 +24,7 @@
 #include <iomanip>
 #include <ostream>
 #include <set>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -946,6 +947,25 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
 }  // namespace
 
 int main(int argc, char** argv) {
+    // **自分の出力契約を報告する**（`DESIGN-phase5-vertex-level.md` §13.9）。
+    //
+    // **列数は駆動の版で決まります。** 手で数えると版がずれたときに黙って外れるので、
+    // **駆動自身に数えさせます。** `ps.print` を空の器に流して列を数え、
+    // 先頭の 6 列（キー・状態・三角形数 2 つ・時間・ハッシュ）を足したものが
+    // **固定部の終端列番号**です。
+    if (argc > 1 && std::string(argv[1]) == "--cols") {
+        PairStruct ps{};
+        std::ostringstream os;
+        ps.print(os);
+        std::size_t n = 0;
+        {
+            std::istringstream is(os.str());
+            std::string tok;
+            while (is >> tok) ++n;
+        }
+        std::printf("%zu\n", n + 6);
+        return 0;
+    }
     std::setvbuf(stdout, nullptr, _IOLBF, 4096);
     const std::string list = (argc > 1) ? argv[1] : "data/thingi10k/cp1.txt";
     // **付随ファイルは一覧の名前から機械的に決めます**（`cp1.txt` → `cp1_*`）。

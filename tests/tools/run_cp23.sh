@@ -79,6 +79,13 @@ bin_want="$(awk -F= '$1=="bin"{print $2}' "$MANIFEST")"
 [ -n "$bin_want" ] || fail "基準に bin= がありません: $MANIFEST"
 [ "$bin_now" = "$bin_want" ] || fail "起動するバイナリが承認済みの指紋と違います（$BIN）"
 
+# **出力契約は、手で数えずに【バイナリ自身に報告させます】。**
+# **版がずれたときに黙って外れるのを防ぎます**（計算は始めません）
+bin_cols="$("$BIN" --cols 2>/dev/null || true)"
+case "${bin_cols:-x}" in
+    ''|*[!0-9]*) fail "バイナリが列数を報告しません（--cols が必要です）: $BIN" ;;
+esac
+
 for base in $BASES; do
     only="$(only_of "$base")"; list="$(list_of "$base")"
     [ -f "$list" ] || fail "入力の一覧がありません: $list"
@@ -89,15 +96,25 @@ for base in $BASES; do
     [ -n "$line" ] || fail "基準に ${base} の行がありません: $MANIFEST"
     keys_want="$(echo "$line" | sed -n 's/.*keys=\([0-9a-f]*\).*/\1/p')"
     n_want="$(echo "$line" | sed -n 's/.* n=\([0-9]*\).*/\1/p')"
-    cols_want="$(echo "$line" | sed -n 's/.*cols=\([0-9]*\).*/\1/p')"
+    # **`cols` は【固定部の終端列番号】**です（キー・状態・三角形数 2 つ・時間・
+    # ハッシュの 6 列 + 構造の記録）。**値の全体の形と範囲を検査します** —
+    # 接頭辞だけを見ると `cols=8junk` を 8 として受理してしまいます
+    cols_want="$(echo "$line" | sed -n 's/.*cols=\([^ ]*\).*/\1/p')"
     [ -n "$cols_want" ] || fail "基準に ${base} の cols= がありません: $MANIFEST"
+    case "$cols_want" in
+        ''|*[!0-9]*) fail "${base}: cols が数ではありません（${cols_want}）" ;;
+    esac
+    [ "$cols_want" -ge 7 ] && [ "$cols_want" -le 4096 ] \
+        || fail "${base}: cols が範囲の外です（${cols_want}。7〜4096）"
     [ "$n_now" = "$n_want" ] || fail "${base}: 標本の件数が基準と違います（${n_now} 対 ${n_want}）"
     [ "$keys_now" = "$keys_want" ] || fail "${base}: 標本のハッシュが基準と違います"
+    [ "$bin_cols" = "$cols_want" ] \
+        || fail "${base}: バイナリの列数（${bin_cols}）が基準の cols（${cols_want}）と違います"
     sort "$only" | uniq -d | grep -q . && fail "${base}: 標本にキーの重複があります"
 
     res="$(res_of "$base")"; meta="$(meta_of "$base")"
     # **開始時刻は履歴です。一致判定には使いません**
-    want="bin=${bin_now} args=${ARGS} keys=${keys_now} n=${n_now}"
+    want="bin=${bin_now} args=${ARGS} keys=${keys_now} n=${n_now} cols=${cols_want}"
     if [ -s "$res" ]; then
         [ "$RESUME" = 1 ] || fail "結果が残っています（新規なら空にしてください）: $res"
         [ -f "$meta" ] || fail "再開なのに meta がありません: $meta"
