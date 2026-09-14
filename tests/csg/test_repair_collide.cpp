@@ -183,6 +183,9 @@ bool same_edge_split(const csg::EdgeSplitSource& a, const csg::EdgeSplitSource& 
 }
 
 /// **すべての配列を、長さと内容で比べます。**
+///
+/// **頂点は `h_equal`（幾何としての等値）**で比べます。**同次座標の表現までは見ません**
+/// — スカラー倍が違っても同じ点なら一致と扱います。他の配列は値そのものを比べます。
 bool same_content(const Snap& s, const csg::SoupMesh& m) {
     if (s.verts.size() != m.vertices.size() || s.tris.size() != m.triangles.size()) return false;
     if (s.keys.size() != m.vertex_key.size() || s.esplit.size() != m.edge_split.size()) {
@@ -330,7 +333,8 @@ int main() {
         expect(sp.repair_edges == 1, "4: 1 本目だけ細分した");
         expect(sp.repair_collisions == 1, "4: **2 本目を衝突として数えた**");
         expect(f.mesh.edge_split.size() == 1, "4: 由来は 1 件だけ");
-        expect(same, "4: **2 本目は、1 本目だけ処理した対照と 1 バイトも違わない**");
+        expect(same,
+               "4: **2 本目は、1 本目だけ処理した対照と一致**（頂点は h_equal、他は値の一致）");
     }
 
     std::printf("\n**不一致 %d 件**\n", failures);

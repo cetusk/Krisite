@@ -36,8 +36,13 @@ while read -r k; do
     [ "$mode" = "otherkey" ] && out="99${k}"
     st=ok
     [ "$mode" = "fail1" ] && { st=FAIL; mode=ok; }
-    if [ "$mode" = "badrow" ]; then printf '%s\n' "$out" >> "$res" || exit 4
-    else printf '%s %s 10 10 0.1 0123456789abcdef\n' "$out" "$st" >> "$res" || exit 4; fi
+    case "$mode" in
+        badrow)  printf '%s\n' "$out" >> "$res" || exit 4 ;;                       # キーだけ
+        badtime) printf '%s %s 10 10 -1 0123456789abcdef 1 2\n' "$out" "$st" >> "$res" || exit 4 ;;
+        cutrow)  printf '%s %s 10 10 0.1 0123456789abcdef 1\n' "$out" "$st" >> "$res" || exit 4 ;;
+        badcol)  printf '%s %s 10 10 0.1 0123456789abcdef 1 x\n' "$out" "$st" >> "$res" || exit 4 ;;
+        *)       printf '%s %s 10 10 0.1 0123456789abcdef 1 2\n' "$out" "$st" >> "$res" || exit 4 ;;
+    esac
 done < "$only"
 echo "模擬: ${base} 完了"
 MOCK
@@ -55,7 +60,7 @@ write_manifest() {  # 承認済みの基準（いまの一覧から作る = 正�
     local d="$1"
     { printf 'bin=%s\n' "$(sha256sum "$d/build/mock" | cut -d' ' -f1)"
       for b in cp2b cp3; do
-          printf '%s keys=%s n=%s\n' "$b" \
+          printf '%s keys=%s n=%s cols=8\n' "$b" \
               "$(sort "$d/data/thingi10k/${b}_only.txt" | sha256sum | cut -d' ' -f1)" \
               "$(grep -c . "$d/data/thingi10k/${b}_only.txt")"
       done
@@ -114,17 +119,17 @@ d=$(setup c8);  printf '99x99\n' >> "$d/data/thingi10k/cp2b_only.txt"
 check "6b 件数不一致（非空。基準より 1 多い）" 2 "$(run "$d")" "件数が基準と違います" "$d" no
 d=$(setup c9);  sed -i '1s/.*/77x77/' "$d/data/thingi10k/cp2b_only.txt"
 check "6c 件数は同じでハッシュが違う" 2 "$(run "$d")" "ハッシュが基準と違います" "$d" no
-d=$(setup c10); printf '10x11 FAIL 10 10 0.1 0123456789abcdef\n' > "$d/data/thingi10k/cp2b_results.txt"
+d=$(setup c10); printf '10x11 FAIL 10 10 0.1 0123456789abcdef 1 2\n' > "$d/data/thingi10k/cp2b_results.txt"
 write_meta "$d" cp2b
-check "7 既存 FAIL（再開）" 2 "$(run "$d" --resume)" "既存の結果に FAIL" "$d" no
+check "7 既存 FAIL（再開。空白区切り）" 2 "$(run "$d" --resume)" "成功していない行" "$d" no
 d=$(setup c11); MOCK_MODE=otherkey; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
 check "8 同件数だが別キー" 2 "$g" "予定キー集合と結果のキー集合が一致しません" "$d" no
-d=$(setup c12); printf '10x11 ok 10 10 0.1 0123456789abcdef\n' > "$d/data/thingi10k/cp2b_results.txt"
+d=$(setup c12); printf '10x11 ok 10 10 0.1 0123456789abcdef 1 2\n' > "$d/data/thingi10k/cp2b_results.txt"
 check "9 新規なのに結果が残っている" 2 "$(run "$d")" "結果が残っています" "$d" no
-d=$(setup c13); printf '10x11 ok 10 10 0.1 0123456789abcdef\n' > "$d/data/thingi10k/cp2b_results.txt"
+d=$(setup c13); printf '10x11 ok 10 10 0.1 0123456789abcdef 1 2\n' > "$d/data/thingi10k/cp2b_results.txt"
 write_meta "$d" cp2b; sed -i '1s/n=2/n=3/' "$d/data/thingi10k/cp2b_results.meta"
 check "10 再開の meta が不一致" 2 "$(run "$d" --resume)" "meta が一致しません" "$d" no
-d=$(setup c14); printf '10x11 ok 10 10 0.1 0123456789abcdef\n' > "$d/data/thingi10k/cp2b_results.txt"
+d=$(setup c14); printf '10x11 ok 10 10 0.1 0123456789abcdef 1 2\n' > "$d/data/thingi10k/cp2b_results.txt"
 write_meta "$d" cp2b; MOCK_MODE=resume; export MOCK_MODE; g=$(run "$d" --resume); unset MOCK_MODE
 check "11 正常な再開" 0 "$g" "すべてが成功" "$d" yes
 # 12: 書式が崩れた行（キーだけの行）→ 終了時に拒否
@@ -134,9 +139,28 @@ check "12 結果の行の書式が崩れている" 2 "$g" "不正な行か、成
 d=$(setup c16); MOCK_MODE=fail1; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
 check "13 予定は揃うが 1 件 FAIL" 2 "$g" "不正な行か、成功していない行" "$d" no
 # 14: 再開の結果に、予定に無いキーが混ざっている
-d=$(setup c17); printf '55x55 ok 10 10 0.1 0123456789abcdef\n' > "$d/data/thingi10k/cp2b_results.txt"
+d=$(setup c17); printf '55x55 ok 10 10 0.1 0123456789abcdef 1 2\n' > "$d/data/thingi10k/cp2b_results.txt"
 write_meta "$d" cp2b
 check "14 再開の結果に予定外のキー" 2 "$(run "$d" --resume)" "予定に無いキー" "$d" no
+
+# 15: 第 5 列（時間）が不正
+d=$(setup c18); MOCK_MODE=badtime; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
+check "15 時間の列が不正（負）" 2 "$g" "不正な行か、成功していない行" "$d" no
+# 16: 構造の記録が途中で切れている
+d=$(setup c19); MOCK_MODE=cutrow; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
+check "16 構造の記録が途中で切れている" 2 "$g" "不正な行か、成功していない行" "$d" no
+# 17: 構造の記録に数でない値
+d=$(setup c20); MOCK_MODE=badcol; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
+check "17 構造の記録が数でない" 2 "$g" "不正な行か、成功していない行" "$d" no
+# 18: **タブ区切りの FAIL** が、再開の検査をすり抜けないこと
+d=$(setup c21)
+printf '10x11\tFAIL\t10\t10\t0.1\t0123456789abcdef\t1\t2\n' \
+    > "$d/data/thingi10k/cp2b_results.txt"
+write_meta "$d" cp2b
+check "18 タブ区切りの FAIL（再開）" 2 "$(run "$d" --resume)" "成功していない行" "$d" no
+# 19: 基準に cols が無い
+d=$(setup c22); sed -i 's/ cols=8//' "$d/manifest"
+check "19 基準に cols が無い" 2 "$(run "$d")" "cols= がありません" "$d" no
 
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]

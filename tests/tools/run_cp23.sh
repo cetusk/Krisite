@@ -10,8 +10,11 @@
 #
 # ## 承認済みの基準（`KRI_MANIFEST`。**追跡しません**。機械ごとの値）
 #
-#   bin=<sha256>                  投入を承認したバイナリ
-#   <base> keys=<sha256> n=<件数>  投入を承認した標本（並べ替えた一覧のハッシュ）
+#   bin=<sha256>                             投入を承認したバイナリ
+#   <base> keys=<sha256> n=<件数> cols=<列数>  承認した標本と、結果行の【数値の列数】
+#
+# **`cols` は駆動の版で決まります**（`ps.print` が出す項目の数）。
+# **明示を必須にします** — 既定値を置くと、版が変わったときに黙って通ります。
 #
 # **一覧から作った値どうしを比べても、誤った一覧を弾けません。**
 # **独立した基準と照合します。**
@@ -41,15 +44,25 @@ list_of() { printf 'data/thingi10k/%s.txt'          "$1"; }
 #
 # **「FAIL が無い」と「全件が成功」は別です。**
 # 書式が崩れた行・途中で切れた行・知らない状態は、どちらでも拒否します。
-check_rows() {  # check_rows <ファイル> <require_ok: 0/1>
-    local f="$1" need_ok="$2"
-    awk -v need_ok="$need_ok" '
+check_rows() {  # check_rows <ファイル> <require_ok: 0/1> <cols>
+    local f="$1" need_ok="$2" cols="$3"
+    awk -v need_ok="$need_ok" -v cols="$cols" '
+        function isnum(x) {
+            return x ~ /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][+-]?[0-9]+)?$/
+        }
         {
-            if (NF < 6)                       { print "列が足りない行: " NR > "/dev/stderr"; bad=1; next }
+            # **途中で切れた行**は、数値の列がそろわないことで分かります
+            if (NF < cols)                    { print "列が足りない行(" NF "<" cols "): " NR > "/dev/stderr"; bad=1; next }
             if ($1 !~ /^[0-9]+x[0-9]+$/)      { print "キーの形が違う行: " NR > "/dev/stderr"; bad=1; next }
             if ($2 != "ok" && $2 != "FAIL")   { print "知らない状態の行: " NR > "/dev/stderr"; bad=1; next }
             if ($3 !~ /^[0-9]+$/ || $4 !~ /^[0-9]+$/) { print "三角形数が数でない行: " NR > "/dev/stderr"; bad=1; next }
+            # **第 5 列は時間**。負や非数は拒否します
+            if (!isnum($5) || $5 + 0 < 0)     { print "時間が不正な行: " NR > "/dev/stderr"; bad=1; next }
             if ($6 !~ /^[0-9a-f]{16}$/)       { print "ハッシュの形が違う行: " NR > "/dev/stderr"; bad=1; next }
+            # **第 7 列以降 cols 列までは構造の記録**。すべて数でなければなりません
+            for (i = 7; i <= cols; i++) {
+                if (!isnum($i)) { print "構造の記録が数でない行(" i "列目): " NR > "/dev/stderr"; bad=1; next }
+            }
             if (need_ok == 1 && $2 != "ok")   { print "成功していない行: " NR > "/dev/stderr"; bad=1; next }
         }
         END { exit bad ? 1 : 0 }
@@ -75,7 +88,9 @@ for base in $BASES; do
     line="$(awk -v b="$base" '$1==b{print}' "$MANIFEST")"
     [ -n "$line" ] || fail "基準に ${base} の行がありません: $MANIFEST"
     keys_want="$(echo "$line" | sed -n 's/.*keys=\([0-9a-f]*\).*/\1/p')"
-    n_want="$(echo "$line" | sed -n 's/.*n=\([0-9]*\).*/\1/p')"
+    n_want="$(echo "$line" | sed -n 's/.* n=\([0-9]*\).*/\1/p')"
+    cols_want="$(echo "$line" | sed -n 's/.*cols=\([0-9]*\).*/\1/p')"
+    [ -n "$cols_want" ] || fail "基準に ${base} の cols= がありません: $MANIFEST"
     [ "$n_now" = "$n_want" ] || fail "${base}: 標本の件数が基準と違います（${n_now} 対 ${n_want}）"
     [ "$keys_now" = "$keys_want" ] || fail "${base}: 標本のハッシュが基準と違います"
     sort "$only" | uniq -d | grep -q . && fail "${base}: 標本にキーの重複があります"
@@ -88,10 +103,12 @@ for base in $BASES; do
         [ -f "$meta" ] || fail "再開なのに meta がありません: $meta"
         [ "$(grep -v '^started=\|^head=\|^b=' "$meta" || true)" = "$want" ] \
             || fail "再開の meta が一致しません: $meta"
-        check_rows "$res" 0 || fail "${base}: 既存の結果に不正な行があります"
+        # **共通の列解析で、既存の結果にも【成功】を要求します。**
+        # **文字列 ' FAIL ' の検索では、タブ区切りの FAIL がすり抜けます**
+        check_rows "$res" 1 "$cols_want" \
+            || fail "${base}: 既存の結果に不正な行か、成功していない行があります"
         awk '{print $1}' "$res" | sort | uniq -d | grep -q . \
             && fail "${base}: 既存の結果にキーの重複があります"
-        grep -q ' FAIL ' "$res" && fail "${base}: 既存の結果に FAIL があります"
         # **再開の結果は、予定キー集合の部分集合でなければなりません**
         if [ -n "$(comm -23 <(awk '{print $1}' "$res" | sort -u) <(sort -u "$only"))" ]; then
             fail "${base}: 既存の結果に、予定に無いキーがあります"
@@ -120,8 +137,10 @@ for base in $BASES; do
 
     # ---- 完了の検査（終了コードだけでは判定しません）----
     res="$(res_of "$base")"; only="$(only_of "$base")"
+    cols_of_base="$(awk -v b="$base" '$1==b{print}' "$MANIFEST" | sed -n 's/.*cols=\([0-9]*\).*/\1/p')"
     [ -s "$res" ] || fail "${base}: 結果が空です"
-    check_rows "$res" 1 || fail "${base}: 結果に不正な行か、成功していない行があります"
+    check_rows "$res" 1 "$cols_of_base" \
+        || fail "${base}: 結果に不正な行か、成功していない行があります"
     awk '{print $1}' "$res" | sort | uniq -d | grep -q . && fail "${base}: 結果にキーの重複"
     if ! diff -q <(sort "$only") <(awk '{print $1}' "$res" | sort) > /dev/null; then
         fail "${base}: 予定キー集合と結果のキー集合が一致しません"
