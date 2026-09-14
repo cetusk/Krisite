@@ -124,7 +124,31 @@ krisite_add_test(interior      csg/test_interior.cpp)
 # O3（触れない三角形の平面で切らない）の条件 1 を突く構成（SPEC-phase3 §5.4）。発火しなければ失敗
 krisite_add_test(o3_coplanar   csg/test_o3_coplanar.cpp)
 krisite_add_test(vm_mark       csg/test_vm_mark.cpp)
+krisite_add_test(repair_collide csg/test_repair_collide.cpp)
 krisite_add_test(repair_pinch  csg/test_repair_pinch.cpp)
+# **再確保の発火を確かめる構成**（DESIGN-phase5-vertex-level §12.3.2）。
+# 容量を長さに詰めてから修復させ、**発火しなければ失敗**させる
+add_executable(repair_realloc csg/test_repair_pinch.cpp)
+target_link_libraries(repair_realloc PRIVATE krisite krisite_test_util)
+target_compile_definitions(repair_realloc PRIVATE
+    KRISITE_MUTATION_REPAIR_TIGHT_CAPACITY=1 KRISITE_TEST_EXPECT_REALLOC=1)
+add_test(NAME repair_realloc COMMAND repair_realloc)
+set_tests_properties(repair_realloc PROPERTIES TIMEOUT 3600)
+
+# ---- 負の対照（既定では【ターゲットも試験も作りません】）--------------------
+#
+# **ラベルでは通常実行から外れません**（`-L` は選択、`-LE` は除外）。
+# **専用の既定 OFF のオプションで、登録そのものを隔離します。**
+option(KRISITE_BUILD_NEGATIVE_CONTROL
+       "旧経路（再確保をまたぐ参照）を復元した負の対照を作る。ASan と併用する" OFF)
+if(KRISITE_BUILD_NEGATIVE_CONTROL)
+    add_executable(uaf_repair_pinch csg/test_repair_pinch.cpp)
+    target_link_libraries(uaf_repair_pinch PRIVATE krisite krisite_test_util)
+    target_compile_definitions(uaf_repair_pinch PRIVATE
+        KRISITE_MUTATION_REPAIR_TIGHT_CAPACITY=1 KRISITE_MUTATION_REPAIR_DANGLING_REF=1)
+    # **`ctest` には登録しません。** 専用ジョブが実行ファイルを直接起動し、
+    # **ASan の診断と再確保の発火を突き合わせて合否を決めます**
+endif()
 # SPEC-phase3 §14 の CP2。入口・中核・出口の分離。**二項正解器との一致**と、
 # **連鎖でビット幅が伸びないこと**（§10.3.1。契約の成立条件）
 krisite_add_test(soup          csg/test_soup.cpp)
@@ -170,6 +194,14 @@ if(KRISITE_GMP_FOUND)
     target_link_libraries(radial_gmp PRIVATE krisite_gmp)
 
     # §10.3 体積の恒等式。出力の頂点は有理数なので GMP が要る
+    # DESIGN-phase5-vertex-level §12.1.1。**同じ .cpp を定義の有無で分ける**。
+    # **本体は GMP に依存しません** — このターゲットだけがリンクします
+    add_executable(repair_pinch_gmp csg/test_repair_pinch.cpp)
+    target_link_libraries(repair_pinch_gmp PRIVATE krisite krisite_test_util krisite_gmp)
+    target_compile_definitions(repair_pinch_gmp PRIVATE KRISITE_TEST_EXACT_VOLUME=1)
+    add_test(NAME repair_pinch_gmp COMMAND repair_pinch_gmp)
+    set_tests_properties(repair_pinch_gmp PROPERTIES TIMEOUT 3600)
+
     krisite_add_test(volume_gmp     csg/test_volume_gmp.cpp)
     target_link_libraries(volume_gmp PRIVATE krisite_gmp)
 

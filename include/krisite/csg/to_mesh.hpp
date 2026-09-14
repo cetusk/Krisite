@@ -19,6 +19,10 @@
 #ifndef KRISITE_CSG_TO_MESH_HPP
 #define KRISITE_CSG_TO_MESH_HPP
 
+#if defined(KRISITE_MUTATION_REPAIR_DANGLING_REF)
+#include <cstdio>  // 負の対照でだけ使います（既定のビルドには入りません）
+#endif
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -248,12 +252,19 @@ namespace detail {
 /// **点どうしの中点は作りません。** 平面の和 $Q = P_3 \pm P_4$ の交点です（§7）。
 inline void repair_unresolved_edges(const PolySoup& s, SoupMesh& out, ToMeshStats& st) {
     const std::size_t merged = st.merged_points;
+    /// **修復で足した中点**（`DESIGN-phase5-vertex-level.md` §12.4）。
+    ///
+    /// **前半 `[0, merged_points)` は整列済み**なので二分探索できますが、
+    /// **ここで足す点はどちらの整列にも入りません。**
+    /// **「追加しても整列が保たれる」とは扱わず、別に持って線形に照合します。**
+    std::vector<geom::HPointD> added_mid;
     /// **既存の頂点と幾何として一致しないか**を二分探索で確かめる。
     ///
     /// **`out.vertices` の先頭 `merged_points` 個は `lex_less` で整列済み**です
     /// （値による併合が整列順に代表を積むため）。
     /// **その後ろは分裂の複製なので、位置は必ず先頭の中に居ます。**
     const auto collides = [&](const geom::HPointD& m) {
+        ++st.split.repair_collide_probes;
         std::size_t lo = 0, hi = merged;
         while (lo < hi) {
             const std::size_t mid = lo + (hi - lo) / 2;
@@ -263,11 +274,29 @@ inline void repair_unresolved_edges(const PolySoup& s, SoupMesh& out, ToMeshStat
                 hi = mid;
             }
         }
-        return lo < merged && geom::h_equal(out.vertices[lo], m);
+        if (lo < merged && geom::h_equal(out.vertices[lo], m)) return true;
+        // **修復で足した中点との照合**（線形。$O(k)$）。
+        // **同じ辺の 2 つの複製は、追加の【前】に照合するので当たりません。**
+        for (const geom::HPointD& q : added_mid) {
+            ++st.split.repair_collide_probes;
+            if (geom::h_equal(q, m)) return true;
+        }
+        return false;
     };
 
     // **長さを `vertices` にそろえます**（`SoupMesh` の不変条件）
     out.vertex_split_src.assign(out.vertices.size(), kNoEdgeSplit);
+#if defined(KRISITE_MUTATION_REPAIR_TIGHT_CAPACITY)
+    // **試験用**: 容量を長さに詰め、**最初の `push_back` で再確保を必ず起こす**。
+    //
+    // **`shrink_to_fit` は拘束力がありません**（`CLAUDE.md`「判定の結果を決め打ちで
+    // 出力しない」）。**縮んだことを確かめ、駄目なら複製と swap で詰め直します。**
+    // **それでも詰まらなければ計数を 0 のままにし、試験側が失敗させます。**
+    out.vertices.shrink_to_fit();
+    if (out.vertices.capacity() != out.vertices.size()) {
+        std::vector<geom::HPointD>(out.vertices).swap(out.vertices);
+    }
+#endif
     for (const auto& ue : st.split.unresolved_detail) {
         // **組が 2 つ作れていない辺は細分しても直りません**（4 枚が 1 つの中点に寄る）。
         // `unsplit_edges` に数えられた辺がこれに当たります
@@ -349,7 +378,11 @@ inline void repair_unresolved_edges(const PolySoup& s, SoupMesh& out, ToMeshStat
             ++st.split.repair_no_planes;
             continue;
         }
-        const geom::HPointD m = geom::edge_interior_point(*p1, *p2, *p3, *p4, V, W);
+        // **符号も一緒に受け取ります**（`DESIGN-phase5-vertex-level.md` §12.3.1）。
+        // **頂点を足すと `V` / `W` は無効になり得るので、ここで必要な値を確定させます。**
+        const geom::EdgePoint res = geom::edge_interior_point_ex(*p1, *p2, *p3, *p4, V, W);
+        const geom::HPointD m = res.p;
+        const auto sign_now = static_cast<std::int8_t>(res.sign);
         // ---- 同一視の検査（§9.4）----
         //
         // **見つかったら併合してはいけません。** 併合すると辺が分かれず修復になりません。
@@ -359,8 +392,13 @@ inline void repair_unresolved_edges(const PolySoup& s, SoupMesh& out, ToMeshStat
             continue;
         }
         // ---- 細分する ----
+        //
+        // **★ ここから下で `out.vertices` が再確保され得ます。**
+        // **`V` / `W` は【この行より下で読みません】**（`SPEC-phase5.md` §5.10.14.74 の 1）。
         const auto m1 = static_cast<std::uint32_t>(out.vertices.size());
         const auto m2 = static_cast<std::uint32_t>(out.vertices.size() + 1);
+        const geom::HPointD* const data_before = out.vertices.data();
+        const std::size_t cap_before = out.vertices.capacity();
         for (int rep = 0; rep < 2; ++rep) {
             out.vertices.push_back(m);
             // **3 つ組は 2 枚しか持てません**（$Q$ は `PlaneTable` に無い型）。
@@ -369,6 +407,8 @@ inline void repair_unresolved_edges(const PolySoup& s, SoupMesh& out, ToMeshStat
             out.vertex_merged.push_back(1);
             out.vertex_split_src.push_back(static_cast<std::uint32_t>(out.edge_split.size()));
         }
+        if (out.vertices.data() != data_before) ++st.split.repair_vertices_realloc;
+        added_mid.push_back(m);
         EdgeSplitSource src{};
         src.v = a;
         src.w = b;
@@ -376,7 +416,21 @@ inline void repair_unresolved_edges(const PolySoup& s, SoupMesh& out, ToMeshStat
         src.p2 = i2;
         src.p3 = i3;
         src.p4 = i4;
+#if defined(KRISITE_MUTATION_REPAIR_DANGLING_REF)
+        // **負の対照**（`DESIGN-phase5-vertex-level.md` §12.5）。**既定では存在しません。**
+        //
+        // **旧経路を復元します** — 追加の【後】に `V` / `W` を読みます。
+        // **問題の読み出しより【前】に、発火の証拠を出して流します**
+        // （異常終了の後の集計に頼らないため。`SPEC-phase5.md` §5.10.14.74 の 1）。
+        std::fprintf(
+            stderr, "NEGCTL realloc=%d cap_before=%zu cap_after=%zu added=2 site=to_mesh.hpp\n",
+            (out.vertices.data() != data_before) ? 1 : 0, cap_before, out.vertices.capacity());
+        std::fflush(stderr);
         src.sign = static_cast<std::int8_t>(-geom::side(*p4, V) * geom::side(*p3, W));
+#else
+        (void)cap_before;
+        src.sign = sign_now;
+#endif
         out.edge_split.push_back(src);
 
         for (std::size_t t : tris4) {
@@ -384,19 +438,21 @@ inline void repair_unresolved_edges(const PolySoup& s, SoupMesh& out, ToMeshStat
             const bool first =
                 (ue.pair_groups >= 2) && (t == ue.pair_tris[0] || t == ue.pair_tris[1]);
             const std::uint32_t mm = first ? m1 : m2;
-            mesh::Tri& tr = out.triangles[t];
+            // **参照では持ちません**（下で `out.triangles` に追加するため）。
+            // **値で取り出し、添字で書き戻します**（同じ罠を残さないため）
+            const mesh::Tri tri = out.triangles[t];
             int i = -1;
             for (int k = 0; k < 3; ++k) {
-                const std::uint32_t x = tr[static_cast<std::size_t>(k)];
-                const std::uint32_t y = tr[static_cast<std::size_t>((k + 1) % 3)];
+                const std::uint32_t x = tri[static_cast<std::size_t>(k)];
+                const std::uint32_t y = tri[static_cast<std::size_t>((k + 1) % 3)];
                 if ((x == a && y == b) || (x == b && y == a)) i = k;
             }
             if (i < 0) continue;
-            const std::uint32_t x = tr[static_cast<std::size_t>(i)];
-            const std::uint32_t y = tr[static_cast<std::size_t>((i + 1) % 3)];
-            const std::uint32_t z = tr[static_cast<std::size_t>((i + 2) % 3)];
+            const std::uint32_t x = tri[static_cast<std::size_t>(i)];
+            const std::uint32_t y = tri[static_cast<std::size_t>((i + 1) % 3)];
+            const std::uint32_t z = tri[static_cast<std::size_t>((i + 2) % 3)];
             // **向きを保ちます**: (x,y,z) → (x,m,z) と (m,y,z)
-            tr = mesh::Tri{x, mm, z};
+            out.triangles[t] = mesh::Tri{x, mm, z};
             out.triangles.push_back(mesh::Tri{mm, y, z});
             // **添えた配列も親から複製します**（洗い出しの結果、枚数に依る検査は 0 件）
             if (t < out.tri_src.size()) out.tri_src.push_back(out.tri_src[t]);
