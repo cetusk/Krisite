@@ -1385,10 +1385,20 @@ $ /tmp/cp1_probe --cols
 
 ### 13.11 CI のログは全文を残します
 
-**`head -30` を挟んでいたため、保存したログでは診断の先頭
-（`ERROR` の行と `READ of size`、フレーム #0〜#11）が落ちていました。**
+> **★ 訂正**（`SPEC-phase5.md` §5.10.14.74 の指摘 3。2026-09-14）。
+> **先頭が欠落した原因は `tail -40` であって、`head -30` ではありません。**
+> **`head -30` は後続版のもので、保存したログには一度も効いていません。**
+
+**切り方は 3 つの版で違います**（`git show <sha>:.github/workflows/ci.yml` で確認）。
+
+| 版 | 切り方 | 保存したログへの影響 |
+|---|---|---|
+| **`d5decf3`**（run `34817306931`） | **`tail -40`** | **先頭が欠落**（`ERROR` の行、`READ of size`、#0〜#11） |
+| `99d3884` | `sed … \| head -30` | **保存したログは無い**（この版の実行は `cancelled`） |
+| **`ca56b59`**（現在） | **`cat negctl.log`** | **全文** |
+
 **判定は実行環境の全文に対して行っているので合否は変わりません**が、
-**記録としては不完全**でした。`cat negctl.log` に直しました。
+**記録としては不完全**でした。**保存した原本は変更していません。**
 
 **手元に保存したもの**（`data/logs/ci/`）:
 
@@ -1396,3 +1406,124 @@ $ /tmp/cp1_probe --cols
 |---|---|
 | `negctl_34817306931.json` | 対象 SHA `d5decf3b…` / run `34817306931` / **ジョブ `103890667459` = `success`** / run 全体は `cancelled` |
 | `negctl_34817306931.log` | そのジョブの出力（**`head` で切られた版**。次の実行で全文を採り直します） |
+
+
+---
+
+## 14. 投入の準備（2026-09-14。**切り替えは所有者の判断待ち**）
+
+> **旧バイナリは上書きしません。** 投入候補は**別の名前**で置きます。
+
+### 14.1 投入候補の成果物
+
+| | |
+|---|---|
+| 置き場所 | **`build/thingi_cp1_o3.fixed`**（**待機中の `build/thingi_cp1_o3` は無傷**） |
+| ビルドの条件 | `zigcxx -std=c++20 -O3 -DNDEBUG -Iinclude -Itests -DKRISITE_COORD_BITS=21 tests/thingi10k/thingi_cp1.cpp -o build/thingi_cp1_o3.fixed -lpthread` |
+| 指紋 | `sha256 = 453959ee56d9f24f…` |
+| **列数**（`--cols`） | **184** |
+| 元のコミット | `ca56b59` |
+
+**待機中のバイナリ**（`9bf6652e…`、列数を報告しない旧版）**は触っていません。**
+
+### 14.2 manifest の作り方
+
+**`tests/tools/run_cp23.manifest` は追跡しません**（機械ごとの値）。
+**投入する版で、次の手順で作ります。**
+
+```
+BIN=build/thingi_cp1_o3.fixed
+{
+  printf 'bin=%%s\n' "$(sha256sum "$BIN" | cut -d' ' -f1)"
+  for b in cp2b cp3; do
+    printf '%%s keys=%%s n=%%s cols=%%s\n' "$b" \
+      "$(sort data/thingi10k/${b}_only.txt | sha256sum | cut -d' ' -f1)" \
+      "$(grep -c . data/thingi10k/${b}_only.txt)" \
+      "$("$BIN" --cols)"
+  done
+} > tests/tools/run_cp23.manifest
+```
+
+**いまの標本に対する値**（参考。**まだ manifest は作っていません**）:
+
+| 基準 | 値 |
+|---|---|
+| `bin` | `453959ee56d9f24f…`（`build/thingi_cp1_o3.fixed`） |
+| `cp2b keys` | `ac6e556abbd11b14…` （295 対） |
+| `cp3 keys` | `255e08b5e90662f8…` （295 対） |
+| `cols` | **184**（両方） |
+
+### 14.3 切り替えの手順（**所有者の承認が出てから**）
+
+1. **旧バイナリを退避**（消さない）: `mv build/thingi_cp1_o3 build/thingi_cp1_o3.pre_fix`
+2. 候補を投入名に: `mv build/thingi_cp1_o3.fixed build/thingi_cp1_o3`
+3. **manifest を作り直す**（§14.2。指紋が変わるため）
+4. **`bash tests/tools/run_cp23.sh`** で起動（前提が揃わなければ計算は始まりません）
+
+**3 を飛ばすと、起動前の照合で必ず止まります**（指紋が一致しないため）。**安全側です。**
+
+### 14.4 投入の前に確かめること
+
+| 確認 | 手段 |
+|---|---|
+| 結果ファイルが空（新規） | `cp2b_results.txt` が無い / `cp3_results.txt` が 0 バイト |
+| 標本 | 各 295 対、重複なし |
+| 設定 | ログ先頭の設定表（**修復の段 = 入れる**、検算 ON、深度 6、b=21） |
+| 版 | `--cols` が **184** を返し、manifest と一致 |
+
+
+---
+
+## 15. 最新版の CI の記録（2026-09-14）
+
+**先行版の成功を、最新版へ読み替えていません。** 版ごとに分けて書きます。
+
+| 対象 SHA | run ID | 負の対照のジョブ ID | ジョブの結果 | run 全体 |
+|---|---|---|---|---|
+| `d5decf3b18f4f7651367660f2c86c251fc09f966` | `34817306931` | `103890667459` | **success** | `cancelled` |
+| `9cec8dfc…` | `34818001418` | — | — | `cancelled` |
+| `99d3884d…` | `34818060435` | — | — | `cancelled` |
+| **`ca56b59c…`** | **`34818538329`** | **`103894623333`** | **success** | **記録時点で `in_progress`**（28 ジョブ中 25 success、`sanitizers` と `tsan` が実行中） |
+
+**保存先**: `data/logs/ci/`（`data/` は追跡外）。
+
+| ファイル | 中身 |
+|---|---|
+| `run_34818538329.json` | 対象 SHA・run・ジョブ別の結果 |
+| **`negctl_34818538329.log`** | **負の対照のジョブの全文**（502 行） |
+| `negctl_34817306931.json` / `.log` | 先行版（**`tail -40` で先頭が切れた版**） |
+
+### 15.1 最新版の診断（全文から抜粋）
+
+```
+NEGCTL realloc=1 cap_before=104 cap_after=208 added=2 site=to_mesh.hpp   ← 読み出しより前
+==2640==ERROR: AddressSanitizer: heap-use-after-free on address 0x525000024420
+READ of size 8 at 0x525000024420 thread T0
+    #0 … krisite::arith::mul<1ul, 3ul>(…)                    arith/ops.hpp
+    #1 … krisite::geom::side_value(Plane, HPoint)            geom/predicates.hpp
+    #2 … krisite::geom::side(Plane, HPoint)                  geom/predicates.hpp
+    #3 … krisite::csg::detail::repair_unresolved_edges(…)    csg/to_mesh.hpp   ← ★
+    #4 … krisite::csg::to_mesh(…)                            csg/to_mesh.hpp   ← ★
+    #5 … go                                                  tests/csg/test_repair_pinch.cpp:164
+0x525000024420 is located 4896 bytes inside of 9984-byte region
+freed by thread T0 here: …
+previously allocated by thread T0 here: …
+```
+
+**判定器を、保存したログに手元で掛け直しても `exit 0`**（受理）でした。
+
+| 確認 | 結果 |
+|---|---|
+| 判定器の自己検査 | **OK 5 / NG 0** |
+| 異常終了 | あり |
+| **読み出しのスタックに `to_mesh.hpp`** | **#3 と #4**（`repair_unresolved_edges` と `to_mesh`） |
+| 再確保の証拠 | **`NEGCTL realloc=1`**（診断より前の行に出ています） |
+| 同じ入力で修正版が成功 | **`不一致 0 件`** |
+
+> **★ `SUMMARY` が指すのは `arith/ops.hpp`（最内フレーム）です。**
+> **`SUMMARY` だけを見る判定では、本物の検出を取りこぼしていました。**
+
+### 15.2 まだ確認していないこと
+
+- **run `34818538329` の全体の結果**（`sanitizers` と `tsan` が実行中）
+- **`ca56b59` より後のコミットの CI**（この記録の後に押し上げた分）

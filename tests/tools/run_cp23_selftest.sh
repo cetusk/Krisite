@@ -99,6 +99,11 @@ check() {  # check <名前> <期待コード> <実際> <停止理由の語> <dir
     if [ "$cp3ok" = no ] && grep -q '^cp3$' "$d/calls.log" 2>/dev/null; then
         ok=0; note="${note} CP3 起動"
     fi
+    # **起動前に止まるべき構成では、CP2 も起動していないこと**を見ます
+    # （`no_run=yes` を渡した構成だけ。計算側が走ってから失敗する構成とは分けます）
+    if [ "${7:-}" = "no_run" ] && [ -s "$d/calls.log" ]; then
+        ok=0; note="${note} 本計算が起動"
+    fi
     if [ "$ok" = 1 ]; then pass=$((pass+1)); else fail=$((fail+1)); fi
     printf '| %s | %s | %s | %s |\n' "$name" "$want" "$got" \
         "$([ "$ok" = 1 ] && echo OK || echo "**NG**${note}")"
@@ -111,7 +116,7 @@ d=$(setup c1);  check "1 正常（新規）" 0 "$(run "$d")" "すべてが成功
 d=$(setup c2);  MOCK_MODE=crash; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
 check "2 CP2 が非零終了" 2 "$g" "計算側が異常終了" "$d" no
 d=$(setup c3);  rm -f "$d/build/mock"
-check "3 起動失敗（実行ファイル無し）" 2 "$(run "$d")" "実行ファイルがありません" "$d" no
+check "3 起動失敗（実行ファイル無し）" 2 "$(run "$d")" "実行ファイルがありません" "$d" no no_run
 # 4a: **結果ファイルだけ**を書けなくする（meta とログは書ける）
 d=$(setup c4);  : > "$d/data/thingi10k/cp2b_results.txt"; chmod a-w "$d/data/thingi10k/cp2b_results.txt"
 g=$(run "$d"); chmod u+w "$d/data/thingi10k/cp2b_results.txt"
@@ -120,23 +125,23 @@ check "4a 記録失敗（結果ファイルだけ）" 2 "$g" "計算側が異常
 d=$(setup c5);  mkdir -p "$d/data/thingi10k/cp2b_run.log"
 check "4b 記録失敗（tee のログ）" 2 "$(run "$d")" "記録（tee）が失敗" "$d" no
 d=$(setup c6);  sed -i 's/^bin=.*/bin=deadbeef/' "$d/manifest"
-check "5 指紋不一致" 2 "$(run "$d")" "承認済みの指紋と違います" "$d" no
+check "5 指紋不一致" 2 "$(run "$d")" "承認済みの指紋と違います" "$d" no no_run
 d=$(setup c7);  : > "$d/data/thingi10k/cp2b_only.txt"
-check "6a 件数不一致（空の一覧）" 2 "$(run "$d")" "件数が基準と違います" "$d" no
+check "6a 件数不一致（空の一覧）" 2 "$(run "$d")" "件数が基準と違います" "$d" no no_run
 d=$(setup c8);  printf '99x99\n' >> "$d/data/thingi10k/cp2b_only.txt"
-check "6b 件数不一致（非空。基準より 1 多い）" 2 "$(run "$d")" "件数が基準と違います" "$d" no
+check "6b 件数不一致（非空。基準より 1 多い）" 2 "$(run "$d")" "件数が基準と違います" "$d" no no_run
 d=$(setup c9);  sed -i '1s/.*/77x77/' "$d/data/thingi10k/cp2b_only.txt"
-check "6c 件数は同じでハッシュが違う" 2 "$(run "$d")" "ハッシュが基準と違います" "$d" no
+check "6c 件数は同じでハッシュが違う" 2 "$(run "$d")" "ハッシュが基準と違います" "$d" no no_run
 d=$(setup c10); printf '10x11 FAIL 10 10 0.1 0123456789abcdef 1 2\n' > "$d/data/thingi10k/cp2b_results.txt"
 write_meta "$d" cp2b
-check "7 既存 FAIL（再開。空白区切り）" 2 "$(run "$d" --resume)" "成功していない行" "$d" no
+check "7 既存 FAIL（再開。空白区切り）" 2 "$(run "$d" --resume)" "成功していない行" "$d" no no_run
 d=$(setup c11); MOCK_MODE=otherkey; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
 check "8 同件数だが別キー" 2 "$g" "予定キー集合と結果のキー集合が一致しません" "$d" no
 d=$(setup c12); printf '10x11 ok 10 10 0.1 0123456789abcdef 1 2\n' > "$d/data/thingi10k/cp2b_results.txt"
-check "9 新規なのに結果が残っている" 2 "$(run "$d")" "結果が残っています" "$d" no
+check "9 新規なのに結果が残っている" 2 "$(run "$d")" "結果が残っています" "$d" no no_run
 d=$(setup c13); printf '10x11 ok 10 10 0.1 0123456789abcdef 1 2\n' > "$d/data/thingi10k/cp2b_results.txt"
 write_meta "$d" cp2b; sed -i '1s/n=2/n=3/' "$d/data/thingi10k/cp2b_results.meta"
-check "10 再開の meta が不一致" 2 "$(run "$d" --resume)" "meta が一致しません" "$d" no
+check "10 再開の meta が不一致" 2 "$(run "$d" --resume)" "meta が一致しません" "$d" no no_run
 d=$(setup c14); printf '10x11 ok 10 10 0.1 0123456789abcdef 1 2\n' > "$d/data/thingi10k/cp2b_results.txt"
 write_meta "$d" cp2b; MOCK_MODE=resume; export MOCK_MODE; g=$(run "$d" --resume); unset MOCK_MODE
 check "11 正常な再開" 0 "$g" "すべてが成功" "$d" yes
@@ -149,7 +154,7 @@ check "13 予定は揃うが 1 件 FAIL" 2 "$g" "不正な行か、成功して�
 # 14: 再開の結果に、予定に無いキーが混ざっている
 d=$(setup c17); printf '55x55 ok 10 10 0.1 0123456789abcdef 1 2\n' > "$d/data/thingi10k/cp2b_results.txt"
 write_meta "$d" cp2b
-check "14 再開の結果に予定外のキー" 2 "$(run "$d" --resume)" "予定に無いキー" "$d" no
+check "14 再開の結果に予定外のキー" 2 "$(run "$d" --resume)" "予定に無いキー" "$d" no no_run
 
 # 15: 第 5 列（時間）が不正
 d=$(setup c18); MOCK_MODE=badtime; export MOCK_MODE; g=$(run "$d"); unset MOCK_MODE
@@ -165,10 +170,10 @@ d=$(setup c21)
 printf '10x11\tFAIL\t10\t10\t0.1\t0123456789abcdef\t1\t2\n' \
     > "$d/data/thingi10k/cp2b_results.txt"
 write_meta "$d" cp2b
-check "18 タブ区切りの FAIL（再開）" 2 "$(run "$d" --resume)" "成功していない行" "$d" no
+check "18 タブ区切りの FAIL（再開）" 2 "$(run "$d" --resume)" "成功していない行" "$d" no no_run
 # 19: 基準に cols が無い
 d=$(setup c22); sed -i 's/ cols=8//' "$d/manifest"
-check "19 基準に cols が無い" 2 "$(run "$d")" "cols= がありません" "$d" no
+check "19 基準に cols が無い" 2 "$(run "$d")" "cols= がありません" "$d" no no_run
 
 # ---- 現行の固定部 184 列での構成（`--cols` が報告する値）----
 export MOCK_COLS=184
@@ -180,17 +185,17 @@ check "22 途中欠落（184 列に足りない）" 2 "$g" "不正な行か、�
 unset MOCK_COLS
 # 23: バイナリの列数が基準と違う
 d=$(setup c26); sed -i 's/cols=8/cols=9/g' "$d/manifest"
-check "23 バイナリの列数が基準と違う" 2 "$(run "$d")" "が基準の cols" "$d" no
+check "23 バイナリの列数が基準と違う" 2 "$(run "$d")" "が基準の cols" "$d" no no_run
 # 24: cols が数でない（接頭辞だけの受理を防ぐ）
 d=$(setup c27); sed -i 's/cols=8/cols=8junk/g' "$d/manifest"
-check "24 cols が数でない" 2 "$(run "$d")" "cols が数ではありません" "$d" no
+check "24 cols が数でない" 2 "$(run "$d")" "cols が数ではありません" "$d" no no_run
 # 25: cols が範囲の外
 d=$(setup c28); sed -i 's/cols=8/cols=3/g' "$d/manifest"
-check "25 cols が範囲の外" 2 "$(run "$d")" "cols が範囲の外" "$d" no
+check "25 cols が範囲の外" 2 "$(run "$d")" "cols が範囲の外" "$d" no no_run
 
 # 26: **正しい列数を出すが、--cols が非零で終わる** → 起動前に拒否
 d=$(setup c29); MOCK_COLS_RC=7; export MOCK_COLS_RC; g=$(run "$d"); unset MOCK_COLS_RC
-check "26 --cols が非零終了（値は正しい）" 2 "$g" "--cols が異常終了" "$d" no
+check "26 --cols が非零終了（値は正しい）" 2 "$g" "--cols が異常終了" "$d" no no_run
 
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]
