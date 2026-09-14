@@ -431,7 +431,10 @@ jobs:
           ./build/tests/uaf_repair_pinch > negctl.log 2>&1
           rc=$?
           set -e
-          echo "--- 旧経路の出力（末尾）---"; tail -40 negctl.log
+          # **読み出しのスタックを丸ごと残します**（判定の根拠が後から読めるように）
+          echo "--- 診断（読み出しのスタック）---"
+          sed -n '/ERROR: AddressSanitizer/,/is located/p' negctl.log | head -30
+          echo "--- 再確保の証拠 ---"; grep 'NEGCTL' negctl.log | head -3
           test "$rc" -ne 0 || { echo "**旧経路が異常終了しませんでした**"; exit 1; }
           # **問題の【読み出しのスタック】だけを見ます。**
           # 解放側・確保側に名前があっても受理しません（判定器は自己検査つき）
