@@ -294,5 +294,55 @@ d=$(setup c44); g=$(run "$d" --resume --resume)
 check "41 同じ旗の重複" 2 "$g" "引数が重複" "$d" no no_run
 chk2 "41b 何も作られていない" 0 "$(untouched "$d")"
 
+# ---- 既存ファイルが【ある】状態での保存（36〜41 は「無い状態での未作成」）----
+#
+# **再開できる状態を両 CP に作り、拒否される指定と併用の両順序で、
+#   既存の内容が 1 バイトも変わらないことを確かめます。**
+state_sha() {  # state_sha <dir> → 6 ファイル + 起動記録を 1 つのハッシュに畳む
+    local d="$1" f acc="" h
+    for b in cp2b cp3; do
+        for f in _results.meta _results.txt _run.log; do
+            if [ -e "$d/data/thingi10k/${b}${f}" ]; then
+                h="$(sha256sum < "$d/data/thingi10k/${b}${f}")"; h="${h%% *}"
+            else
+                h="-"
+            fi
+            acc="${acc}${b}${f}=${h};"
+        done
+    done
+    if [ -e "$d/calls.log" ]; then h="$(sha256sum < "$d/calls.log")"; h="${h%% *}"; else h="-"; fi
+    acc="${acc}calls=${h}"
+    h="$(printf '%s' "$acc" | sha256sum)"
+    printf '%s' "${h:0:16}"
+}
+setup_existing() {  # setup_existing <名前> → 再開できる状態の dir
+    local d; d=$(setup "$1")
+    local cols="${MOCK_COLS:-8}"
+    for b in cp2b cp3; do
+        # **1 対だけ済んだ状態**（予定キーの部分集合で、すべて ok）
+        local row="10x11 ok 10 10 0.1 0123456789abcdef"; local i=7
+        while [ "$i" -le "$cols" ]; do row="$row $i"; i=$((i+1)); done
+        printf '%s\n' "$row" > "$d/data/thingi10k/${b}_results.txt"
+        write_meta "$d" "$b"
+        printf '既存のログ\n' > "$d/data/thingi10k/${b}_run.log"
+    done
+    echo "$d"
+}
+
+for spec in "--check-only --resume|0|照合だけ行いました" \
+            "--resume --check-only|0|照合だけ行いました" \
+            "--check-onyl|2|知らない引数" \
+            "--check-only extra|2|知らない引数" \
+            "--resume --resume|2|引数が重複" \
+            "--check-only|2|結果が残っています"; do
+    args="${spec%%|*}"; rest="${spec#*|}"; want="${rest%%|*}"; why="${rest#*|}"
+    d=$(setup_existing "e_$(echo "$args" | tr -cd 'a-z-' | head -c 12)_${want}")
+    before="$(state_sha "$d")"
+    g=$(run "$d" $args)
+    after="$(state_sha "$d")"
+    check "42 既存あり: ${args}" "$want" "$g" "$why" "$d" no
+    chk2 "42b 既存の内容が変わらない: ${args}" "$before" "$after"
+done
+
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]
