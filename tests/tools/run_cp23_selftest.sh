@@ -208,5 +208,47 @@ d=$(setup c31); MOCK_MODE=lockres; export MOCK_MODE; g=$(run "$d"); unset MOCK_M
 chmod 644 "$d/data/thingi10k/"*_results.txt 2>/dev/null
 check "28 結果を読めない（完了の検査）" 2 "$g" "読めません" "$d" no
 
+# ---- 前処理のコマンドを【正常に出力してから非零で終わる】形に差し替える ----
+#
+# **読み取り可否の検査では止まらない経路**を突きます
+# （`SPEC-phase5.md` §5.10.14.74 の指摘 3）。
+inject() {  # inject <dir> <コマンド名> [失敗させる回数。既定は毎回]
+    local d="$1" cmd="$2" nth="${3:-0}"
+    mkdir -p "$d/binover"
+    cat > "$d/binover/$cmd" <<INJ
+#!/bin/bash
+# **正しい出力を出してから非零で終わります**
+real="\$(PATH=/usr/bin:/bin command -v $cmd)"
+"\$real" "\$@"
+n=0
+[ -f "$d/binover/.n" ] && n="\$(cat "$d/binover/.n")"
+n=\$((n+1)); echo "\$n" > "$d/binover/.n"
+if [ "$nth" = 0 ] || [ "\$n" = "$nth" ]; then
+    echo "模擬: $cmd を非零で終わらせます（\$n 回目）" >&2
+    exit 7
+fi
+exit 0
+INJ
+    chmod +x "$d/binover/$cmd"
+}
+run_inj() {  # run_inj <dir> [引数...]
+    ( cd "$1" && PATH="$1/binover:$PATH" KRI_ROOT="$1" KRI_BIN="$1/build/mock" \
+        KRI_MANIFEST="$1/manifest" KRI_ARGS="0" KRI_BASES="cp2b cp3" \
+        MOCK_CALLS="$1/calls.log" MOCK_COLS="${MOCK_COLS:-8}" \
+        bash "$RUN" "${@:2}" > "$1/out.txt" 2>&1 )
+    echo $?
+}
+
+d=$(setup c32); inject "$d" sort
+check "29 sort が正常出力の後に非零" 2 "$(run_inj "$d")" "" "$d" no no_run
+d=$(setup c33); inject "$d" uniq
+check "30 uniq が正常出力の後に非零" 2 "$(run_inj "$d")" "重複検査に失敗" "$d" no no_run
+d=$(setup c34); inject "$d" sha256sum
+check "31 sha256sum が正常出力の後に非零" 2 "$(run_inj "$d")" "" "$d" no no_run
+d=$(setup c35); inject "$d" cmp
+check "32 cmp が非零（集合の比較）" 2 "$(run_inj "$d")" "" "$d" no
+d=$(setup c36); inject "$d" awk
+check "33 awk が正常出力の後に非零" 2 "$(run_inj "$d")" "" "$d" no
+
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]

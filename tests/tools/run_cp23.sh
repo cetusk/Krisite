@@ -42,24 +42,40 @@ RESUME=0
 TDIR="$(mktemp -d)"
 trap 'rm -rf "$TDIR"' EXIT
 
-sorted_of() {  # sorted_of <入力> <出力>
-    [ -r "$1" ] || fail "読めません: $1"
-    sort "$1" > "$2" || fail "並べ替えに失敗しました: $1"
+# **★ コマンド置換の中の `fail` は、子シェルだけを終了します。**
+# **親は空の出力を受け取り「重複なし」として進みます。**
+# **だから補助は【ファイルに書いて状態を返す】形にし、呼び出し側で状態を先に見ます。**
+sorted_to() {  # sorted_to <入力> <出力>
+    [ -r "$1" ] || return 3
+    sort "$1" > "$2" || return 1
 }
-sha_of() {  # sha_of <ファイル> → ハッシュ
-    local h
-    h="$(sha256sum < "$1")" || fail "ハッシュを作れません: $1"
-    printf '%s' "${h%% *}"
+sha_to() {  # sha_to <入力> <出力（ハッシュ 1 行）>
+    [ -r "$1" ] || return 3
+    sha256sum < "$1" > "$2" || return 1
 }
-dups_of() {  # dups_of <整列済み> → 重複行（空なら重複なし）
-    local d
-    d="$(uniq -d < "$1")" || fail "重複の検査に失敗しました: $1"
-    printf '%s' "$d"
+dups_to() {  # dups_to <整列済み> <出力（重複行）>
+    [ -r "$1" ] || return 3
+    uniq -d < "$1" > "$2" || return 1
 }
-keys_of_results() {  # keys_of_results <結果> <出力（整列済み）>
-    [ -r "$1" ] || fail "読めません: $1"
-    awk '{print $1}' "$1" > "$TDIR/k.raw" || fail "キーを取り出せません: $1"
-    sort "$TDIR/k.raw" > "$2" || fail "キーの並べ替えに失敗しました: $1"
+keys_to() {  # keys_to <結果> <出力（整列済みキー）>
+    [ -r "$1" ] || return 3
+    awk '{print $1}' "$1" > "$TDIR/k.raw" || return 1
+    sort "$TDIR/k.raw" > "$2" || return 1
+}
+chk_rc() {  # chk_rc <状態> <読めないときの文> <失敗したときの文>
+    case "$1" in
+        0) return 0 ;;
+        3) fail "$2" ;;
+        *) fail "$3" ;;
+    esac
+}
+read_sha() {  # read_sha <ハッシュのファイル> → 標準出力にハッシュ
+    local h rest
+    read -r h rest < "$1" || return 1
+    case "$h" in
+        *[!0-9a-f]*|'') return 1 ;;
+    esac
+    printf '%s' "$h"
 }
 
 meta_of() { printf 'data/thingi10k/%s_results.meta' "$1"; }
@@ -101,7 +117,9 @@ check_rows() {  # check_rows <ファイル> <require_ok: 0/1> <cols>
 [ -f "$MANIFEST" ] || fail "承認済みの基準がありません: $MANIFEST"
 
 # **実際に起動するバイナリと、承認済みのハッシュを直接照合します**
-bin_now="$(sha256sum "$BIN" | cut -d' ' -f1)"
+sha_to "$BIN" "$TDIR/bin.sha"
+chk_rc $? "実行ファイルを読めません: $BIN" "指紋を作れません: $BIN"
+bin_now="$(read_sha "$TDIR/bin.sha")" || fail "指紋を読めません: $BIN"
 bin_want="$(awk -F= '$1=="bin"{print $2}' "$MANIFEST")"
 [ -n "$bin_want" ] || fail "基準に bin= がありません: $MANIFEST"
 [ "$bin_now" = "$bin_want" ] || fail "起動するバイナリが承認済みの指紋と違います（$BIN）"
@@ -127,9 +145,12 @@ for base in $BASES; do
     only="$(only_of "$base")"; list="$(list_of "$base")"
     [ -f "$list" ] || fail "入力の一覧がありません: $list"
     [ -f "$only" ] || fail "標本の一覧がありません: $only"
-    sorted_of "$only" "$TDIR/only.sorted"
+    sorted_to "$only" "$TDIR/only.sorted"
+    chk_rc $? "${base}: 標本を読めません: $only" "${base}: 標本の並べ替えに失敗しました: $only"
     n_now="$(grep -c . "$TDIR/only.sorted")" || n_now=0
-    keys_now="$(sha_of "$TDIR/only.sorted")"
+    sha_to "$TDIR/only.sorted" "$TDIR/only.sha"
+    chk_rc $? "${base}: 標本を読めません: $only" "${base}: 標本のハッシュを作れません: $only"
+    keys_now="$(read_sha "$TDIR/only.sha")" || fail "${base}: 標本のハッシュを読めません"
     line="$(awk -v b="$base" '$1==b{print}' "$MANIFEST")"
     [ -n "$line" ] || fail "基準に ${base} の行がありません: $MANIFEST"
     keys_want="$(echo "$line" | sed -n 's/.*keys=\([0-9a-f]*\).*/\1/p')"
@@ -148,7 +169,9 @@ for base in $BASES; do
     [ "$keys_now" = "$keys_want" ] || fail "${base}: 標本のハッシュが基準と違います"
     [ "$bin_cols" = "$cols_want" ] \
         || fail "${base}: バイナリの列数（${bin_cols}）が基準の cols（${cols_want}）と違います"
-    [ -z "$(dups_of "$TDIR/only.sorted")" ] || fail "${base}: 標本にキーの重複があります"
+    dups_to "$TDIR/only.sorted" "$TDIR/only.dups"
+    chk_rc $? "${base}: 標本を読めません" "${base}: 標本の重複検査に失敗しました"
+    [ ! -s "$TDIR/only.dups" ] || fail "${base}: 標本にキーの重複があります"
 
     res="$(res_of "$base")"; meta="$(meta_of "$base")"
     # **開始時刻は履歴です。一致判定には使いません**
@@ -162,15 +185,17 @@ for base in $BASES; do
         # **文字列 ' FAIL ' の検索では、タブ区切りの FAIL がすり抜けます**
         check_rows "$res" 1 "$cols_want" \
             || fail "${base}: 既存の結果に不正な行か、成功していない行があります"
-        keys_of_results "$res" "$TDIR/res.sorted"
-        [ -z "$(dups_of "$TDIR/res.sorted")" ] \
-            || fail "${base}: 既存の結果にキーの重複があります"
+        keys_to "$res" "$TDIR/res.sorted"
+        chk_rc $? "${base}: 既存の結果を読めません" "${base}: 既存の結果のキーを取り出せません"
+        dups_to "$TDIR/res.sorted" "$TDIR/res.dups"
+        chk_rc $? "${base}: 既存の結果を読めません" "${base}: 既存の結果の重複検査に失敗しました"
+        [ ! -s "$TDIR/res.dups" ] || fail "${base}: 既存の結果にキーの重複があります"
         # **再開の結果は、予定キー集合の【部分集合】でなければなりません**
         uniq < "$TDIR/res.sorted" > "$TDIR/res.uniq" || fail "${base}: 既存の結果を読めません"
         uniq < "$TDIR/only.sorted" > "$TDIR/only.uniq" || fail "${base}: 標本を読めません"
-        extra="$(comm -23 "$TDIR/res.uniq" "$TDIR/only.uniq")" \
+        comm -23 "$TDIR/res.uniq" "$TDIR/only.uniq" > "$TDIR/extra" \
             || fail "${base}: 集合の比較に失敗しました"
-        [ -z "$extra" ] || fail "${base}: 既存の結果に、予定に無いキーがあります"
+        [ ! -s "$TDIR/extra" ] || fail "${base}: 既存の結果に、予定に無いキーがあります"
     else
         # **HEAD と b は記録しますが、バイナリのビルド元の証明ではありません**
         printf '%s\nhead=%s\nb=%s\nstarted=%s\n' "$want" \
@@ -201,9 +226,13 @@ for base in $BASES; do
     [ -r "$res" ] || fail "${base}: 結果を読めません: $res"
     check_rows "$res" 1 "$cols_of_base" \
         || fail "${base}: 結果に不正な行か、成功していない行があります"
-    sorted_of "$only" "$TDIR/only.sorted"
-    keys_of_results "$res" "$TDIR/res.sorted"
-    [ -z "$(dups_of "$TDIR/res.sorted")" ] || fail "${base}: 結果にキーの重複"
+    sorted_to "$only" "$TDIR/only.sorted"
+    chk_rc $? "${base}: 標本を読めません" "${base}: 標本の並べ替えに失敗しました"
+    keys_to "$res" "$TDIR/res.sorted"
+    chk_rc $? "${base}: 結果を読めません" "${base}: 結果のキーを取り出せません"
+    dups_to "$TDIR/res.sorted" "$TDIR/res.dups"
+    chk_rc $? "${base}: 結果を読めません" "${base}: 結果の重複検査に失敗しました"
+    [ ! -s "$TDIR/res.dups" ] || fail "${base}: 結果にキーの重複"
     # **`cmp` の終了状態は 0（一致）/ 1（不一致）/ 2 以上（エラー）。**
     # **エラーを「一致」と取り違えないよう、3 つを分けます**
     cmp -s "$TDIR/only.sorted" "$TDIR/res.sorted"

@@ -24,8 +24,8 @@ BASES="${*:-cp2b cp3}"
 [ "$FORCE" = 1 ] || [ ! -e "$OUT" ] || fail "既に存在します（置き換えるなら --force）: $OUT"
 
 # **列数の取得は、終了状態を先に見ます**
-COLERR="$(mktemp)"; TMP="$(mktemp)"; SORTED=""
-trap 'rm -f "$COLERR" "$TMP" "$SORTED"' EXIT
+COLERR="$(mktemp)"; TMP="$(mktemp)"; SORTED="$(mktemp)"; SHAF=""; DUPF=""
+trap 'rm -f "$COLERR" "$TMP" "$SORTED" "$SHAF" "$DUPF"' EXIT
 cols="$("$BIN" --cols 2>"$COLERR")"
 rc=$?
 if [ "$rc" != 0 ]; then
@@ -40,11 +40,19 @@ case "${cols:-x}" in ''|*[!0-9]*) fail "--cols が数を返しません（${cols
 # **`sort "$f" | sha256sum` の形は、`sort` が失敗しても成功を返します**
 # （パイプの終了状態は最後のコマンドのもの）。**空入力のハッシュが返ります。**
 # **「重複なし」「差分なし」と取り違えないために、段ごとに確かめます。**
-SORTED="$(mktemp)"
-trap 'rm -f "$COLERR" "$TMP" "$SORTED"' EXIT
+# **★ コマンド置換の中で失敗しても、親には空が返るだけです。**
+# **ファイルに書いて状態を返し、呼び出し側で状態を先に見ます。**
+read_sha() {  # read_sha <ハッシュのファイル>
+    local h rest
+    read -r h rest < "$1" || return 1
+    case "$h" in *[!0-9a-f]*|'') return 1 ;; esac
+    printf '%s' "$h"
+}
+SHAF="$(mktemp)"; DUPF="$(mktemp)"
+trap 'rm -f "$COLERR" "$TMP" "$SORTED" "$SHAF" "$DUPF"' EXIT
 
-bin_sha="$(sha256sum "$BIN")" || fail "指紋を作れません: $BIN"
-bin_sha="${bin_sha%% *}"
+sha256sum "$BIN" > "$SHAF" || fail "指紋を作れません: $BIN"
+bin_sha="$(read_sha "$SHAF")" || fail "指紋を読めません: $BIN"
 printf 'bin=%s\n' "$bin_sha" >> "$TMP" || fail "一時ファイルに書けません"
 for b in $BASES; do
     only="data/thingi10k/${b}_only.txt"
@@ -53,10 +61,10 @@ for b in $BASES; do
     sort "$only" > "$SORTED" || fail "標本の並べ替えに失敗しました: $only"
     n="$(grep -c . "$SORTED")" || n=0
     [ "$n" -gt 0 ] || fail "標本の一覧が空です: $only"
-    dups="$(uniq -d < "$SORTED")" || fail "重複の検査に失敗しました: $only"
-    [ -z "$dups" ] || fail "標本にキーの重複があります: $only"
-    keys="$(sha256sum < "$SORTED")" || fail "ハッシュを作れません: $only"
-    keys="${keys%% *}"
+    uniq -d < "$SORTED" > "$DUPF" || fail "重複の検査に失敗しました: $only"
+    [ ! -s "$DUPF" ] || fail "標本にキーの重複があります: $only"
+    sha256sum < "$SORTED" > "$SHAF" || fail "ハッシュを作れません: $only"
+    keys="$(read_sha "$SHAF")" || fail "ハッシュを読めません: $only"
     printf '%s keys=%s n=%s cols=%s\n' "$b" "$keys" "$n" "$cols" >> "$TMP" \
         || fail "一時ファイルに書けません"
 done
@@ -73,7 +81,6 @@ done
 # **ここまで一度も `$OUT` に触れていません。** 失敗していれば既存の基準はそのままです
 mv "$TMP" "$OUT" || fail "確定できません: $OUT"
 TMP=""
-trap 'rm -f "$COLERR" "$SORTED"' EXIT
 chmod 0644 "$OUT"
 printf '作りました: %s\n' "$OUT"
 cat "$OUT"

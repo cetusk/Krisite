@@ -1459,12 +1459,20 @@ bash tests/tools/make_manifest.sh build/thingi_cp1_o3.fixed
 
 ### 14.3 投入の手順（**移動しません**。所有者の承認が出てから）
 
-```
-# 1. 基準を作る（候補を名指し。旧バイナリはそのまま）
-bash tests/tools/make_manifest.sh build/thingi_cp1_o3.fixed
+> **★ 訂正**（`SPEC-phase5.md` §5.10.14.74。2026-09-14）。
+> **基準は【投入の直前に作りません】。事前に作り、照合して固定します**（§17）。
+> 下の「1.」は**事前準備の段**で、**合図の後に走らせるものではありません。**
 
-# 2. 候補を名指しして回す
+```
+# 1. 【事前に】基準の候補を作り、照合して固定する（§17）
+bash tests/tools/make_manifest.sh build/thingi_cp1_o3.fixed \
+    tests/tools/run_cp23.manifest.candidate
+
+# 2. 合図の後: 固定した基準がそのまま在ることを確かめ、候補を名指しして回す
 KRI_BIN=build/thingi_cp1_o3.fixed bash tests/tools/run_cp23.sh
+
+# 再開するとき（**同じ候補を名指しします**）
+KRI_BIN=build/thingi_cp1_o3.fixed bash tests/tools/run_cp23.sh --resume
 ```
 
 **旧バイナリ（`build/thingi_cp1_o3`、`9bf6652e…`）はそのまま残ります。**
@@ -1570,7 +1578,7 @@ previously allocated by thread T0 here: …
 | 引数列 | `0 6 8 1 0 1 1 0 0 16 2 1 0 1`（**修復の段 = 入れる**、§5.5 の検算 ON） |
 | 標本 | `cp2b_only.txt` 295 対 / `cp3_only.txt` 295 対（**層 1→5 の順**） |
 | 出力先 | `cp2b_results.txt` / `cp3_results.txt`（**分けます**）、ログは `*_run.log` |
-| manifest | **まだ作っていません**（投入の直前に `make_manifest.sh` で作ります） |
+| manifest | **候補を作成済み**（`run_cp23.manifest.candidate`）。**承認の後に `run_cp23.manifest` として固定**します（§17） |
 
 ### 16.2 所要の見積もりと、その由来
 
@@ -1618,10 +1626,9 @@ previously allocated by thread T0 here: …
 | **1 件でも `FAIL` が出たら** | **完了の検査で止まり、CP3 は起動しません。再開も拒否します** |
 | 層 4 で区切る | CP2 は 1.4 h ぶん、CP3 は 1.3 h ぶんが残ります（層 5 が時間の大半） |
 
-> **★ 確認をお願いします。** **`FAIL` が 1 件出たら CP3 を始めない**設計にしています
-> （「異常なら次段を起動しない」に従ったもの）。
-> **これは「CP2 で 1 件失敗したら、その日は CP3 を回さない」ことを意味します。**
-> **記録だけして CP3 へ進み、最後に非零で終える形も作れます。どちらが良いか指示をください。**
+> **★ 決着**（`SPEC-phase5.md` §5.10.14.74。2026-09-14）。**現行方針を維持します。**
+> **意味は「その日は実行禁止」ではなく、【失敗を無視して次段へ進めない】**ことです。
+> **同じ連鎖の中で CP3 を起動しない**、という限定です。
 
 ### 16.6 合図の後にすること（軽量な最終照合）
 
@@ -1667,3 +1674,29 @@ previously allocated by thread T0 here: …
 > ```
 >
 > **露出の監査（`refs/pull/*` まで見る）と復旧のための作業集合**です。**消しません。**
+
+
+---
+
+## 17. 基準（manifest）の候補（2026-09-14。**承認の後に固定します**）
+
+**既存の承認基準を上書きしていません**（`run_cp23.manifest` は**まだ存在しません**）。
+**別名の候補**として作りました。
+
+| 項目 | 値 |
+|---|---|
+| ファイル | `tests/tools/run_cp23.manifest.candidate`（**追跡しません**） |
+| **バイナリ** | `build/thingi_cp1_o3.fixed` |
+| **完全な SHA256** | `453959ee56d9f24fcdb04c469e6f318ba725edbdb9f6ffa0100b4b655ed00988` |
+| **CP2 の標本 SHA** | `ac6e556abbd11b140306a937b3946669c3c2e7509f6848b7c355aac369418b4e`（**295 対**） |
+| **CP3 の標本 SHA** | `255e08b5e90662f88e85576fda64c0bb87bb8324c4b9e313e8949eb9b7c783cf`（**295 対**） |
+| `cols` | **184**（両方） |
+| **実行の引数** | `0 6 8 1 0 1 1 0 0 16 2 1 0 1` |
+| **出力先** | `data/thingi10k/cp2b_results.txt` / `cp3_results.txt`（ログは `*_run.log`、meta は `*_results.meta`） |
+
+**照合**: 候補の 5 つの値を、**Python の `hashlib` で作り直して**突き合わせました（別経路）。
+**すべて一致**しました。
+
+> **生成しただけでは承認済みにしません。**
+> **承認をいただいてから `tests/tools/run_cp23.manifest` として固定**します。
+> **固定の後に対象を変えたら、準備完了を撤回して影響範囲を見直します。**

@@ -59,7 +59,7 @@ claude_sandbox.bat
 codex_sandbox.bat
 
 # ---- 投入するバイナリの指紋（機械ごとの値。公開物ではない）------------------
-/tests/tools/run_cp23.manifest
+/tests/tools/run_cp23.manifest*
 
 # ---- 文書を直す一度きりの改訂スクリプト ------------------------------------
 # 実装とは無関係なので追跡しない。使い方は tools/README.md（これも追跡しない）。

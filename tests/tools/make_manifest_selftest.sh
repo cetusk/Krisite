@@ -86,5 +86,33 @@ after="$(sha256sum "$d/keep.manifest" | cut -d' ' -f1)"
 chk "11 標本を読めない" 2 "$rc"
 chk "11b そのとき既存の基準は変わらない" "$before" "$after"
 
+# ---- 前処理のコマンドを【正常に出力してから非零で終わる】形に差し替える ----
+inject() {  # inject <dir> <コマンド名>
+    local d="$1" cmd="$2"
+    mkdir -p "$d/binover"
+    cat > "$d/binover/$cmd" <<INJ
+#!/bin/bash
+real="\$(PATH=/usr/bin:/bin command -v $cmd)"
+"\$real" "\$@"
+echo "模擬: $cmd を非零で終わらせます" >&2
+exit 7
+INJ
+    chmod +x "$d/binover/$cmd"
+}
+inj_mk() {  # inj_mk <dir> <出力先>
+    ( cd "$1" && PATH="$1/binover:$PATH" bash "$MK" --force build/cand "$2" > log 2>&1 )
+    echo $?
+}
+for c in sort uniq sha256sum; do
+    d=$(setup "mi_$c")
+    ( cd "$d" && bash "$MK" build/cand keep.manifest > /dev/null 2>&1 ) || true
+    before="$(sha256sum "$d/keep.manifest" | cut -d' ' -f1)"
+    inject "$d" "$c"
+    rc=$(inj_mk "$d" keep.manifest)
+    after="$(sha256sum "$d/keep.manifest" | cut -d' ' -f1)"
+    chk "12 $c が正常出力の後に非零" 2 "$rc"
+    chk "12b そのとき既存の基準は変わらない（$c）" "$before" "$after"
+done
+
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]
