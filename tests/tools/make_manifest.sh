@@ -72,9 +72,10 @@ done
 # **確定の前に、作ったものを読み直して検査します**
 grep -q '^bin=[0-9a-f]\{64\}$' "$TMP" || fail "作った基準の bin= が不正です"
 for b in $BASES; do
-    line="$(awk -v b="$b" '$1==b{print}' "$TMP")"
+    line="$(awk -v b="$b" '$1==b{print}' "$TMP")" \
+        || fail "作った基準を読めません（${b}）"
     [ -n "$line" ] || fail "作った基準に ${b} の行がありません"
-    echo "$line" | grep -qE "^${b} keys=[0-9a-f]{64} n=[0-9]+ cols=[0-9]+$" \
+    printf '%s\n' "$line" | grep -qE "^${b} keys=[0-9a-f]{64} n=[0-9]+ cols=[0-9]+$" \
         || fail "作った基準の ${b} の行が不正です: $line"
 done
 

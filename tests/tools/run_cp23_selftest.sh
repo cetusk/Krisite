@@ -212,22 +212,22 @@ check "28 結果を読めない（完了の検査）" 2 "$g" "読めません" "
 #
 # **読み取り可否の検査では止まらない経路**を突きます
 # （`SPEC-phase5.md` §5.10.14.74 の指摘 3）。
-inject() {  # inject <dir> <コマンド名> [失敗させる回数。既定は毎回]
-    local d="$1" cmd="$2" nth="${3:-0}"
+inject() {  # inject <dir> <コマンド名> [引数に含まれる語。省略すると毎回]
+    local d="$1" cmd="$2" pat="${3:-}"
     mkdir -p "$d/binover"
     cat > "$d/binover/$cmd" <<INJ
 #!/bin/bash
-# **正しい出力を出してから非零で終わります**
+# **正しい出力を出してから非零で終わります。**
+# **引数の語で選べます** — どの呼び出しを壊したかを試験ごとに限定するため
 real="\$(PATH=/usr/bin:/bin command -v $cmd)"
 "\$real" "\$@"
-n=0
-[ -f "$d/binover/.n" ] && n="\$(cat "$d/binover/.n")"
-n=\$((n+1)); echo "\$n" > "$d/binover/.n"
-if [ "$nth" = 0 ] || [ "\$n" = "$nth" ]; then
-    echo "模擬: $cmd を非零で終わらせます（\$n 回目）" >&2
+rc=\$?
+pat='$pat'
+if [ -z "\$pat" ] || printf '%s' "\$*" | grep -qF -- "\$pat"; then
+    echo "模擬: $cmd を非零で終わらせます（引数: \$*）" >&2
     exit 7
 fi
-exit 0
+exit "\$rc"
 INJ
     chmod +x "$d/binover/$cmd"
 }
@@ -240,15 +240,32 @@ run_inj() {  # run_inj <dir> [引数...]
 }
 
 d=$(setup c32); inject "$d" sort
-check "29 sort が正常出力の後に非零" 2 "$(run_inj "$d")" "" "$d" no no_run
+check "29 sort が正常出力の後に非零" 2 "$(run_inj "$d")" "並べ替えに失敗" "$d" no no_run
 d=$(setup c33); inject "$d" uniq
 check "30 uniq が正常出力の後に非零" 2 "$(run_inj "$d")" "重複検査に失敗" "$d" no no_run
 d=$(setup c34); inject "$d" sha256sum
-check "31 sha256sum が正常出力の後に非零" 2 "$(run_inj "$d")" "" "$d" no no_run
+check "31 sha256sum が正常出力の後に非零" 2 "$(run_inj "$d")" "指紋を作れません" "$d" no no_run
 d=$(setup c35); inject "$d" cmp
-check "32 cmp が非零（集合の比較）" 2 "$(run_inj "$d")" "" "$d" no
-d=$(setup c36); inject "$d" awk
-check "33 awk が正常出力の後に非零" 2 "$(run_inj "$d")" "" "$d" no
+check "32 cmp が非零（集合の比較）" 2 "$(run_inj "$d")" "キー集合の比較に失敗" "$d" no
+# 33: **キーの取り出しだけ**を失敗させる（`check_rows` の awk は壊さない）
+d=$(setup c36); inject "$d" awk '{print $1}'
+check "33 キーの取り出しだけ非零" 2 "$(run_inj "$d")" "キーを取り出せません" "$d" no
+# 34: **基準の解析だけ**を失敗させる（起動前に止まり、CP2 も起動しない）
+d=$(setup c37); inject "$d" awk '$1=="bin"'
+check "34 基準の解析だけ非零" 2 "$(run_inj "$d")" "基準を読めません" "$d" no no_run
+# 35: **CP 別の基準の解析だけ**を失敗させる
+d=$(setup c38); inject "$d" awk '$1==b'
+check "35 CP 別の基準の解析だけ非零" 2 "$(run_inj "$d")" "基準を読めません" "$d" no no_run
+
+# 36: **--check-only は照合だけで、計算も meta の作成もしない**
+d=$(setup c39); g=$(run "$d" --check-only)
+started=$([ -s "$d/calls.log" ] && echo 1 || echo 0)
+meta=$([ -e "$d/data/thingi10k/cp2b_results.meta" ] && echo 1 || echo 0)
+check "36 --check-only（照合のみ）" 0 "$g" "照合だけ行いました" "$d" no
+chk2() { if [ "$2" = "$3" ]; then pass=$((pass+1)); r=OK; else fail=$((fail+1)); r='**NG**'; fi
+         printf '| %s | %s | %s | %s |\n' "$1" "$2" "$3" "$r"; }
+chk2 "36b そのとき本計算は起動していない" 0 "$started"
+chk2 "36c そのとき meta も作られていない" 0 "$meta"
 
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]

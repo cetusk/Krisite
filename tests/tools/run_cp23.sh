@@ -33,7 +33,13 @@ MANIFEST="${KRI_MANIFEST:-tests/tools/run_cp23.manifest}"
 ARGS="${KRI_ARGS:-0 6 8 1 0 1 1 0 0 16 2 1 0 1}"
 BASES="${KRI_BASES:-cp2b cp3}"
 RESUME=0
-[ "${1:-}" = "--resume" ] && RESUME=1
+CHECK_ONLY=0
+case "${1:-}" in
+    --resume) RESUME=1 ;;
+    # **起動前の照合だけを行い、計算も meta の作成もしません。**
+    # **「照合できるか」を確かめるのに、実データを 1 秒も回さないため**
+    --check-only) CHECK_ONLY=1 ;;
+esac
 
 # **前処理は一時ファイルに落とし、【各段の終了状態】を見ます。**
 # **`sort "$f" | sha256sum` の形は、`sort` が失敗しても成功を返します**
@@ -120,7 +126,8 @@ check_rows() {  # check_rows <ファイル> <require_ok: 0/1> <cols>
 sha_to "$BIN" "$TDIR/bin.sha"
 chk_rc $? "実行ファイルを読めません: $BIN" "指紋を作れません: $BIN"
 bin_now="$(read_sha "$TDIR/bin.sha")" || fail "指紋を読めません: $BIN"
-bin_want="$(awk -F= '$1=="bin"{print $2}' "$MANIFEST")"
+bin_want="$(awk -F= '$1=="bin"{print $2}' "$MANIFEST")" \
+    || fail "基準を読めません（bin=）: $MANIFEST"
 [ -n "$bin_want" ] || fail "基準に bin= がありません: $MANIFEST"
 [ "$bin_now" = "$bin_want" ] || fail "起動するバイナリが承認済みの指紋と違います（$BIN）"
 
@@ -147,18 +154,25 @@ for base in $BASES; do
     [ -f "$only" ] || fail "標本の一覧がありません: $only"
     sorted_to "$only" "$TDIR/only.sorted"
     chk_rc $? "${base}: 標本を読めません: $only" "${base}: 標本の並べ替えに失敗しました: $only"
-    n_now="$(grep -c . "$TDIR/only.sorted")" || n_now=0
+    n_now="$(grep -c . "$TDIR/only.sorted")"
+    rc_n=$?
+    [ "$rc_n" -le 1 ] || fail "${base}: 標本の件数を数えられません: $only"
+    [ "$rc_n" = 0 ] || n_now=0
     sha_to "$TDIR/only.sorted" "$TDIR/only.sha"
     chk_rc $? "${base}: 標本を読めません: $only" "${base}: 標本のハッシュを作れません: $only"
     keys_now="$(read_sha "$TDIR/only.sha")" || fail "${base}: 標本のハッシュを読めません"
-    line="$(awk -v b="$base" '$1==b{print}' "$MANIFEST")"
+    line="$(awk -v b="$base" '$1==b{print}' "$MANIFEST")" \
+        || fail "${base}: 基準を読めません: $MANIFEST"
     [ -n "$line" ] || fail "基準に ${base} の行がありません: $MANIFEST"
-    keys_want="$(echo "$line" | sed -n 's/.*keys=\([0-9a-f]*\).*/\1/p')"
-    n_want="$(echo "$line" | sed -n 's/.* n=\([0-9]*\).*/\1/p')"
+    keys_want="$(printf '%s' "$line" | sed -n 's/.*keys=\([0-9a-f]*\).*/\1/p')" \
+        || fail "${base}: 基準の keys= を読めません"
+    n_want="$(printf '%s' "$line" | sed -n 's/.* n=\([0-9]*\).*/\1/p')" \
+        || fail "${base}: 基準の n= を読めません"
     # **`cols` は【固定部の終端列番号】**です（キー・状態・三角形数 2 つ・時間・
     # ハッシュの 6 列 + 構造の記録）。**値の全体の形と範囲を検査します** —
     # 接頭辞だけを見ると `cols=8junk` を 8 として受理してしまいます
-    cols_want="$(echo "$line" | sed -n 's/.*cols=\([^ ]*\).*/\1/p')"
+    cols_want="$(printf '%s' "$line" | sed -n 's/.*cols=\([^ ]*\).*/\1/p')" \
+        || fail "${base}: 基準の cols= を読めません"
     [ -n "$cols_want" ] || fail "基準に ${base} の cols= がありません: $MANIFEST"
     case "$cols_want" in
         ''|*[!0-9]*) fail "${base}: cols が数ではありません（${cols_want}）" ;;
@@ -179,8 +193,14 @@ for base in $BASES; do
     if [ -s "$res" ]; then
         [ "$RESUME" = 1 ] || fail "結果が残っています（新規なら空にしてください）: $res"
         [ -f "$meta" ] || fail "再開なのに meta がありません: $meta"
-        [ "$(grep -v '^started=\|^head=\|^b=' "$meta" || true)" = "$want" ] \
-            || fail "再開の meta が一致しません: $meta"
+        # **`|| true` で握り潰すと、読めない meta を「空」として比べます。**
+        # **`grep -v` は 0（出力あり）/ 1（出力なし）/ 2 以上（エラー）を分けます**
+        [ -r "$meta" ] || fail "${base}: meta を読めません: $meta"
+        grep -v '^started=\|^head=\|^b=' "$meta" > "$TDIR/meta.core"
+        rc_meta=$?
+        [ "$rc_meta" -le 1 ] || fail "${base}: meta を読めません: $meta"
+        got="$(cat "$TDIR/meta.core")" || fail "${base}: meta を読めません: $meta"
+        [ "$got" = "$want" ] || fail "再開の meta が一致しません: $meta"
         # **共通の列解析で、既存の結果にも【成功】を要求します。**
         # **文字列 ' FAIL ' の検索では、タブ区切りの FAIL がすり抜けます**
         check_rows "$res" 1 "$cols_want" \
@@ -196,6 +216,8 @@ for base in $BASES; do
         comm -23 "$TDIR/res.uniq" "$TDIR/only.uniq" > "$TDIR/extra" \
             || fail "${base}: 集合の比較に失敗しました"
         [ ! -s "$TDIR/extra" ] || fail "${base}: 既存の結果に、予定に無いキーがあります"
+    elif [ "$CHECK_ONLY" = 1 ]; then
+        printf '%s: 起動前の照合を通りました（新規で始められます）\n' "$base"
     else
         # **HEAD と b は記録しますが、バイナリのビルド元の証明ではありません**
         printf '%s\nhead=%s\nb=%s\nstarted=%s\n' "$want" \
@@ -204,6 +226,11 @@ for base in $BASES; do
             || fail "meta を書けません: $meta"
     fi
 done
+
+if [ "$CHECK_ONLY" = 1 ]; then
+    printf '\n**照合だけ行いました。計算は始めていません。**\n'
+    exit 0
+fi
 
 # ---- 実行（計算側と tee 側の状態を直後に両方保存する）-----------------------
 for base in $BASES; do
@@ -220,7 +247,11 @@ for base in $BASES; do
 
     # ---- 完了の検査（終了コードだけでは判定しません）----
     res="$(res_of "$base")"; only="$(only_of "$base")"
-    cols_of_base="$(awk -v b="$base" '$1==b{print}' "$MANIFEST" | sed -n 's/.*cols=\([0-9]*\).*/\1/p')"
+    cols_of_base="$(awk -v b="$base" '$1==b{print}' "$MANIFEST")" \
+        || fail "${base}: 基準を読めません（完了の検査）: $MANIFEST"
+    cols_of_base="$(printf '%s' "$cols_of_base" | sed -n 's/.*cols=\([0-9]*\).*/\1/p')" \
+        || fail "${base}: 基準の cols= を読めません（完了の検査）"
+    case "${cols_of_base:-x}" in ''|*[!0-9]*) fail "${base}: 基準の cols= が数ではありません" ;; esac
     [ -s "$res" ] || fail "${base}: 結果が空です"
     # **読めないことを「行が不正」と混同しない**（理由を取り違えると診断が遠回りになります）
     [ -r "$res" ] || fail "${base}: 結果を読めません: $res"
