@@ -153,6 +153,16 @@ struct SplitStats {
     std::size_t repair_no_planes = 0;
     /// **組が 2 つ作れていないので諦めた辺の数**（`unsplit_edges` に当たる辺）
     std::size_t repair_no_pair = 0;
+    /// **修復の中で `vertices` の再確保が起きた回数**（辺ごとに `data()` を比べる）。
+    ///
+    /// **参照が再確保をまたぐ欠陥の、発火の証拠**です
+    /// （`DESIGN-phase5-vertex-level.md` §12.3.2）。
+    std::size_t repair_vertices_realloc = 0;
+    /// **衝突の照合を行った回数**（二分探索 1 回 + 追加済み中点との線形走査の回数）。
+    ///
+    /// **費用は $O(r \cdot k)$**（$r$ = 候補の辺、$k$ = 採用した辺）。
+    /// **「無視できる」と決めつけず、数えて報告します。**
+    std::size_t repair_collide_probes = 0;
 
     /// **early-out で arrangement を省いたセル由来の三角形に接する頂点が分裂した回数**
     /// （SPEC-phase2 §13 の CP5）。

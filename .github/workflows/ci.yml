@@ -392,6 +392,62 @@ jobs:
       - name: ccache の効き
         run: ccache -s | head -12
 
+  # ---- 負の対照（旧経路の use-after-free を【期待失敗】として確かめる）--------
+  #
+  # **通常の試験からは完全に隔離しています。**
+  # **ラベルでは外れません**（`-L` は選択、`-LE` は除外）。
+  # **専用の既定 OFF のオプションで、ターゲットと試験の登録そのものを分けています。**
+  #
+  # **合否は「非零終了」では決めません。** 次の 3 つを揃えて確かめます。
+  #
+  #   1. 今回の実行が異常終了したこと
+  #   2. **その読み出し箇所に対応する診断**（`to_mesh.hpp` を指す `heap-use-after-free`）
+  #   3. **再確保が発火した証拠**（問題の読み出しより前に出力・フラッシュ済み）
+  #
+  # そして**同じ入力で修正版が成功すること**も、同じジョブで確かめます。
+  negative-control:
+    name: 負の対照（旧経路の use-after-free）
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: seanmiddleditch/gha-setup-ninja@96bed6edff20d1dd61ecff9b75cc519d516e6401  # v5
+      - uses: ./.github/actions/ccache
+        with:
+          key: negative-control
+      - run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DKRISITE_CHECKED_ARITH=OFF \
+            -DKRISITE_BUILD_NEGATIVE_CONTROL=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+      - run: cmake --build build --target uaf_repair_pinch repair_realloc
+      - name: 判定器そのものの検査（模擬ログ）
+        run: bash tests/tools/negctl_check_selftest.sh
+      - name: 旧経路が use-after-free を起こすこと（期待失敗）
+        run: |
+          set +e
+          ./build/tests/uaf_repair_pinch > negctl.log 2>&1
+          rc=$?
+          set -e
+          # **全文を残します。** 切ると、判定の根拠が後から読めません
+          # （`head` を挟むと診断の先頭が落ちることを実際に踏みました）
+          echo "--- 旧経路の出力（全文）---"
+          cat negctl.log
+          echo "--- ここまで ---"
+          test "$rc" -ne 0 || { echo "**旧経路が異常終了しませんでした**"; exit 1; }
+          # **問題の【読み出しのスタック】だけを見ます。**
+          # 解放側・確保側に名前があっても受理しません（判定器は自己検査つき）
+          bash tests/tools/negctl_check.sh negctl.log to_mesh.hpp \
+            || { echo "**use-after-free の読み出しが to_mesh.hpp を指していません**"; exit 1; }
+          # **再確保が発火した証拠**（問題の読み出しより前に出力済み）
+          grep -q 'NEGCTL realloc=1' negctl.log \
+            || { echo "**再確保が発火していません**"; exit 1; }
+          echo "旧経路: 異常終了・診断・発火の 3 つを確認しました"
+      - name: 同じ入力で修正版が成功すること
+        run: ./build/tests/repair_realloc
+
   # ---- ThreadSanitizer（SPEC-phase4 §7.2）------------------------------------
   #
   # **決定性の検査だけでは足りません。** コーパスが小さいので、競合があっても

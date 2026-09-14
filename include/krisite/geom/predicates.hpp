@@ -775,18 +775,36 @@ inline arith::fixed_int<3 * limbs::kCoord + 1> tetra_volume6(const IPoint& a, co
 /// $P_4(v) \ne 0$ と $P_3(w) \ne 0$ は前提から出るので、**符号は必ず決まります。**
 ///
 /// $Q(v)$ と $Q(w)$ が逆符号なら、$L \cap Q$ は $v$ と $w$ の**間**にあります。
-inline HPointD edge_interior_point(const PlaneD& p1, const PlaneD& p2, const PlaneD& p3,
-                                   const PlaneD& p4, const HPointD& v, const HPointD& w) noexcept {
+/// **辺の内部の点と、それを作った符号**（`DESIGN-phase5-vertex-level.md` §12.3.1）。
+///
+/// **符号は呼び出し側でも由来として保存します。** 2 箇所で計算すると食い違い得るので、
+/// **構成した側が返します**（述語の 2 度目の評価も消えます）。
+struct EdgePoint {
+    HPointD p;     ///< 辺 $(v,w)$ の内部の点
+    int sign = 0;  ///< $Q = P_3 + \mathrm{sign}\cdot P_4$ の符号（$+1$ か $-1$）
+};
+
+/// **点と符号をまとめて返す形**。`edge_interior_point` はこれに委譲します。
+inline EdgePoint edge_interior_point_ex(const PlaneD& p1, const PlaneD& p2, const PlaneD& p3,
+                                        const PlaneD& p4, const HPointD& v,
+                                        const HPointD& w) noexcept {
     const int s4v = side(p4, v);
     const int s3w = side(p3, w);
     KRISITE_CHECK(s4v != 0, "edge_interior_point: p4 が v を通っている（前提違反）");
     KRISITE_CHECK(s3w != 0, "edge_interior_point: p3 が w を通っている（前提違反）");
-    const PlaneSum q = plane_sum(p3, p4, -s4v * s3w);
-    const HPointD m = intersect3(p1, p2, q);
+    EdgePoint out{};
+    out.sign = -s4v * s3w;
+    const PlaneSum q = plane_sum(p3, p4, out.sign);
+    out.p = intersect3(p1, p2, q);
     // **前提が守られていれば、ここは必ず通ります。**
     // **通らないなら呼び出し側の前提が破れています**（`CLAUDE.md`「前提を書いたら検査も」）
     KRISITE_CHECK(side(q, v) * side(q, w) < 0, "edge_interior_point: Q が辺を分けていない");
-    return m;
+    return out;
+}
+
+inline HPointD edge_interior_point(const PlaneD& p1, const PlaneD& p2, const PlaneD& p3,
+                                   const PlaneD& p4, const HPointD& v, const HPointD& w) noexcept {
+    return edge_interior_point_ex(p1, p2, p3, p4, v, w).p;
 }
 
 }  // namespace krisite::geom

@@ -51,10 +51,15 @@ docs/old/
 # 開発方針・運用メモの類は公開物に含めない。ライセンス方針など公開すべき内容は
 # README.md と THIRD_PARTY_LICENSES.md にある。
 /CLAUDE.md
+/AGENTS.md
 /docs/OPSEC.md
 
 # ---- 開発機ごとの起動スクリプト（公開物ではない）--------------------------
 claude_sandbox.bat
+codex_sandbox.bat
+
+# ---- 投入するバイナリの指紋（機械ごとの値。公開物ではない）------------------
+/tests/tools/run_cp23.manifest*
 
 # ---- 文書を直す一度きりの改訂スクリプト ------------------------------------
 # 実装とは無関係なので追跡しない。使い方は tools/README.md（これも追跡しない）。
