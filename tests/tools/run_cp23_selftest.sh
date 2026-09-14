@@ -257,15 +257,42 @@ check "34 基準の解析だけ非零" 2 "$(run_inj "$d")" "基準を読めま�
 d=$(setup c38); inject "$d" awk '$1==b'
 check "35 CP 別の基準の解析だけ非零" 2 "$(run_inj "$d")" "基準を読めません" "$d" no no_run
 
-# 36: **--check-only は照合だけで、計算も meta の作成もしない**
-d=$(setup c39); g=$(run "$d" --check-only)
-started=$([ -s "$d/calls.log" ] && echo 1 || echo 0)
-meta=$([ -e "$d/data/thingi10k/cp2b_results.meta" ] && echo 1 || echo 0)
-check "36 --check-only（照合のみ）" 0 "$g" "照合だけ行いました" "$d" no
 chk2() { if [ "$2" = "$3" ]; then pass=$((pass+1)); r=OK; else fail=$((fail+1)); r='**NG**'; fi
          printf '| %s | %s | %s | %s |\n' "$1" "$2" "$3" "$r"; }
-chk2 "36b そのとき本計算は起動していない" 0 "$started"
-chk2 "36c そのとき meta も作られていない" 0 "$meta"
+
+# **両方の CP について、meta・結果・実行ログが作られていないこと**
+untouched() {  # untouched <dir> → 作られていたファイル数
+    local d="$1" n=0
+    for b in cp2b cp3; do
+        for f in _results.meta _results.txt _run.log; do
+            [ -e "$d/data/thingi10k/${b}${f}" ] && n=$((n+1))
+        done
+    done
+    echo "$n"
+}
+
+# 36: **--check-only は照合だけで、計算も meta の作成もしない**
+d=$(setup c39); g=$(run "$d" --check-only)
+check "36 --check-only（照合のみ）" 0 "$g" "照合だけ行いました" "$d" no
+chk2 "36b そのとき本計算は起動していない" 0 "$([ -s "$d/calls.log" ] && echo 1 || echo 0)"
+chk2 "36c 両 CP の meta・結果・ログが作られていない" 0 "$(untouched "$d")"
+
+# 37〜41: **誤記・併用・余分な引数・重複**
+d=$(setup c40); g=$(run "$d" --check-onyl)
+check "37 誤記（--check-onyl）" 2 "$g" "知らない引数" "$d" no no_run
+chk2 "37b 何も作られていない" 0 "$(untouched "$d")"
+d=$(setup c41); g=$(run "$d" --check-only --resume)
+check "38 併用（--check-only --resume）" 0 "$g" "照合だけ行いました" "$d" no
+chk2 "38b 何も作られていない" 0 "$(untouched "$d")"
+d=$(setup c42); g=$(run "$d" --resume --check-only)
+check "39 併用（逆順）" 0 "$g" "照合だけ行いました" "$d" no
+chk2 "39b 何も作られていない" 0 "$(untouched "$d")"
+d=$(setup c43); g=$(run "$d" --check-only extra)
+check "40 余分な引数" 2 "$g" "知らない引数" "$d" no no_run
+chk2 "40b 何も作られていない" 0 "$(untouched "$d")"
+d=$(setup c44); g=$(run "$d" --resume --resume)
+check "41 同じ旗の重複" 2 "$g" "引数が重複" "$d" no no_run
+chk2 "41b 何も作られていない" 0 "$(untouched "$d")"
 
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]

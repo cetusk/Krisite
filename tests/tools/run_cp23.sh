@@ -32,14 +32,36 @@ BIN="${KRI_BIN:-build/thingi_cp1_o3}"
 MANIFEST="${KRI_MANIFEST:-tests/tools/run_cp23.manifest}"
 ARGS="${KRI_ARGS:-0 6 8 1 0 1 1 0 0 16 2 1 0 1}"
 BASES="${KRI_BASES:-cp2b cp3}"
+# ---- 引数の解析（**何かをする前に、全部見ます**）-----------------------------
+#
+# **受け取るのは既知の旗だけ**です。
+#
+#   --resume      再開（既存の結果が基準と一致し、全行が成功していること）
+#   --check-only  **起動前の照合だけ。計算も `meta` の作成もしません**
+#
+# **規則**:
+#   1. **未知の引数・余分な引数・同じ旗の重複は、何もする前に拒否**します
+#      （第 1 引数だけを見る形だと、`--check-onyl` の誤記や
+#        `--resume --check-only` の併用で**本計算が始まってしまいます**）
+#   2. **`--check-only` がどこかにあれば、順序に依らず【必ず照合専用】**になります
+#      （`--resume` と併用すると「再開の前提を、計算せずに確かめる」形になります）
 RESUME=0
 CHECK_ONLY=0
-case "${1:-}" in
-    --resume) RESUME=1 ;;
-    # **起動前の照合だけを行い、計算も meta の作成もしません。**
-    # **「照合できるか」を確かめるのに、実データを 1 秒も回さないため**
-    --check-only) CHECK_ONLY=1 ;;
-esac
+for a in "$@"; do
+    case "$a" in
+        --resume)
+            [ "$RESUME" = 0 ] || fail "引数が重複しています: $a"
+            RESUME=1
+            ;;
+        --check-only)
+            [ "$CHECK_ONLY" = 0 ] || fail "引数が重複しています: $a"
+            CHECK_ONLY=1
+            ;;
+        *)
+            fail "知らない引数です: $a（使えるのは --resume と --check-only だけ）"
+            ;;
+    esac
+done
 
 # **前処理は一時ファイルに落とし、【各段の終了状態】を見ます。**
 # **`sort "$f" | sha256sum` の形は、`sort` が失敗しても成功を返します**
