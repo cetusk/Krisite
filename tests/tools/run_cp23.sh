@@ -81,7 +81,18 @@ bin_want="$(awk -F= '$1=="bin"{print $2}' "$MANIFEST")"
 
 # **出力契約は、手で数えずに【バイナリ自身に報告させます】。**
 # **版がずれたときに黙って外れるのを防ぎます**（計算は始めません）
-bin_cols="$("$BIN" --cols 2>/dev/null || true)"
+# **取得そのものの成功を先に確かめます。**
+# **`|| true` で握り潰すと、値が合っていても異常終了した版で本計算を始めます。**
+COLERR="$(mktemp)"
+trap 'rm -f "$COLERR"' EXIT
+bin_cols="$("$BIN" --cols 2>"$COLERR")"
+rc_cols=$?
+if [ "$rc_cols" != 0 ]; then
+    # **stderr も診断の根拠として残します**
+    printf '  --cols の stderr:\n' >&2
+    head -5 "$COLERR" >&2
+    fail "バイナリの --cols が異常終了しました（exit ${rc_cols}）: $BIN"
+fi
 case "${bin_cols:-x}" in
     ''|*[!0-9]*) fail "バイナリが列数を報告しません（--cols が必要です）: $BIN" ;;
 esac

@@ -25,7 +25,8 @@ setup() {  # setup <名前> [各一覧の件数]
 # 模擬の計算側。**起動を記録**し、`<base>_only.txt` を読んで結果行を書く
 set -u
 cols="${MOCK_COLS:-8}"
-[ "${1:-}" = "--cols" ] && { echo "$cols"; exit 0; }
+# **正しい列数を出しても非零で終わる**構成を作れるようにします
+[ "${1:-}" = "--cols" ] && { echo "$cols"; echo "模擬: --cols の異常" >&2; exit "${MOCK_COLS_RC:-0}"; }
 list="$1"; base="${list%.txt}"
 only="${base}_only.txt"; res="${base}_results.txt"
 printf '%s\n' "$(basename "$base")" >> "${MOCK_CALLS:-/dev/null}"
@@ -85,7 +86,7 @@ write_meta() {  # write_meta <dir> <base>
 run() {  # run <dir> [引数...]
     ( cd "$1" && KRI_ROOT="$1" KRI_BIN="$1/build/mock" KRI_MANIFEST="$1/manifest" \
         KRI_ARGS="0" KRI_BASES="cp2b cp3" MOCK_CALLS="$1/calls.log" \
-        MOCK_COLS="${MOCK_COLS:-8}" \
+        MOCK_COLS="${MOCK_COLS:-8}" MOCK_COLS_RC="${MOCK_COLS_RC:-0}" \
         bash "$RUN" "${@:2}" > "$1/out.txt" 2>&1 )
     echo $?
 }
@@ -93,7 +94,7 @@ run() {  # run <dir> [引数...]
 check() {  # check <名前> <期待コード> <実際> <停止理由の語> <dir> <cp3 が起動してよいか>
     local name="$1" want="$2" got="$3" why="$4" d="$5" cp3ok="$6" ok=1 note=""
     [ "$got" = "$want" ] || { ok=0; note="コード"; }
-    if [ -n "$why" ] && ! grep -q "$why" "$d/out.txt"; then ok=0; note="${note} 理由"; fi
+    if [ -n "$why" ] && ! grep -qF -- "$why" "$d/out.txt"; then ok=0; note="${note} 理由"; fi
     # **起動記録**で見ます（結果ファイルの不在では、書けなかった場合と区別できません）
     if [ "$cp3ok" = no ] && grep -q '^cp3$' "$d/calls.log" 2>/dev/null; then
         ok=0; note="${note} CP3 起動"
@@ -186,6 +187,10 @@ check "24 cols が数でない" 2 "$(run "$d")" "cols が数ではありませ�
 # 25: cols が範囲の外
 d=$(setup c28); sed -i 's/cols=8/cols=3/g' "$d/manifest"
 check "25 cols が範囲の外" 2 "$(run "$d")" "cols が範囲の外" "$d" no
+
+# 26: **正しい列数を出すが、--cols が非零で終わる** → 起動前に拒否
+d=$(setup c29); MOCK_COLS_RC=7; export MOCK_COLS_RC; g=$(run "$d"); unset MOCK_COLS_RC
+check "26 --cols が非零終了（値は正しい）" 2 "$g" "--cols が異常終了" "$d" no
 
 printf '\n**OK %d / NG %d**\n' "$pass" "$fail"
 [ "$fail" = 0 ]
