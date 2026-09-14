@@ -1426,41 +1426,52 @@ $ /tmp/cp1_probe --cols
 
 **待機中のバイナリ**（`9bf6652e…`、列数を報告しない旧版）**は触っていません。**
 
-### 14.2 manifest の作り方
+### 14.2 manifest の作り方（**道具にしました**）
 
-**`tests/tools/run_cp23.manifest` は追跡しません**（機械ごとの値）。
-**投入する版で、次の手順で作ります。**
+> **★ 訂正**（`SPEC-phase5.md` §5.10.14.74 の指摘 3。2026-09-14）。
+> **前の §14.2 に貼った手順は、そのままでは動きません** — `printf` の `%%s` が
+> 値を埋め込まず文字列 `%s` を出し、**manifest が壊れます。**
+> **失敗しても止まらず、既存の manifest を直接上書きする**問題もありました。
+
+**手で貼る手順をやめ、`tests/tools/make_manifest.sh` にしました。**
 
 ```
-BIN=build/thingi_cp1_o3.fixed
-{
-  printf 'bin=%%s\n' "$(sha256sum "$BIN" | cut -d' ' -f1)"
-  for b in cp2b cp3; do
-    printf '%%s keys=%%s n=%%s cols=%%s\n' "$b" \
-      "$(sort data/thingi10k/${b}_only.txt | sha256sum | cut -d' ' -f1)" \
-      "$(grep -c . data/thingi10k/${b}_only.txt)" \
-      "$("$BIN" --cols)"
-  done
-} > tests/tools/run_cp23.manifest
+bash tests/tools/make_manifest.sh build/thingi_cp1_o3.fixed
 ```
 
-**いまの標本に対する値**（参考。**まだ manifest は作っていません**）:
-
-| 基準 | 値 |
+| 性質 | 内容 |
 |---|---|
-| `bin` | `453959ee56d9f24f…`（`build/thingi_cp1_o3.fixed`） |
-| `cp2b keys` | `ac6e556abbd11b14…` （295 対） |
-| `cp3 keys` | `255e08b5e90662f8…` （295 対） |
-| `cols` | **184**（両方） |
+| **ファイルを移動しません** | 候補は **`KRI_BIN` で名指し**して投入します |
+| 失敗で止まる | `--cols` の**終了状態**、標本の存在・空・重複、ハッシュの生成 |
+| **一時ファイルに作る** | **読み直して形を検査してから確定**します |
+| 上書きしない | 既存の manifest があれば拒否（`--force` のときだけ置換） |
 
-### 14.3 切り替えの手順（**所有者の承認が出てから**）
+**自己検査**（`make_manifest_selftest.sh`。模擬環境。**実物に触れません**）:
 
-1. **旧バイナリを退避**（消さない）: `mv build/thingi_cp1_o3 build/thingi_cp1_o3.pre_fix`
-2. 候補を投入名に: `mv build/thingi_cp1_o3.fixed build/thingi_cp1_o3`
-3. **manifest を作り直す**（§14.2。指紋が変わるため）
-4. **`bash tests/tools/run_cp23.sh`** で起動（前提が揃わなければ計算は始まりません）
+| 構成 | 期待 | 実測 |
+|---|---:|---:|
+| 正常 / `--force` で置換 | 0 | **0** |
+| 既存を上書きしない | 2 | **2** |
+| `--cols` が非零終了 / 範囲の外 | 2 | **2** |
+| 実行ファイルが無い / 標本が空 / 標本に重複 | 2 | **2** |
+| **候補を `KRI_BIN` で名指しして回す** | 0 | **0** |
+| **旧バイナリを名指し → 起動前に拒否**（本計算は起動せず） | 2 | **2** |
 
-**3 を飛ばすと、起動前の照合で必ず止まります**（指紋が一致しないため）。**安全側です。**
+### 14.3 投入の手順（**移動しません**。所有者の承認が出てから）
+
+```
+# 1. 基準を作る（候補を名指し。旧バイナリはそのまま）
+bash tests/tools/make_manifest.sh build/thingi_cp1_o3.fixed
+
+# 2. 候補を名指しして回す
+KRI_BIN=build/thingi_cp1_o3.fixed bash tests/tools/run_cp23.sh
+```
+
+**旧バイナリ（`build/thingi_cp1_o3`、`9bf6652e…`）はそのまま残ります。**
+**移動しないので、移動後のパスの食い違いも起きません。**
+
+> **間違えて旧バイナリを名指しすると、起動前の照合で止まります**
+> （指紋が基準と一致しないため）。**本計算は 1 秒も走りません** — 自己検査 10 で確認済み。
 
 ### 14.4 投入の前に確かめること
 
@@ -1511,6 +1522,17 @@ previously allocated by thread T0 here: …
 ```
 
 **判定器を、保存したログに手元で掛け直しても `exit 0`**（受理）でした。
+
+> **★ 前処理が要ります。** **CI の中の生のログと、保存したログは形式が違います**
+> （保存側は各行の先頭に GitHub の時刻が付きます）。**そのまま渡すと `exit 1`** です。
+> **実際に行った前処理**:
+>
+> ```
+> sed 's/^[^ ]*Z //' data/logs/ci/negctl_34818538329.log | sed -n '360,480p' > /tmp/negctl_body.log
+> bash tests/tools/negctl_check.sh /tmp/negctl_body.log to_mesh.hpp   # → exit 0
+> ```
+>
+> **原本は書き換えていません。判定の条件も緩めていません。**
 
 | 確認 | 結果 |
 |---|---|
