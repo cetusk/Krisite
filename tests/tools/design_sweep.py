@@ -20,7 +20,10 @@ DOC = os.path.join(HERE, "..", "..", "docs", "DESIGN-phase5-vertex-level.md")
 
 
 def section43(text):
-    return text[text.index("## 43. "):]
+    """§43 の本文だけを返す。§44 が足されたらそこで切る（12 巡目の指摘）。"""
+    b = text[text.index("## 43. "):]
+    m = re.search(r"^## 4[4-9]\.", b[10:], re.M)
+    return b[: 10 + m.start()] if m else b
 
 
 # --- 検査 ---------------------------------------------------------------
@@ -52,6 +55,10 @@ CHECKS = [
     dict(name="R_A+R_B=R を「P3 そのもの」と書かない",
          forbid=r"これは P3 そのものです(?!」と(?:書いたのは誤り|いう名付け))",  # 取り下げの引用は除く
          mutate=("**$R_A+R_B=R$ と【必要十分】で同値**", "**これは P3 そのものです**")),
+    dict(name="E3 の右辺が全箇所で -R_B",
+         forbid=r"内側成分\}_j\) = -R(?!_B)",
+         mutate=(r"（$B$ の成分がすべて外向きのとき $\sum_j S(\text{内側成分}_j) = -R_B$）",
+                 r"（$B$ の成分がすべて外向きのとき $\sum_j S(\text{内側成分}_j) = -R$）")),
     dict(name="経緯の節への依存を作らない",
          forbid=r"（§(?:2[2-9]|3[0-4]|3[5-9]|4[0-2])(?:\.\d+)? を見|詳しくは §(?:3[5-9]|4[0-2])",
          mutate=("**列は同ディレクトリ `README.md` の 34 列**",
@@ -127,6 +134,59 @@ def expectations(b):
 
     dirs = re.findall(r"\$\((\d),(\d),(\d)\)\$", b)
     out.append(("レイ 16 方向が相異なる", len(dirs) == 16 and len(set(dirs)) == 16))
+
+    # --- 保存値: 文書の数が、実データと一致するか（12 巡目の指摘） ---
+    SA = num(b, r"\| \$S\(A\)\$ \| \*\*33\*\* \| `(-?\d+)`")
+    SB = num(b, r"\| \$S\(B\)\$ \| \*\*34\*\* \| `(-?\d+)`")
+    R = num(b, r"\| \$R\$ \| \*\*28\*\* \| `(-?\d+)`")
+    ev = os.path.join(HERE, "..", "..", "docs", "evidence", "gmp_diag_r1",
+                      "cp3_gmp_results.txt")
+    if os.path.exists(ev) and None not in (SA, SB, R):
+        row = [l.split() for l in io.open(ev, encoding="utf-8")
+               if l.startswith("250394x45413")]
+        if row:
+            c = row[0]                       # 1 起点 → 0 起点は -1
+            out.append(("保存値 S(A)/S(B)/R が cp3_gmp_results.txt と一致",
+                        (int(c[32]), int(c[33]), int(c[27])) == (SA, SB, R)))
+        else:
+            out.append(("保存値の行が見つかりません", False))
+    else:
+        out.append(("保存値を読めません（式が変わったか、証拠が無い）", False))
+
+    # --- 予言値の内部整合: 殻間 + 2*内側 = S(B)、内側 = -R ---
+    shell = num(b, r"\| 殻間 \| 1 \| `(\d+)`")
+    inner = num(b, r"\| 内側 \| 2 \| `(\d+)`")
+    out.append(("予言値: 殻間+2*内側 = S(B) かつ 内側 = -R",
+                None not in (shell, inner, SB, R)
+                and shell + 2 * inner == SB and inner == -R))
+
+    # --- 式の形（判断を左右するので、文字列として固定する） ---
+    # 式は正規表現ではなく【部分文字列】で固定する。
+    # 正規表現はエスケープを 1 段誤ると黙って常に不一致／常に一致になり、
+    # 番人が空回りする（12 巡目に実際に起きた）。
+    forms = [
+        ("R の一次定義", r"(\lvert A\cup B\rvert+\lvert A\cap B\rvert) - (S(A)+S(B))"),
+        ("P3′ の右辺", r"\lvert A\cup B\rvert + \lvert A\cap B\rvert \;=\; \mu(\mathcal A)+\mu(\mathcal B)"),
+        ("E1", r"**E1** | **$R_A + R_B = R$**"),
+        ("E2 の符号と閾値", r"R_B = -\sum_{\text{領域}:\,w\ge2}(w-1)\,\mathrm{vol} \;+\; \sum_{\text{領域}:\,w\le-1}\lvert w\rvert\,\mathrm{vol}"),
+        ("E3 の右辺は -R_B（定義の行）", r"**E3** | **$\sum_j S(\text{内側成分}_j) = -R_B$**"),
+        ("E4", r"**E4** | **$\sum_j S_j = S(B)$**"),
+        ("領域の体積の式", r"\mathrm{vol}(\text{領域}_j) = \lvert S_j \rvert - \sum"),
+        ("k_0 の式", r"k_0 = \lceil \log_2 \max_i \lvert (n_f)_i \rvert \rceil"),
+        ("A5 の対の数", r"\binom{\lvert S_A\rvert}{2}+\binom{\lvert S_B\rvert}{2}"),
+        ("|S_A| の式", r"\lvert S_A \rvert = 1496 - c_A"),
+    ]
+    for nm, pat in forms:
+        out.append(("式が変わっていない: " + nm, pat in b))
+
+    # --- 決定表の判定値（最終行が (1)、各行の判定が定義済みの 7 種） ---
+    rows2 = re.findall(r"^\| \*\*(\d+)\*\* \|.*\| \*\*\(([^)]*)\)\*\* \|$", b, re.M)
+    known = {"1", "2-a", "2-b", "3", "4a", "4b", "4c"}
+    out.append(("決定表の最終行が (1)", bool(rows2) and rows2[-1][1] == "1"))
+    out.append(("決定表の判定値がすべて定義済みの 7 種",
+                bool(rows2) and all(v in known for _, v in rows2)))
+    out.append(("(1) は最終行にだけ現れる",
+                bool(rows2) and [v for _, v in rows2].count("1") == 1))
     return out
 
 
@@ -152,15 +212,20 @@ def tables_ok(b, quiet=False):
     return n, bad
 
 
-def run(text, quiet=False):
+def run(text, quiet=False, collect=None):
+    """collect に list を渡すと、発火した検査の名前を積む（主検出器の記録）。"""
     b = section43(text); bad = 0
     n, tb = tables_ok(b, quiet); bad += tb
+    if tb and collect is not None:
+        collect.append("表")
     if not quiet:
         print("表 %d 個 / 異常 %d" % (n, tb))
     for c in CHECKS:
         hits = [m for m in re.finditer(c["forbid"], b)]
         if hits:
             bad += len(hits)
+            if collect is not None:
+                collect.append("検査:" + c["name"])
             if not quiet:
                 for h in hits:
                     print("  ★%s: %r" % (c["name"], b[h.start():h.start() + 60]))
@@ -169,6 +234,8 @@ def run(text, quiet=False):
     for name, ok in expectations(b):
         if not ok:
             bad += 1
+            if collect is not None:
+                collect.append("期待値:" + name)
             if not quiet:
                 print("  ★期待値が合いません: %s" % name)
         elif not quiet:
@@ -186,23 +253,32 @@ def mutate(text, a, m):
 
 
 def selftest(text):
-    """各検査について、変異を入れたら落ちることを確かめる。"""
+    """各検査について、変異を入れたら【その検査だけが】落ちることを確かめる。"""
     base = run(text, quiet=True)
     if base:
         print("★ 変異前に既に %d 件落ちています。先にそちらを直してください。" % base)
+        print("   （このまま変異試験に進むと、網が黙って縮みます）")
         return 1
     fail = 0
+    covered = set()
     for c in CHECKS:
         a, m = c["mutate"]
         mut = mutate(text, a, m)
         if mut is None:
             print("★ %s: 変異の適用先 %r が §43 に見つかりません" % (c["name"], a[:40]))
             fail += 1; continue
-        if run(mut, quiet=True) == 0:
+        got = []
+        if run(mut, quiet=True, collect=got) == 0:
             print("★ %s: 変異を入れても落ちません（空回り）" % c["name"])
             fail += 1
+        elif "検査:" + c["name"] not in got:
+            # 意図した検出器が発火しなかった（別の検査が拾っただけ）。
+            # CLAUDE.md「変異ごとに主検出器も記録してください」
+            print("★ %s: 主検出器が発火しません → %s" % (c["name"], got))
+            fail += 1
         else:
-            print("  ok  %s — 変異を検出" % c["name"])
+            covered.update(got)
+            print("  ok  %-30s — 主検出器が発火（%s）" % (c["name"], "／".join(got)))
     # 期待値にも変異を当てる（11 巡目の指摘。CHECKS だけでは 6 件が無検査だった）
     EXP_MUT = [
         ("面数 1,496 → 1,500", "面数はどちらも 1,496", "面数はどちらも 1,500"),
@@ -214,16 +290,42 @@ def selftest(text):
         ("決定表の 1 行を消す", "| **8** | **$B$ に内側成分が 0 個**", "| **99** | **$B$ に内側成分が 0 個**"),
         ("レイ方向を重複させる", "$(1,1,2)$", "$(1,1,1)$"),
         ("4 演算の面数を 4/3 でなくする", "| 369,156,480 |", "| 369,156,481 |"),
+        # --- 12 巡目の指摘で足した検査ぶん ---
+        ("14 構成 → 13 構成", "（14 構成）", "（13 構成）"),
+        ("S1 の行を消す", "| S1 | **同方向の入れ子**", "| S0 | **同方向の入れ子**"),
+        ("81 バイト → 80 バイト", "バイト境界丸め 81 バイト", "バイト境界丸め 80 バイト"),
+        ("保存値 S(A) の末尾を変える", "`47157422889525707`", "`47157422889525708`"),
+        ("予言値 殻間の末尾を変える", "`222847097096154239`", "`222847097096154238`"),
+        ("R の一次定義の符号を反転", r"- (S(A)+S(B))$$", r"+ (S(A)+S(B))$$"),
+        ("P3′ の右辺を差に", r"\mu(\mathcal A)+\mu(\mathcal B)$ |", r"\mu(\mathcal A)-\mu(\mathcal B)$ |"),
+        ("E1 の式を変える", "**E1** | **$R_A + R_B = R$**", "**E1** | **$R_A - R_B = R$**"),
+        ("E2 の符号を + に", r"R_B = -\sum_{\text{領域}:\,w\ge2}", r"R_B = +\sum_{\text{領域}:\,w\ge2}"),
+        ("E2 の閾値を w>=1 に", r"\text{領域}:\,w\ge2}(w-1)", r"\text{領域}:\,w\ge1}(w-1)"),
+        ("E3 の右辺を -R に戻す", r"**E3** | **$\sum_j S(\text{内側成分}_j) = -R_B$**", r"**E3** | **$\sum_j S(\text{内側成分}_j) = -R$**"),
+        ("E4 の式を変える", r"**E4** | **$\sum_j S_j = S(B)$**", r"**E4** | **$\sum_j S_j = S(A)$**"),
+        ("領域の体積の式を和に", r"\mathrm{vol}(\text{領域}_j) = \lvert S_j \rvert - \sum",
+                                r"\mathrm{vol}(\text{領域}_j) = \lvert S_j \rvert + \sum"),
+        ("k_0 を log10 に", r"k_0 = \lceil \log_2 \max_i", r"k_0 = \lceil \log_{10} \max_i"),
+        ("A5 の対の数を積に", r"\binom{\lvert S_A\rvert}{2}+\binom{\lvert S_B\rvert}{2}",
+                             r"\binom{\lvert S_A\rvert}{2}\cdot\binom{\lvert S_B\rvert}{2}"),
+        ("|S_A| の符号を反転", r"\lvert S_A \rvert = 1496 - c_A", r"\lvert S_A \rvert = 1496 + c_A"),
+        ("決定表の最終行を (4c) に", "| **10** | **上のどれにも当たらない**（＝ 内側成分が 1 個以上あり、E1 が厳密一致し、自己検査も通った） | **(1)** |",
+                                     "| **10** | **上のどれにも当たらない**（＝ 内側成分が 1 個以上あり、E1 が厳密一致し、自己検査も通った） | **(4c)** |"),
+        ("決定表に未定義の判定を入れる", "| **(4a)** |\n| **5**", "| **(5z)** |\n| **5**"),
+        ("(1) を途中の行にも置く", "| **8** | **$B$ に内側成分が 0 個**（**H′ が成立しない**） | **(2-a)** |",
+                                   "| **8** | **$B$ に内側成分が 0 個**（**H′ が成立しない**） | **(1)** |"),
     ]
     for name, a, m in EXP_MUT:
         mut = mutate(text, a, m)
         if mut is None:
             print("★ 期待値の変異 %s: 適用先 %r が §43 に見つかりません" % (name, a[:36]))
             fail += 1; continue
-        if run(mut, quiet=True) == 0:
+        got = []
+        if run(mut, quiet=True, collect=got) == 0:
             print("★ 期待値の変異 %s: 落ちません（空回り）" % name); fail += 1
         else:
-            print("  ok  期待値の変異 %s — 検出" % name)
+            covered.update(got)
+            print("  ok  期待値の変異 %-28s — 検出（%s）" % (name, "／".join(got)))
 
     # 表の検査も変異させる
     k = text.index("## 43. ")   # §43 の中の区切り行を消す
@@ -232,7 +334,19 @@ def selftest(text):
         print("★ 表の検査: 区切り行を消しても落ちません"); fail += 1
     else:
         print("  ok  表の検査 — 区切り行の削除を検出")
-    print("変異 %d 件 / 検出できなかったもの %d 件" % (len(CHECKS) + len(EXP_MUT) + 1, fail))
+    # 変異が 1 つも当たっていない検査を落とす（12 巡目の指摘。
+    # docstring が「足さなければ selftest が落ちる」と書いていたのに未実装だった）
+    all_names = (["検査:" + c["name"] for c in CHECKS]
+                 + ["期待値:" + n for n, _ in expectations(section43(text))])
+    naked = [n for n in all_names if n not in covered]
+    if naked:
+        print("★ 変異が登録されていない検査が %d 件あります（空回りか判別できません）:"
+              % len(naked))
+        for n in naked:
+            print("     %s" % n)
+        fail += len(naked)
+    print("変異 %d 件 / 検出できなかったもの・無検査 %d 件"
+          % (len(CHECKS) + len(EXP_MUT) + 1, fail))
     return fail
 
 
