@@ -16,6 +16,7 @@
 //
 // **関係式だけに頼りません。各出力の解析値とも照合します。**
 #include <cstdio>
+#include <cstring>
 
 #include "krisite/csg/polysoup.hpp"
 #include "krisite/csg/soup_boolean.hpp"

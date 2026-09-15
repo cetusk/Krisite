@@ -21,6 +21,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <ostream>
@@ -638,8 +639,8 @@ constexpr const char* kDiagCheckerVersion = "gmp-diag/2";
 /// **上位（投入の層）と下位（駆動）で別の判定を持たせません。**
 /// **再利用してよいかは、この 1 か所だけが決めます。**
 inline bool validate_diag_rows(const std::string& path, const std::vector<std::string>& plan,
-                              std::vector<std::string>* out_keys) {
-    {   // **改行で終わっていないファイルは、最終行が切れています**
+                               std::vector<std::string>* out_keys) {
+    {  // **改行で終わっていないファイルは、最終行が切れています**
         std::ifstream f(path, std::ios::binary);
         if (f) {
             f.seekg(0, std::ios::end);
@@ -703,23 +704,39 @@ inline bool validate_diag_rows(const std::string& path, const std::vector<std::s
             while (is >> w) t.push_back(w);
         }
         const char* bad = nullptr;
-        if (t.size() < static_cast<std::size_t>(kDiagFixedCols)) bad = "列が足りません";
-        else if (!is_key(t[0])) bad = "キーの形が違います";
-        else if (std::find(plan.begin(), plan.end(), t[0]) == plan.end()) bad = "計画にない対です";
-        else if (t[1] != "ok") bad = "状態が ok ではありません";
-        else if (t[2] != "1") bad = "実施されていません";
-        else if (t[3] != "id1=ok") bad = "式 1 が一致していません";
-        else if (t[4] != "id2=ok" && t[4] != "id2=ng") bad = "式 2 の列の形が違います";
-        else if (!is_uint(t[5]) || !is_uint(t[6])) bad = "入力の三角形数が数ではありません";
-        else if (!is_finite(t[7]) || std::strtod(t[7].c_str(), nullptr) < 0) bad = "対の秒が不正です";
-        else if (!is_hash(t[8]) || !is_hash(t[9])) bad = "ハッシュの形が違います";
-        else if (!is_uint(t[10]) || !is_uint(t[11])) bad = "時間の列が数ではありません";
-        else if (!is_finite(t[12]) || !is_finite(t[13])) bad = "篩の値が数ではありません";
+        if (t.size() < static_cast<std::size_t>(kDiagFixedCols))
+            bad = "列が足りません";
+        else if (!is_key(t[0]))
+            bad = "キーの形が違います";
+        else if (std::find(plan.begin(), plan.end(), t[0]) == plan.end())
+            bad = "計画にない対です";
+        else if (t[1] != "ok")
+            bad = "状態が ok ではありません";
+        else if (t[2] != "1")
+            bad = "実施されていません";
+        else if (t[3] != "id1=ok")
+            bad = "式 1 が一致していません";
+        else if (t[4] != "id2=ok" && t[4] != "id2=ng")
+            bad = "式 2 の列の形が違います";
+        else if (!is_uint(t[5]) || !is_uint(t[6]))
+            bad = "入力の三角形数が数ではありません";
+        else if (!is_finite(t[7]) || std::strtod(t[7].c_str(), nullptr) < 0)
+            bad = "対の秒が不正です";
+        else if (!is_hash(t[8]) || !is_hash(t[9]))
+            bad = "ハッシュの形が違います";
+        else if (!is_uint(t[10]) || !is_uint(t[11]))
+            bad = "時間の列が数ではありません";
+        else if (!is_finite(t[12]) || !is_finite(t[13]))
+            bad = "篩の値が数ではありません";
         for (int k = 0; k < 4 && bad == nullptr; ++k) {
-            if (!is_uint(t[14 + k])) bad = "三角形数が数ではありません";
-            else if (t[18 + k] != "15") bad = "位相が完全ではありません";
-            else if (!is_uint(t[22 + k])) bad = "unresolved が数ではありません";
-            else if (t[22 + k] != "0") bad = "unresolved が 0 ではありません";
+            if (!is_uint(t[14 + k]))
+                bad = "三角形数が数ではありません";
+            else if (t[18 + k] != "15")
+                bad = "位相が完全ではありません";
+            else if (!is_uint(t[22 + k]))
+                bad = "unresolved が数ではありません";
+            else if (t[22 + k] != "0")
+                bad = "unresolved が 0 ではありません";
         }
         // **26 = 式 1 の残差、27 = 式 2 の残差、28〜31 = 出力の体積、32 / 33 = 入力の体積**
         for (int k = 26; k <= 33 && bad == nullptr; ++k) {
@@ -736,8 +753,10 @@ inline bool validate_diag_rows(const std::string& path, const std::vector<std::s
             mpq_init(got);
             bool parsed = true;
             for (int k = 0; k < 4; ++k) {
-                if (mpq_set_str(v[k], t[28 + k].c_str(), 10) != 0) parsed = false;
-                else mpq_canonicalize(v[k]);
+                if (mpq_set_str(v[k], t[28 + k].c_str(), 10) != 0)
+                    parsed = false;
+                else
+                    mpq_canonicalize(v[k]);
             }
             if (parsed && mpq_set_str(got, t[26].c_str(), 10) == 0) {
                 mpq_canonicalize(got);
@@ -745,8 +764,10 @@ inline bool validate_diag_rows(const std::string& path, const std::vector<std::s
                 mpq_add(rhs, rhs, v[3]);
                 mpq_add(rhs, rhs, v[1]);
                 mpq_sub(lhs, v[0], rhs);
-                if (mpq_equal(lhs, got) == 0) bad = "体積から求めた残差が、保存された残差と違います";
-                else if (mpq_sgn(lhs) != 0) bad = "体積から求めた残差が 0 ではありません";
+                if (mpq_equal(lhs, got) == 0)
+                    bad = "体積から求めた残差が、保存された残差と違います";
+                else if (mpq_sgn(lhs) != 0)
+                    bad = "体積から求めた残差が 0 ではありません";
             } else {
                 bad = "体積を読めません";
             }
@@ -756,9 +777,10 @@ inline bool validate_diag_rows(const std::string& path, const std::vector<std::s
             for (auto& q : v) mpq_clear(q);
         }
         if (bad != nullptr) {
-            std::printf("**既存の診断結果の %zu 行目が再開に使えません**（%s）\n"
-                        "**この行を人が見てから、ファイルを退避してやり直してください。**\n",
-                        ln, bad);
+            std::printf(
+                "**既存の診断結果の %zu 行目が再開に使えません**（%s）\n"
+                "**この行を人が見てから、ファイルを退避してやり直してください。**\n",
+                ln, bad);
             return false;
         }
         if (std::find(seen_keys.begin(), seen_keys.end(), t[0]) != seen_keys.end()) {
@@ -782,21 +804,21 @@ inline bool validate_diag_rows(const std::string& path, const std::vector<std::s
 /// > **4 出力が全部空でも成立し、共通の欠落や誤差の相殺も検出しません。**
 /// > **記録は「4 出力の厳密体積整合性が一致／不一致」であって、正しさ全体ではありません。**
 struct GmpDiag {
-    bool done = false;             ///< **実施したか**（対象の印とは別の量。§22.8 の訂正）
-    bool id1_ok = false;           ///< 式 1（入力を使わない）が厳密に一致したか
-    bool id2_ok = false;           ///< 式 2（前提つき）。**前提の成立は別問題**
-    std::string id1_res = "?";     ///< 式 1 の残差（6 倍体積。厳密な有理数の文字列）
-    std::string id2_res = "?";     ///< 式 2 の残差
-    std::string v6[4];             ///< ∪ / ∩ / A∖B / B∖A の 6 倍体積
-    std::string va6, vb6;          ///< 入力 A / B の 6 倍体積
+    bool done = false;          ///< **実施したか**（対象の印とは別の量。§22.8 の訂正）
+    bool id1_ok = false;        ///< 式 1（入力を使わない）が厳密に一致したか
+    bool id2_ok = false;        ///< 式 2（前提つき）。**前提の成立は別問題**
+    std::string id1_res = "?";  ///< 式 1 の残差（6 倍体積。厳密な有理数の文字列）
+    std::string id2_res = "?";  ///< 式 2 の残差
+    std::string v6[4];          ///< ∪ / ∩ / A∖B / B∖A の 6 倍体積
+    std::string va6, vb6;       ///< 入力 A / B の 6 倍体積
     /// **4 演算ぶんを揃えます**（§22.24。旧 3 演算と項目を揃えない記録は残しません）
     std::size_t tri[4] = {0, 0, 0, 0};    ///< 各出力の三角形数
     int topo[4] = {-1, -1, -1, -1};       ///< 各出力の位相（`pack_topo`。-1 = 未検査）
     std::size_t unres[4] = {0, 0, 0, 0};  ///< 各出力の `unresolved`
     double vol_err = -1, diff_err = -1;   ///< 浮動小数点の篩（**対象の印そのもの**）
-    double ms_gmp = 0;             ///< **`mpq` の時間だけ**（対の時間とは別に記録）
-    double ms_op4 = 0;             ///< 4 演算目（B∖A）の生成時間
-    unsigned long long hash4 = 0;  ///< 4 演算の合成ハッシュ（互換ハッシュとは別の列）
+    double ms_gmp = 0;                    ///< **`mpq` の時間だけ**（対の時間とは別に記録）
+    double ms_op4 = 0;                    ///< 4 演算目（B∖A）の生成時間
+    unsigned long long hash4 = 0;         ///< 4 演算の合成ハッシュ（互換ハッシュとは別の列）
 
     /// **4 つの出力すべてが位相の 4 項目を満たすか。**
     bool topo_all_ok() const {
@@ -1150,13 +1172,13 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
             diag->unres[3] = ts4.split.unresolved;
 #if defined(KRISITE_DIAG_MUTATE)
             const char* mut = std::getenv("KRI_DIAG_MUTATE");
-            if (mut != nullptr && std::string(mut) == "topo4") diag->topo[3] = 0;  // ★ 壊す
+            if (mut != nullptr && std::string(mut) == "topo4") diag->topo[3] = 0;    // ★ 壊す
             if (mut != nullptr && std::string(mut) == "unres4") diag->unres[3] = 1;  // ★ 壊す
 #endif
         }
         // **4 演算の合成ハッシュ**（互換ハッシュとは別の列。§22.19.1）
-        diag->hash4 = hash_mesh(mu) ^ (hash_mesh(mi) * 3) ^ (hash_mesh(md) * 7) ^
-                      (hash_mesh(m4) * 11);
+        diag->hash4 =
+            hash_mesh(mu) ^ (hash_mesh(mi) * 3) ^ (hash_mesh(md) * 7) ^ (hash_mesh(m4) * 11);
 
         const auto t_gmp = std::chrono::steady_clock::now();
         mpq_t v6[kritest::kOpCount], va6, vb6, res;
@@ -1500,8 +1522,9 @@ int main(int argc, char** argv) {
         }
         std::size_t nneed = 0;
         for (char v : needed) nneed += (v != 0);
-        std::printf("\n**診断: %zu 対、量子化するのは %zu 模型だけです**（一覧の全 %zu 件ではなく）\n",
-                    diag_pairs.size(), nneed, ids.size());
+        std::printf(
+            "\n**診断: %zu 対、量子化するのは %zu 模型だけです**（一覧の全 %zu 件ではなく）\n",
+            diag_pairs.size(), nneed, ids.size());
     } else {
         for (std::size_t i = 0; i < ids.size(); ++i) needed[i] = 1;
     }
@@ -1609,9 +1632,10 @@ int main(int argc, char** argv) {
         const bool has_res = std::ifstream(res_path).good();
         // **出所不明の結果は拒否します**（§23.10 の指摘 2）
         if (has_res && !has_meta) {
-            std::printf("**結果があるのに meta がありません**: `%s`\n"
-                        "**出所が確かめられないので使いません。退避してからやり直してください。**\n",
-                        res_path.c_str());
+            std::printf(
+                "**結果があるのに meta がありません**: `%s`\n"
+                "**出所が確かめられないので使いません。退避してからやり直してください。**\n",
+                res_path.c_str());
             return 2;
         }
         if (has_meta) {
@@ -1623,8 +1647,9 @@ int main(int argc, char** argv) {
                 return 2;
             }
             if (got != want) {
-                std::printf("**診断の meta が一致しません**: `%s`\n--- 保存 ---\n%s--- 今回 ---\n%s",
-                            meta_path.c_str(), got.c_str(), want);
+                std::printf(
+                    "**診断の meta が一致しません**: `%s`\n--- 保存 ---\n%s--- 今回 ---\n%s",
+                    meta_path.c_str(), got.c_str(), want);
                 return 2;
             }
         } else {
@@ -1660,7 +1685,8 @@ int main(int argc, char** argv) {
         for (char v : needed) total += (v != 0);
         for (std::size_t i = 0; i < ids.size(); ++i) {
             if (needed[i] == 0) continue;
-            const krithingi::RawMesh raw = krithingi::load_kmesh(root + "/kmesh/" + ids[i] + ".kmesh");
+            const krithingi::RawMesh raw =
+                krithingi::load_kmesh(root + "/kmesh/" + ids[i] + ".kmesh");
             prep[i] = prepare(raw, 1000 + i);
             c.dropped_total += prep[i].dropped;
             c.merged_total += prep[i].merged;
@@ -2039,11 +2065,11 @@ int main(int argc, char** argv) {
             std::snprintf(hb1.data(), hb1.size(), "%016llx", h);
             std::snprintf(hb4.data(), hb4.size(), "%016llx", diag.hash4);
             out << key << ' ' << (ok ? "ok" : "FAIL") << ' ' << (diag.done ? 1 : 0) << ' '
-                << (diag.id1_ok ? "id1=ok" : "id1=ng") << ' '
-                << (diag.id2_ok ? "id2=ok" : "id2=ng") << ' ' << prep[i].mesh.triangles.size()
-                << ' ' << prep[j].mesh.triangles.size() << ' ' << dt << ' ' << hb1.data() << ' '
-                << hb4.data() << ' ' << (long long)diag.ms_gmp << ' ' << (long long)diag.ms_op4
-                << ' ' << diag.vol_err << ' ' << diag.diff_err;
+                << (diag.id1_ok ? "id1=ok" : "id1=ng") << ' ' << (diag.id2_ok ? "id2=ok" : "id2=ng")
+                << ' ' << prep[i].mesh.triangles.size() << ' ' << prep[j].mesh.triangles.size()
+                << ' ' << dt << ' ' << hb1.data() << ' ' << hb4.data() << ' '
+                << (long long)diag.ms_gmp << ' ' << (long long)diag.ms_op4 << ' ' << diag.vol_err
+                << ' ' << diag.diff_err;
             for (int k = 0; k < 4; ++k) out << ' ' << diag.tri[k];
             for (int k = 0; k < 4; ++k) out << ' ' << diag.topo[k];
             for (int k = 0; k < 4; ++k) out << ' ' << diag.unres[k];
