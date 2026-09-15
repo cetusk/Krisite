@@ -53,7 +53,16 @@ def preexec(as_bytes):
 
 
 def spawn(cmd, env, log_path, as_bytes):
-    """fork + exec します。**`os.wait4` を使うため `subprocess` は通しません。**"""
+    """fork + exec します。**`os.wait4` を使うため `subprocess` は通しません。**
+
+    **試験専用の遅延**: 環境変数 ``KRI_DIAG_TEST_SPAWN_DELAY``（秒）があれば、
+    **起動の前にその秒数だけ待ちます**。
+    **仕様担当が再現した「起動前に使った時間が再付与される」形を、回帰試験に残すため**です
+    （§28）。**既定では読まれても 0 で、本番の経路に影響しません。**
+    """
+    d = os.environ.get("KRI_DIAG_TEST_SPAWN_DELAY")
+    if d:
+        time.sleep(float(d))
     pid = os.fork()
     if pid == 0:  # 子
         try:
@@ -77,52 +86,63 @@ def exit_code(st):
     return os.WEXITSTATUS(st) if os.WIFEXITED(st) else -os.WTERMSIG(st)
 
 
-def supervise(pid, budget, grace):
-    """**期限つきで子を待ちます。** 戻り値: (終了値, ピーク RSS[KiB], 打ち切ったか)。
+def supervise(pid, t_term, t_kill):
+    """**絶対の期限で子を待ちます。** 戻り値: (終了値, ピーク RSS[KiB], 打ち切ったか)。
 
-    **★ 無期限の `os.wait4(pid, 0)` は使いません**（§27）。
-    **照合の子も、本計算の子も、合成検定の子も、すべてここを通します。**
-    **1 か所にまとめないと、どれかに監督が抜けます**（実際に照合が抜けていました）。
+    **★ 相対の予算を受けません**（§28）。**`spawn` の前に決めた絶対時刻を受けます。**
+    **相対で受けると、起動に時間がかかったぶんが【再付与】されます**
+    （仕様担当が、`spawn` を 0.4 秒待つ形に置き換えて再現しました）。
+
+    * ``t_term`` … **遅くともこの時刻に `TERM`**（全体の期限 − 猶予 で上から抑えます）
+    * ``t_kill`` … **遅くともこの時刻に `KILL`**（全体の期限で上から抑えます）
     """
-    t0 = time.monotonic()
+    sent_term = False
     while True:
         wpid, st, ru = os.wait4(pid, os.WNOHANG)
         if wpid == pid:
-            return exit_code(st), ru.ru_maxrss, False
-        if time.monotonic() - t0 >= budget:
+            return exit_code(st), ru.ru_maxrss, sent_term
+        now = time.monotonic()
+        if not sent_term and now >= t_term:
+            sent_term = True
             try:
                 os.killpg(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            t_kill = time.monotonic() + grace
-            while time.monotonic() < t_kill:
-                wpid, st, ru = os.wait4(pid, os.WNOHANG)
-                if wpid == pid:
-                    # **猶予の内に回収できたら、実際の終了状態を解釈します**
-                    return exit_code(st), ru.ru_maxrss, True
-                time.sleep(0.02)
+        if sent_term and now >= t_kill:
             try:
                 os.killpg(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            _, st, ru = os.wait4(pid, 0)
+            _, st, ru = os.wait4(pid, 0)   # **KILL は捕まえられないので、すぐ戻ります**
             return exit_code(st), ru.ru_maxrss, True
-        time.sleep(0.02)
+        time.sleep(0.01)
 
 
-def run_one(a, key, only_path, budget, log_path):
+def deadlines(a, t_end, budget):
+    """**起動の【前】に、絶対の TERM / KILL 時刻を決めます**（§28）。
+
+    **どちらも全体の期限 D で上から抑えます。**
+    """
+    now = time.monotonic()
+    t_term = min(now + budget, t_end - a.grace)
+    t_kill = min(t_term + a.grace, t_end)
+    return t_term, t_kill
+
+
+def run_one(a, key, only_path, budget, log_path, t_end):
     """1 対を回します。戻り値: (状態, 終了値, 秒, その子のピーク RSS[KiB])。"""
     env = dict(os.environ, KRI_GMP_ONLY=only_path)
     cmd = [os.path.abspath(a.bin), a.list_of_key] + a.args.split()
+    t_term, t_kill = deadlines(a, t_end, budget)   # ★ spawn の【前】に決めます
     t0 = time.monotonic()
     pid = spawn(cmd, env, log_path, int(a.as_gib * (1 << 30)))
-    rc, rss, cut = supervise(pid, budget, a.grace)
+    rc, rss, cut = supervise(pid, t_term, t_kill)
     dt = time.monotonic() - t0
     status = "打ち切り" if cut else ("ok" if rc == 0 else "失敗")
     return status, rc, dt, rss
 
 
-def check_only(a, lp, pp, only_path, log_path, budget):
+def check_only(a, lp, pp, only_path, log_path, budget, t_end):
     """**駆動に照合だけさせます**（量子化もブール演算もしません）。
 
     **★ 再利用してよいかを、この層では決めません**（§25.1）。
@@ -135,8 +155,9 @@ def check_only(a, lp, pp, only_path, log_path, budget):
     """
     env = dict(os.environ, KRI_GMP_ONLY=only_path, KRI_GMP_PLAN=pp, KRI_GMP_CHECK_ONLY="1")
     cmd = [os.path.abspath(a.bin), lp] + a.args.split()
+    t_term, t_kill = deadlines(a, t_end, budget)   # ★ spawn の【前】に決めます
     pid = spawn(cmd, env, log_path, int(a.as_gib * (1 << 30)))
-    rc, _, cut = supervise(pid, budget, a.grace)
+    rc, _, cut = supervise(pid, t_term, t_kill)
     return None if cut else rc
 
 
@@ -196,10 +217,11 @@ def main(argv=None):
             print(f"**合成検定の予算がありません**（残り {remain:.1f} 秒）")
             return 1
         slog = os.path.join(a.logdir, f"synth_{run_id}.log")
+        t_term, t_kill = deadlines(a, t_end, budget)   # ★ spawn の【前】に決めます
         pid = spawn([os.path.abspath(a.synth_check)], dict(os.environ), slog,
                     int(a.as_gib * (1 << 30)))
         t0 = time.monotonic()
-        rc, _, cut = supervise(pid, budget, a.grace)
+        rc, _, cut = supervise(pid, t_term, t_kill)
         if cut:
             rc = None
         print(f"  合成検定: {'通過' if rc == 0 else ('**打ち切り**' if rc is None else '**不通過**')}"
@@ -229,7 +251,7 @@ def main(argv=None):
             f.write(k + "\n")
         # ---- 1. 照合（駆動に聞きます。量子化もブール演算もしません）----
         clog = os.path.join(a.logdir, f"{stem}_{run_id}_{k}_check.log")
-        rc = check_only(a, lp, pp, only_path, clog, budget)
+        rc = check_only(a, lp, pp, only_path, clog, budget, t_end)
         if rc is None:
             print(f"  {k}: **照合が期限で打ち切られました**。**未検証を成功に数えません。**"
                   f"  ログ: {clog}")
@@ -257,7 +279,7 @@ def main(argv=None):
         log_path = os.path.join(a.logdir, f"{stem}_{run_id}_{k}.log")
         a.list_of_key = lp
         os.environ["KRI_GMP_PLAN"] = pp
-        status, rc, dt, rss = run_one(a, k, only_path, budget, log_path)
+        status, rc, dt, rss = run_one(a, k, only_path, budget, log_path, t_end)
         # ---- 3. 完了は、もう一度【駆動に照合させて】数えます ----
         vlog = os.path.join(a.logdir, f"{stem}_{run_id}_{k}_verify.log")
         vremain = t_end - time.monotonic()
@@ -269,7 +291,7 @@ def main(argv=None):
             bad += 1
             stopped = True
             continue
-        vrc = check_only(a, lp, pp, only_path, vlog, vbudget)
+        vrc = check_only(a, lp, pp, only_path, vlog, vbudget, t_end)
         okrow = (vrc == 0)
         print(f"  {k}: {status}（終了値 {rc}、{dt:.1f} 秒、ピーク RSS {rss / 1024:.0f} MiB、"
               f"期限 {budget:.1f} 秒、照合 {'通過' if okrow else '**不通過**'}）  ログ: {log_path}")

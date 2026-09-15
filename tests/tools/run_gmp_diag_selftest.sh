@@ -26,12 +26,14 @@ if [ "${KRI_GMP_CHECK_ONLY:-0}" = "1" ]; then
     reject) exit 2 ;;
     done)   exit 0 ;;
     slow)   sleep 0.7; exit 0 ;;          # ★ 仕様担当が再現した条件
-    hang)   sleep 300; exit 0 ;;          # 止まったまま
+    hang)   sleep 300; exit 0 ;;          # 止まったまま（TERM で死ぬ）
+    ignore) trap '' TERM; sleep 300 ;;    # ★ TERM を【無視】する（KILL の検査）
     *) grep -q "^$key " "${base}_gmp_results.txt" 2>/dev/null && exit 0 || exit 3 ;;
   esac
 fi
 case "${MOCK:-ok}" in
   ok)    row; exit 0 ;;
+  ignoremain) trap '' TERM; sleep 300 ;;  # ★ 本計算が TERM を無視する
   slow)  sleep 30; exit 0 ;;
   fail)  exit 1 ;;
   norow) exit 0 ;;                       # 終了値 0 なのに行を書かない
@@ -180,6 +182,43 @@ chk "済みにしない" "$(echo "$out" | grep -c '済み 0')" 1
 n=$(echo "$out" | grep -cE '照合 \*\*不通過\*\*|未検証を成功に数えません')
 chk "未検証・不通過のどちらかで止まる" "$([ "$n" -ge 1 ] && echo はい || echo いいえ)" はい
 chk "以降を起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
+
+
+echo "## 15. ★ TERM を無視する子は KILL まで行く"
+clean; t0=$(date +%s%N)
+out=$(MOCK=ignoremain MOCK_CHECK=auto $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s15 --deadline 3 --grace 0.3 --per-pair 0.5 2>&1); rc=$?
+t1=$(date +%s%N); ms=$(( (t1-t0)/1000000 ))
+chk "終了値" "$rc" 1
+# **KILL なら終了値は -9**（TERM で死ぬなら -15）
+chk "KILL の終了状態" "$(echo "$out" | grep -oE '終了値 -9' | head -1)" "終了値 -9"
+chk "打ち切りとして数える" "$(echo "$out" | grep -cE '^  [abc][0-9]x[abc][0-9]: 打ち切り')" 1
+chk "全体が 3.5 秒以内に戻る" "$([ "$ms" -le 3500 ] && echo はい || echo いいえ)" はい
+ok "実測 ${ms} ミリ秒"
+
+echo
+echo "## 16. ★ 起動前に使った時間が再付与されないこと（仕様担当の再現）"
+# spawn の前に 0.4 秒待たせます。全体 0.3 秒・猶予 0.05 秒・対ごと 0.2 秒
+clean; t0=$(date +%s%N)
+out=$(KRI_DIAG_TEST_SPAWN_DELAY=0.4 MOCK=ok MOCK_CHECK=auto $R --bin "$T/mock" \
+      --target "$TGT" --args "0" --logdir "$T/log" --run-id s16 \
+      --deadline 0.3 --grace 0.05 --per-pair 0.2 2>&1); rc=$?
+t1=$(date +%s%N); ms=$(( (t1-t0)/1000000 ))
+chk "終了値（成功にしない）" "$rc" 1
+chk "済み 0" "$(echo "$out" | grep -c '済み 0')" 1
+ok "実測 ${ms} ミリ秒（全体の期限 300 ミリ秒 + 起動前の 400 ミリ秒）"
+
+echo
+echo "## 17. 事後照合の 2 つの場面を分けて見る"
+# 17a. 予算不足で【未起動】
+# **対ごとの上限を効かせず、全体の期限で切らせます**（t_term = D − 猶予）
+clean; out=$(MOCK=slow MOCK_CHECK=auto $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s17a --deadline 1.0 --grace 0.3 --per-pair 5 2>&1)
+chk "予算不足で未起動" "$(echo "$out" | grep -c '事後の照合に予算が残っていません')" 1
+# 17b. 起動した照合が【打ち切られる】
+clean; out=$(MOCK=ok MOCK_CHECK=hang $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s17b --deadline 3 --grace 0.2 --per-pair 0.4 2>&1)
+chk "起動した照合が打ち切られる" "$(echo "$out" | grep -c '照合が期限で打ち切られました')" 1
 
 echo
 printf '**OK %d / NG %d**\n' "$OK" "$NG"
