@@ -17,6 +17,7 @@
 **OS による終了・回収の遅延があれば、超過として報告します。**
 """
 import argparse
+import math
 import os
 import resource
 import signal
@@ -75,8 +76,7 @@ def run_one(a, key, only_path, budget, log_path):
     while True:
         wpid, st, ru = os.wait4(pid, os.WNOHANG)
         if wpid == pid:
-            rc = os.waitstatus_to_exitcode(st) if hasattr(os, "waitstatus_to_exitcode") else (
-                os.WEXITSTATUS(st) if os.WIFEXITED(st) else -os.WTERMSIG(st))
+            rc = exit_code(st)
             rss = ru.ru_maxrss
             break
         if time.monotonic() >= deadline:
@@ -89,7 +89,8 @@ def run_one(a, key, only_path, budget, log_path):
             while time.monotonic() < t_kill:
                 wpid, st, ru = os.wait4(pid, os.WNOHANG)
                 if wpid == pid:
-                    rc, rss = -1, ru.ru_maxrss
+                    # **猶予の内に回収できたら、実際の終了状態を解釈します**（§25.3）
+                    rc, rss = exit_code(st), ru.ru_maxrss
                     break
                 time.sleep(0.05)
             else:
@@ -98,7 +99,7 @@ def run_one(a, key, only_path, budget, log_path):
                 except ProcessLookupError:
                     pass
                 _, st, ru = os.wait4(pid, 0)
-                rc, rss = -9, ru.ru_maxrss
+                rc, rss = exit_code(st), ru.ru_maxrss
             break
         time.sleep(0.05)
     dt = time.monotonic() - t0
@@ -107,24 +108,44 @@ def run_one(a, key, only_path, budget, log_path):
     return status, rc, dt, rss
 
 
-def row_complete(res_path, key):
-    """**その対の行が在り、実施済みで判定が完了しているか**を確かめます。"""
-    try:
-        with open(res_path, errors="replace") as f:
-            for line in f:
-                t = line.split()
-                if not t or t[0] != key:
-                    continue
-                return (len(t) >= FIXED_COLS and t[1] == "ok" and t[2] == "1"
-                        and t[3] == "id1=ok" and all(t[18 + k] == "15" for k in range(4))
-                        and all(t[22 + k] == "0" for k in range(4)))
-    except OSError:
-        return False
-    return False
+def check_only(a, lp, pp, only_path, log_path):
+    """**駆動に照合だけさせます**（量子化もブール演算もしません）。
+
+    **★ 再利用してよいかを、この層では決めません**（§25.1）。
+    **meta・入力・バイナリ・設定・行の検査は、駆動の 1 か所だけが持ちます。**
+
+    戻り値: 0 = すべて済み（**検証した再利用**）/ 3 = 回す対がある / それ以外 = 拒否
+    """
+    env = dict(os.environ, KRI_GMP_ONLY=only_path, KRI_GMP_PLAN=pp, KRI_GMP_CHECK_ONLY="1")
+    cmd = [os.path.abspath(a.bin), lp] + a.args.split()
+    pid = spawn(cmd, env, log_path, int(a.as_gib * (1 << 30)))
+    _, st, _ = os.wait4(pid, 0)
+    return exit_code(st)
+
+
+def exit_code(st):
+    """待機状態を終了値に直します（**シグナルは負で返します**）。"""
+    if hasattr(os, "waitstatus_to_exitcode"):
+        try:
+            return os.waitstatus_to_exitcode(st)
+        except ValueError:
+            pass
+    return os.WEXITSTATUS(st) if os.WIFEXITED(st) else -os.WTERMSIG(st)
 
 
 def main(argv=None):
     a = parse_args(argv)
+    # **★ 期限は、準備を始める【前】から数えます**（§25.3）
+    t_begin = time.monotonic()
+    for name, v in (("--deadline", a.deadline), ("--grace", a.grace),
+                    ("--per-pair", a.per_pair), ("--as-gib", a.as_gib)):
+        if not math.isfinite(v) or v <= 0:
+            print(f"**{name} が不正です**: {v}")
+            return 2
+    if a.grace >= a.deadline:
+        print(f"**--grace は --deadline より小さくしてください**: {a.grace} >= {a.deadline}")
+        return 2
+    t_end = t_begin + a.deadline
     run_id = a.run_id or time.strftime("%Y%m%d_%H%M%S")
     plan = []  # (list_path, plan_path, key)
     for t in a.target:
@@ -153,41 +174,61 @@ def main(argv=None):
         print("**計画だけ出しました。起動していません。**")
         return 0
 
-    t_end = time.monotonic() + a.deadline
-    done, skipped, bad = 0, 0, 0
+    done, skipped, bad, stopped = 0, 0, 0, False
     for lp, pp, k in plan:
-        base = os.path.splitext(lp)[0]
-        res_path = base + "_gmp_results.txt"
-        stem = os.path.basename(base)
-        if row_complete(res_path, k):
-            print(f"  {k}: **済み**（検証した再利用。起動しません）")
-            done += 1
+        stem = os.path.basename(os.path.splitext(lp)[0])
+        if stopped:
+            print(f"  {k}: **停止条件に当たったので起動しません**")
+            skipped += 1
             continue
+        # ---- 0. 予算（**照合も予算の内側です**。§25.3）----
         remain = t_end - time.monotonic()
         budget = min(a.per_pair, remain - a.grace)
         if budget <= 0:
             print(f"  {k}: **予算切れのため起動しません**（残り {remain:.1f} 秒）")
             skipped += 1
+            stopped = True
             continue
         only_path = os.path.join(a.logdir, f"{stem}_{run_id}_one.txt")
         with open(only_path, "w") as f:
             f.write(k + "\n")
-        log_path = os.path.join(a.logdir, f"{stem}_{run_id}_{k.replace('/', '_')}.log")
+        # ---- 1. 照合（駆動に聞きます。量子化もブール演算もしません）----
+        clog = os.path.join(a.logdir, f"{stem}_{run_id}_{k}_check.log")
+        rc = check_only(a, lp, pp, only_path, clog)
+        if rc == 0:
+            print(f"  {k}: **済み**（駆動が照合した再利用。起動しません）  ログ: {clog}")
+            done += 1
+            continue
+        if rc != 3:
+            print(f"  {k}: **照合に失敗しました**（終了値 {rc}）。**再計算しません。**  ログ: {clog}")
+            tail(clog)
+            bad += 1
+            stopped = True          # **拒否は停止条件です**（§25.3）
+            continue
+        # ---- 2. 本計算（照合に使った時間も引いた残りで）----
+        remain = t_end - time.monotonic()
+        budget = min(a.per_pair, remain - a.grace)
+        if budget <= 0:
+            print(f"  {k}: **照合の後で予算切れになりました**（残り {remain:.1f} 秒）")
+            skipped += 1
+            stopped = True
+            continue
+        log_path = os.path.join(a.logdir, f"{stem}_{run_id}_{k}.log")
         a.list_of_key = lp
-        env_plan = os.environ.copy()
-        env_plan["KRI_GMP_PLAN"] = pp
         os.environ["KRI_GMP_PLAN"] = pp
         status, rc, dt, rss = run_one(a, k, only_path, budget, log_path)
-        okrow = row_complete(res_path, k)
+        # ---- 3. 完了は、もう一度【駆動に照合させて】数えます ----
+        vlog = os.path.join(a.logdir, f"{stem}_{run_id}_{k}_verify.log")
+        vrc = check_only(a, lp, pp, only_path, vlog)
+        okrow = (vrc == 0)
         print(f"  {k}: {status}（終了値 {rc}、{dt:.1f} 秒、ピーク RSS {rss / 1024:.0f} MiB、"
-              f"期限 {budget:.1f} 秒、行 {'完全' if okrow else '**不完全**'}）  ログ: {log_path}")
+              f"期限 {budget:.1f} 秒、照合 {'通過' if okrow else '**不通過**'}）  ログ: {log_path}")
         if status != "ok" or not okrow:
             bad += 1
-            try:
-                for ln in open(log_path, errors="replace").read().splitlines()[-5:]:
-                    print(f"      | {ln}")
-            except OSError:
-                pass
+            tail(log_path)
+            if not okrow:
+                tail(vlog)
+            stopped = True          # **失敗したら次へ進みません**（§25.3）
         else:
             done += 1
     over = time.monotonic() - t_end
@@ -195,6 +236,15 @@ def main(argv=None):
     if over > 0:
         print(f"**★ 期限を {over:.1f} 秒超過しました**（OS の終了・回収の遅延）")
     return 0 if (bad == 0 and skipped == 0) else 1
+
+
+def tail(path, n=5):
+    """失敗したときに、その場でログの末尾を出します。"""
+    try:
+        for ln in open(path, errors="replace").read().splitlines()[-n:]:
+            print(f"      | {ln}")
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":

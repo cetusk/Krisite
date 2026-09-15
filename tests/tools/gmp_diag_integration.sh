@@ -56,7 +56,7 @@ echo "## 2. 再開（検証した再利用。起動しない）"
 out=$($R --bin "$BIN" --target "$T/cpA.txt:$T/cpA_gmp_only.txt" --args "$ARGS" \
         --logdir "$T/log" --run-id t2 --deadline 300 --per-pair 120 2>&1); rc=$?
 chk "終了値" "$rc" 0
-chk "2 対とも再利用" "$(echo "$out" | grep -c '検証した再利用')" 2
+chk "2 対とも再利用" "$(echo "$out" | grep -c '駆動が照合した再利用')" 2
 chk "行が増えない" "$(wc -l < "$T/cpA_gmp_results.txt")" 2
 
 echo
@@ -78,8 +78,8 @@ out=$(KRI_DIAG_MUTATE=unres4 $R --bin "$MUT" --target "$T/cpA.txt:$T/cpA_gmp_onl
         --args "$ARGS" --logdir "$T/log" --run-id t4 --deadline 300 --per-pair 120 2>&1); rc=$?
 chk "終了値（失敗が届く）" "$rc" 1
 chk "状態" "$(awk '{print $2}' "$T/cpA_gmp_results.txt")" FAIL
-chk "理由に unresolved" "$(grep -c 'unresolvedが残る' "$T"/log/*t4*.log)" 1
-chk "行は不完全と判定" "$(echo "$out" | grep -c '行 \*\*不完全\*\*')" 1
+chk "理由に unresolved" "$(grep -h -c 'unresolvedが残る' "$T"/log/*t4*.log | paste -sd+ | bc)" 1
+chk "照合が不通過と判定" "$(echo "$out" | grep -c '照合 \*\*不通過\*\*')" 1
 
 echo
 echo "## 5. 計画に無い対は回さない"
@@ -102,8 +102,61 @@ out=$($R --bin "$BIN" --target "$T/cpA.txt:$T/cpA_gmp_only.txt" --args "$ARGS" \
         --logdir "$T/log" --run-id t6 --deadline 300 --per-pair 120 2>&1)
 r1=$(echo "$out" | grep '2001x2002:' | sed 's/.*ピーク RSS \([0-9]*\) MiB.*/\1/')
 r2=$(echo "$out" | grep '2001x2003:' | sed 's/.*ピーク RSS \([0-9]*\) MiB.*/\1/')
-ok "1 対目 ${r1} MiB / 2 対目 ${r2} MiB（**同じ子の値でないこと**を見ます）"
-chk "2 つの値が独立に出ている" "$([ -n "$r1" ] && [ -n "$r2" ] && echo はい || echo いいえ)" はい
+ok "1 対目 ${r1} MiB / 2 対目 ${r2} MiB"
+chk "2 つの値が出ている" "$([ -n "$r1" ] && [ -n "$r2" ] && echo はい || echo いいえ)" はい
+# **RUSAGE_CHILDREN なら 2 対目は 1 対目以上になります**（最大値が累積するため）。
+# **その子だけの値なら、小さい子で下がります。**
+chk "2 対目が 1 対目より小さい（子ごとの値である証拠）" \
+    "$([ -n "$r1" ] && [ -n "$r2" ] && [ "$r2" -lt "$r1" ] && echo はい || echo いいえ)" はい
+
+echo
+echo "## 7. ★ 再利用の迂回（仕様側が再現した 3 つ）"
+# 7a. 結果はあるが meta が無い
+setup
+$R --bin "$BIN" --target "$T/cpA.txt:$T/cpA_gmp_only.txt" --args "$ARGS" \
+   --logdir "$T/log" --run-id t7a --deadline 300 --per-pair 120 > /dev/null 2>&1
+rm "$T/cpA_gmp.meta"
+out=$($R --bin "$BIN" --target "$T/cpA.txt:$T/cpA_gmp_only.txt" --args "$ARGS" \
+        --logdir "$T/log" --run-id t7b --deadline 300 --per-pair 120 2>&1); rc=$?
+chk "meta なし → 終了値" "$rc" 1
+chk "再利用しない" "$(echo "$out" | grep -c '駆動が照合した再利用')" 0
+chk "拒否と言う" "$(echo "$out" | grep -c '照合に失敗しました')" 1
+
+# 7b. meta が不一致（設定を変える）
+setup
+$R --bin "$BIN" --target "$T/cpA.txt:$T/cpA_gmp_only.txt" --args "$ARGS" \
+   --logdir "$T/log" --run-id t7c --deadline 300 --per-pair 120 > /dev/null 2>&1
+out=$($R --bin "$BIN" --target "$T/cpA.txt:$T/cpA_gmp_only.txt" \
+        --args "0 6 4 0 0 1 1 0 0 16 2 1 0 1 1" \
+        --logdir "$T/log" --run-id t7d --deadline 300 --per-pair 120 2>&1); rc=$?
+chk "meta 不一致 → 終了値" "$rc" 1
+chk "再利用しない" "$(echo "$out" | grep -c '駆動が照合した再利用')" 0
+
+# 7c. 式 1 の残差が 0 でない行
+setup
+$R --bin "$BIN" --target "$T/cpA.txt:$T/cpA_gmp_only.txt" --args "$ARGS" \
+   --logdir "$T/log" --run-id t7e --deadline 300 --per-pair 120 > /dev/null 2>&1
+awk '{ $27 = "123"; print }' "$T/cpA_gmp_results.txt" > "$T/x" && mv "$T/x" "$T/cpA_gmp_results.txt"
+out=$($R --bin "$BIN" --target "$T/cpA.txt:$T/cpA_gmp_only.txt" --args "$ARGS" \
+        --logdir "$T/log" --run-id t7f --deadline 300 --per-pair 120 2>&1); rc=$?
+chk "残差 123 → 終了値" "$rc" 1
+chk "再利用しない" "$(echo "$out" | grep -c '駆動が照合した再利用')" 0
+chk "行が使えないと言う" "$(grep -h -c '再開に使えません' "$T"/log/*t7f*.log | paste -sd+ | bc)" 1
+
+# 7d. 入力そのものを差し替える
+setup
+$R --bin "$BIN" --target "$T/cpA.txt:$T/cpA_gmp_only.txt" --args "$ARGS" \
+   --logdir "$T/log" --run-id t7g --deadline 300 --per-pair 120 > /dev/null 2>&1
+python3 - "$T/kmesh" <<'PY2'
+import sys
+sys.path.insert(0, "tests/tools")
+from mk_synth_kmesh import cube, write
+write(f"{sys.argv[1]}/2002.kmesh", *cube(5, 0, 0, 4))   # ★ 座標だけ変える（三角形数は同じ）
+PY2
+out=$($R --bin "$BIN" --target "$T/cpA.txt:$T/cpA_gmp_only.txt" --args "$ARGS" \
+        --logdir "$T/log" --run-id t7h --deadline 300 --per-pair 120 2>&1); rc=$?
+chk "入力が変わった → 終了値" "$rc" 1
+chk "再利用しない" "$(echo "$out" | grep -c '駆動が照合した再利用')" 0
 
 echo
 printf '**OK %d / NG %d**\n' "$OK" "$NG"

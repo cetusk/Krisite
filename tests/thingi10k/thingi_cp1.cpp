@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -628,31 +629,63 @@ inline int pack_topo(const mesh::TopologyReport& t) {
 /// （`DESIGN-phase5-vertex-level.md` §23.10）。
 constexpr const char* kDiagCheckerVersion = "gmp-diag/2";
 
+#if defined(KRISITE_TEST_GMP_DIAG)
 /// 診断の結果の行を検査し、**再利用してよいキー**を `out_keys` に集めます。
 ///
-/// **列数と先頭だけでは足りません**（§23.10 の指摘 2）。
-/// **型・意味・完結性・重複**まで見ます。
-inline bool validate_diag_rows(const std::string& path, std::vector<std::string>* out_keys) {
+/// **列数と先頭だけでは足りません**（§23.10 / §25.2）。
+/// **全固定列の型・有限性・非零分母・終端・計画所属・意味の整合**まで見ます。
+///
+/// **上位（投入の層）と下位（駆動）で別の判定を持たせません。**
+/// **再利用してよいかは、この 1 か所だけが決めます。**
+inline bool validate_diag_rows(const std::string& path, const std::vector<std::string>& plan,
+                              std::vector<std::string>* out_keys) {
+    {   // **改行で終わっていないファイルは、最終行が切れています**
+        std::ifstream f(path, std::ios::binary);
+        if (f) {
+            f.seekg(0, std::ios::end);
+            const std::streamoff n = f.tellg();
+            if (n > 0) {
+                f.seekg(n - 1);
+                char last = 0;
+                f.get(last);
+                if (last != '\n') {
+                    std::printf("**診断結果の最終行が改行で終わっていません**: `%s`\n",
+                                path.c_str());
+                    return false;
+                }
+            }
+        }
+    }
     std::ifstream f(path);
     if (!f) return true;  // **無ければ、これから作ります**
     const auto is_uint = [](const std::string& t) {
         return !t.empty() && t.find_first_not_of("0123456789") == std::string::npos;
     };
-    const auto is_num = [](const std::string& t) {
+    const auto is_finite = [](const std::string& t) {  // **NaN / Inf を拒否します**
         if (t.empty()) return false;
         char* e = nullptr;
-        std::strtod(t.c_str(), &e);
-        return e != nullptr && *e == '\0';
+        const double v = std::strtod(t.c_str(), &e);
+        return e != nullptr && *e == '\0' && std::isfinite(v);
     };
-    const auto is_rat = [](const std::string& t) {  // 有理数（`-3` / `7/2`）
+    const auto is_key = [](const std::string& t) {  // **数字 x 数字**
+        const std::size_t xp = t.find('x');
+        if (xp == std::string::npos || xp == 0 || xp + 1 >= t.size()) return false;
+        const std::string a = t.substr(0, xp), b = t.substr(xp + 1);
+        return a.find_first_not_of("0123456789") == std::string::npos &&
+               b.find_first_not_of("0123456789") == std::string::npos;
+    };
+    const auto is_rat = [](const std::string& t) {  // **分母 0 を拒否します**
         if (t.empty()) return false;
         const std::size_t sl = t.find('/');
         const std::string a = (sl == std::string::npos) ? t : t.substr(0, sl);
         const std::string b = (sl == std::string::npos) ? std::string("1") : t.substr(sl + 1);
         if (a.empty() || b.empty()) return false;
         const std::string a2 = (a[0] == '-' || a[0] == '+') ? a.substr(1) : a;
-        return !a2.empty() && a2.find_first_not_of("0123456789") == std::string::npos &&
-               b.find_first_not_of("0123456789") == std::string::npos;
+        if (a2.empty() || a2.find_first_not_of("0123456789") == std::string::npos) {
+            if (b.find_first_not_of("0123456789") != std::string::npos) return false;
+            return b.find_first_not_of("0") != std::string::npos;  // **分母が 0 でない**
+        }
+        return false;
     };
     const auto is_hash = [](const std::string& t) {
         return t.size() == 16 && t.find_first_not_of("0123456789abcdef") == std::string::npos;
@@ -671,32 +704,56 @@ inline bool validate_diag_rows(const std::string& path, std::vector<std::string>
         }
         const char* bad = nullptr;
         if (t.size() < static_cast<std::size_t>(kDiagFixedCols)) bad = "列が足りません";
-        else if (t[0].find('x') == std::string::npos) bad = "キーの形が違います";
+        else if (!is_key(t[0])) bad = "キーの形が違います";
+        else if (std::find(plan.begin(), plan.end(), t[0]) == plan.end()) bad = "計画にない対です";
         else if (t[1] != "ok") bad = "状態が ok ではありません";
         else if (t[2] != "1") bad = "実施されていません";
         else if (t[3] != "id1=ok") bad = "式 1 が一致していません";
         else if (t[4] != "id2=ok" && t[4] != "id2=ng") bad = "式 2 の列の形が違います";
         else if (!is_uint(t[5]) || !is_uint(t[6])) bad = "入力の三角形数が数ではありません";
-        else if (!is_num(t[7]) || std::strtod(t[7].c_str(), nullptr) < 0) bad = "対の秒が不正です";
+        else if (!is_finite(t[7]) || std::strtod(t[7].c_str(), nullptr) < 0) bad = "対の秒が不正です";
         else if (!is_hash(t[8]) || !is_hash(t[9])) bad = "ハッシュの形が違います";
         else if (!is_uint(t[10]) || !is_uint(t[11])) bad = "時間の列が数ではありません";
-        else if (!is_num(t[12]) || !is_num(t[13])) bad = "篩の値が数ではありません";
+        else if (!is_finite(t[12]) || !is_finite(t[13])) bad = "篩の値が数ではありません";
+        for (int k = 0; k < 4 && bad == nullptr; ++k) {
+            if (!is_uint(t[14 + k])) bad = "三角形数が数ではありません";
+            else if (t[18 + k] != "15") bad = "位相が完全ではありません";
+            else if (!is_uint(t[22 + k])) bad = "unresolved が数ではありません";
+            else if (t[22 + k] != "0") bad = "unresolved が 0 ではありません";
+        }
+        // **26 = 式 1 の残差、27 = 式 2 の残差、28〜31 = 出力の体積、32 / 33 = 入力の体積**
+        for (int k = 26; k <= 33 && bad == nullptr; ++k) {
+            if (!is_rat(t[k])) bad = "有理数の形ではありません";
+        }
+        if (bad == nullptr && t[26] != "0") bad = "式 1 の残差が 0 ではありません";
         if (bad == nullptr) {
-            for (int k = 0; k < 4 && bad == nullptr; ++k) {
-                if (!is_uint(t[14 + k])) bad = "三角形数が数ではありません";
+            // **★ 保存された体積と、残差・判定状態の整合**（§25.2）。
+            // **「残差 0 と書いてあること」と「体積から残差が 0 になること」は別です。**
+            mpq_t v[4], lhs, rhs, got;
+            for (auto& q : v) mpq_init(q);
+            mpq_init(lhs);
+            mpq_init(rhs);
+            mpq_init(got);
+            bool parsed = true;
+            for (int k = 0; k < 4; ++k) {
+                if (mpq_set_str(v[k], t[28 + k].c_str(), 10) != 0) parsed = false;
+                else mpq_canonicalize(v[k]);
             }
-            for (int k = 0; k < 4 && bad == nullptr; ++k) {
-                // **位相は 4 項目を詰めた 0..15。診断で残すのは【15 のみ】**
-                if (t[18 + k] != "15") bad = "位相が完全ではありません";
+            if (parsed && mpq_set_str(got, t[26].c_str(), 10) == 0) {
+                mpq_canonicalize(got);
+                mpq_set(rhs, v[2]);
+                mpq_add(rhs, rhs, v[3]);
+                mpq_add(rhs, rhs, v[1]);
+                mpq_sub(lhs, v[0], rhs);
+                if (mpq_equal(lhs, got) == 0) bad = "体積から求めた残差が、保存された残差と違います";
+                else if (mpq_sgn(lhs) != 0) bad = "体積から求めた残差が 0 ではありません";
+            } else {
+                bad = "体積を読めません";
             }
-            for (int k = 0; k < 4 && bad == nullptr; ++k) {
-                if (!is_uint(t[22 + k])) bad = "unresolved が数ではありません";
-                else if (t[22 + k] != "0") bad = "unresolved が 0 ではありません";
-            }
-            if (bad == nullptr && t[26] != "0") bad = "式 1 の残差が 0 ではありません";
-            for (int k = 0; k < 6 && bad == nullptr; ++k) {
-                if (!is_rat(t[27 + k])) bad = "体積が有理数の形ではありません";
-            }
+            mpq_clear(got);
+            mpq_clear(lhs);
+            mpq_clear(rhs);
+            for (auto& q : v) mpq_clear(q);
         }
         if (bad != nullptr) {
             std::printf("**既存の診断結果の %zu 行目が再開に使えません**（%s）\n"
@@ -719,7 +776,6 @@ inline bool validate_diag_rows(const std::string& path, std::vector<std::string>
     return true;
 }
 
-#if defined(KRISITE_TEST_GMP_DIAG)
 /// **4 出力の厳密体積整合性の診断**（§22.16 の式 1 と式 2）。
 ///
 /// > **★ 式 1 は独立した正解器ではありません**（§22.16）。
@@ -1299,6 +1355,23 @@ int main(int argc, char** argv) {
         return 2;
     }
 #endif
+    // **照合だけ行うモード**（§25.1）。**量子化もブール演算もしません。**
+    //
+    // **★ 再利用してよいかを、投入の層（Python）に決めさせません。**
+    // **部分検査で「済み」と判断すると、meta も入力もバイナリも見ない経路ができます。**
+    //
+    //   終了値 0 … 対象がすべて済んでいる（**検証した再利用**）
+    //   終了値 3 … 照合は通った。**まだ回す対がある**
+    //   終了値 2 … 照合に失敗した（**再計算せず拒否**）
+    const bool check_only = [] {
+        const char* v = std::getenv("KRI_GMP_CHECK_ONLY");
+        return v != nullptr && std::string(v) == "1";
+    }();
+    if (check_only && !gmp_diag) {
+        std::printf("**照合専用は診断のときだけです**（第 16 引数を 1 に）\n");
+        return 2;
+    }
+
     // **設定の矛盾も、量子化より前で拒否します**（§22.19.1）。
     //
     // **診断は 1 巡目（索引 ON）にだけ GMP を掛ける設計**なので、
@@ -1438,6 +1511,7 @@ int main(int argc, char** argv) {
     // **★ 以前は量子化の後に照合していました**（§23.10 の指摘 2）。
     // **止めるなら、実データに触れる前に止めるべきです。**
     std::vector<std::string> diag_already;
+#if defined(KRISITE_TEST_GMP_DIAG)
     if (gmp_diag) {
         // **指紋。** **開けなければ失敗を返します**（空文字）。
         // **以前は「読めない」を有効な指紋のように扱い得ました。**
@@ -1563,8 +1637,20 @@ int main(int argc, char** argv) {
             }
         }
         // **行の検査。列数だけでなく、型・意味・完結性・重複まで見ます。**
-        if (!validate_diag_rows(res_path, &diag_already)) return 2;
+        if (!validate_diag_rows(res_path, plan, &diag_already)) return 2;
+        if (check_only) {
+            std::size_t left = 0;
+            for (const std::string& k : only) {
+                if (std::find(diag_already.begin(), diag_already.end(), k) == diag_already.end()) {
+                    ++left;
+                }
+            }
+            std::printf("**照合だけ行いました。計算していません。**（対象 %zu、残り %zu）\n",
+                        only.size(), left);
+            return left == 0 ? 0 : 3;
+        }
     }
+#endif
 
     // ---- 1. 量子化と受け入れ判定（**モデル単位**）----
     std::vector<Prepared> prep(ids.size());

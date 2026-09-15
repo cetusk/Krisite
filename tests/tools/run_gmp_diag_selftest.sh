@@ -20,6 +20,14 @@ row() {  # 34 列の完全な行
   printf '%s ok 1 id1=ok id2=ok 12 12 0.1 %016x %016x 1 1 0 0 4 4 4 4 15 15 15 15 0 0 0 0 0 0 1 1 1 1 1 1\n' \
     "$key" 1 2 >> "${base}_gmp_results.txt"
 }
+# **照合専用**（KRI_GMP_CHECK_ONLY=1）。0 = 済み / 3 = 回す対がある / 2 = 拒否
+if [ "${KRI_GMP_CHECK_ONLY:-0}" = "1" ]; then
+  case "${MOCK_CHECK:-auto}" in
+    reject) exit 2 ;;
+    done)   exit 0 ;;
+    *) grep -q "^$key " "${base}_gmp_results.txt" 2>/dev/null && exit 0 || exit 3 ;;
+  esac
+fi
 case "${MOCK:-ok}" in
   ok)    row; exit 0 ;;
   slow)  sleep 30; exit 0 ;;
@@ -52,13 +60,13 @@ echo
 echo "## 3. ★ 終了値 0 でも、行が無ければ済みにしない"
 clean; out=$(MOCK=norow $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s3); rc=$?
 chk "終了値" "$rc" 1
-chk "行が不完全と言う" "$(echo "$out" | grep -c '行 \*\*不完全\*\*')" 3
+chk "照合が不通過（1 件目で停止）" "$(echo "$out" | grep -c '照合 \*\*不通過\*\*')" 1
 
 echo
 echo "## 4. 失敗が終了値に届く"
 clean; out=$(MOCK=fail $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s4); rc=$?
 chk "終了値" "$rc" 1
-chk "失敗 3" "$(echo "$out" | grep -c '失敗・打ち切り 3')" 1
+chk "1 件目で停止（失敗 1 / 未起動 2）" "$(echo "$out" | grep -c '失敗・打ち切り 1 / 未起動 2')" 1
 
 echo
 echo "## 5. 対ごとの期限で打ち切る"
@@ -67,16 +75,18 @@ out=$(MOCK=slow $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" 
       --deadline 60 --grace 2 --per-pair 3); rc=$?
 t1=$(date +%s)
 chk "終了値" "$rc" 1
-chk "3 対とも打ち切り" "$(echo "$out" | grep -cE '^  [abc][0-9]x[abc][0-9]: 打ち切り')" 3
+chk "1 件目で打ち切り、以降は起動しない" "$(echo "$out" | grep -cE '^  [abc][0-9]x[abc][0-9]: 打ち切り')" 1
 chk "全体が 20 秒以内に戻る" "$([ $((t1-t0)) -le 20 ] && echo はい || echo いいえ)" はい
 
 echo
 echo "## 6. 全計画に 1 つの期限（起動しない対が出る）"
-clean; out=$(MOCK=slow $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s6 \
-      --deadline 8 --grace 2 --per-pair 5); rc=$?
-n=$(echo "$out" | grep -c '予算切れのため起動しません')
+# **照合も予算の内側**なので、予算が無ければ 1 対目から起動しません（決定的）
+clean; out=$(MOCK=ok $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s6 \
+      --deadline 2.001 --grace 2 --per-pair 5); rc=$?
 chk "終了値" "$rc" 1
-chk "予算切れで起動しない対がある（1 件以上）" "$([ "$n" -ge 1 ] && echo はい || echo いいえ)" はい
+chk "1 対目で予算切れ（起動前か照合後）" "$(echo "$out" | grep -c '予算切れ')" 1
+chk "以降は停止条件で起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
+chk "行を作っていない" "$([ -f "$T/list_gmp_results.txt" ] && echo あり || echo なし)" なし
 
 echo
 echo "## 7. CP を 2 つ渡しても期限は 1 つ"
@@ -104,6 +114,13 @@ rc=$($R --bin "$T/mock" --target "$T/list.txt:$T/empty.txt" --args "0" --logdir 
 chk "空の計画 → 終了値" "$rc" 2
 rc=$($R --bin "$T/mock" --target "$T/list.txt" --args "0" --logdir "$T/log" > /dev/null 2>&1; echo $?)
 chk "target の形が違う → 終了値" "$rc" 2
+
+
+echo "## 10. 不正な予算の指定"
+for bad in "--deadline -5" "--deadline nan" "--per-pair 0" "--as-gib -1" "--grace 1200"; do
+  rc=$($R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" $bad > /dev/null 2>&1; echo $?)
+  chk "$bad → 終了値" "$rc" 2
+done
 
 echo
 printf '**OK %d / NG %d**\n' "$OK" "$NG"
