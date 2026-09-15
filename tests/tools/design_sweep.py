@@ -448,7 +448,6 @@ def structure(b):
         ("43.10", "$r[0..8]$ の 9 行、続いて $\\text{shift}[0..2]$ の 3 行", "hex の並び"),
         ("43.10", "`int32` $\\times 3N_v$", "quantized の頂点の型"),
         ("43.10", "最小の元の添字", "併合の代表の選び方"),
-        ("43.9", "3 辺が 1 枚に減って", "I1 が破る辺の本数"),
         ("43.8", "$> 300 \\times 0.8$", "段 6 の起動判定の余裕"),
         ("43.8", "0x2545F4914F6CDD1D", "段 4 の乱数の定数"),
         ("43.8", "種は 1", "段 4 の種（0 は不動点）"),
@@ -473,6 +472,7 @@ def structure(b):
         ("43.3", r"分子が 7,782 桁(?!」と書いたのは誤り)", "列 29 の桁数の読み違い"),
         ("43.10", r"geom/widths\.hpp`。\$b\$ は", "kCoordMax の所在（config.hpp が正）"),
         ("43.8", r"\*\*種は 0\*\*|同じ生成器。種 0", "段 4 の種 0（不動点。出力が永久に 0）"),
+        ("43.9", r"外向き法線の【先端から", "三角形分割の「外向き」の矛盾"),
         ("43.5", r"これが E2 の実体です(?!」と書いたのは言い過ぎ)", "検算を E2 と同一視"),
         ("43.5", r"\\mathrm\{measure\}\(w_B>0\) = ", "measure の手順が B 専用"),
         ("43.5", r"\\cdot\\mathrm\{vol\}\(\\text\{領域\}_j\) = S\(B\)", "検算が B 専用"),
@@ -552,6 +552,20 @@ def structure(b):
         L2 = io.open(f, encoding="utf-8").read().split("\n") if os.path.exists(f) else []
         if hi > len(L2) or tlo not in L2[lo - 1] or thi not in L2[hi - 1]:
             bad.append("%s:%d-%d の範囲の両端が実コードとずれています" % (base, lo, hi))
+    # ★ 文書側の単一行の引用を起点に、宣言した行かを見る（18 巡目の指摘）。
+    #   17 巡目に「引用が無いことは欠陥ではない」と直した結果、行番号を
+    #   誤った行へ動かしても 1 件も落ちなくなっていた（実測で 6 件すべて素通り）。
+    #   文書を起点にすれば、削除は許しつつ、ずれは捕まえられる。
+    declared_line = {(os.path.basename(pp), l): tk for pp, l, tk in CITE}
+    known_files = {os.path.basename(pp) for pp, *_ in CITE} | \
+                  {os.path.basename(pp) for pp, *_ in CITE_RANGE}
+    for base, l in re.findall(r"`(?:[\w/.]*/)?([\w.]+\.(?:hpp|cpp|py|txt)):(\d+)`", b):
+        if base not in known_files:
+            continue
+        if (base, int(l)) not in declared_line:
+            bad.append("宣言していない行の引用: %s:%s（表に足すか、行番号を確かめる）"
+                       % (base, l))
+
     # 宣言していない範囲の引用があれば落とす（同じ引用が文書に複数あるとき、
     # 片方だけ書き換わったのを捕まえる。16 巡目の指摘）
     # 範囲の引用は、宣言してあれば両端を照合する。宣言に無い範囲は、
@@ -598,42 +612,134 @@ def structure(b):
                 bad.append("%s: 文書 %r ≠ コード %r" % (name, dm.group(1), sm.group(1)))
     out.append(("文書の値が実コードと一致する", not bad, bad[:4]))
 
-    # ★ 合成対照の構成が、期待する停止箇所で本当に止まるか（17 巡目の指摘）
-    #   文書の表から頂点と面を読み、評価順のとおりに計算して突き合わせる。
+    # ★ 合成対照の構成が、期待する停止箇所で本当に止まるか（17・18 巡目の指摘）
+    #   I 表の【全 7 行】を、基準の立方体と合わせて組み立てて計算する。
     bad = []
-    rows = re.findall(r"^\| \*\*(I\d+)\*\* \|[^|]*\| `([^`]*)` \| `([^`]*)` \|", b, re.M)
-    if not rows:
-        bad.append("I の構成の表（頂点と面）が読めません")
-    for name, vs, fs in rows:
-        try:
-            P = [tuple(int(x) for x in t.strip("()").split(","))
+    mb = re.search(r"頂点 0\.\.7: (.+)\n面 0\.\.11 : (.+)\n", b)
+    if mb is None:
+        bad.append("基準の立方体（頂点・面）が読めません")
+        BV = BF = []
+    else:
+        BV = [tuple(int(x) for x in t.strip("()").split(","))
+              for t in re.findall(r"\([-\d, ]+\)", mb.group(1))]
+        BF = [tuple(int(x) for x in t.strip("()").split(","))
+              for t in re.findall(r"\([-\d, ]+\)", mb.group(2))]
+        if len(BV) != 8 or len(BF) != 12:
+            bad.append("基準の立方体が 8 頂点 12 面ではありません")
+        elif first_break(BV, BF) != "A5(S) 以降":
+            bad.append("基準の立方体が A0〜A4 を通りません: %s" % first_break(BV, BF))
+
+    rows = re.findall(
+        r"^\| \*\*(I\d+)\*\* \|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|", b, re.M)
+    if len(rows) != 7:
+        bad.append("I 表が 7 行ではありません（%d 行）" % len(rows))
+    for name, how, vs, fs, drop in rows:
+        add_v = [tuple(int(x) for x in t.strip("()").split(","))
                  for t in re.findall(r"\([-\d, ]+\)", vs)]
-            F = [tuple(int(x) for x in t.strip("()").split(","))
+        add_f = [tuple(int(x) for x in t.strip("()").split(","))
                  for t in re.findall(r"\([-\d, ]+\)", fs)]
-        except ValueError:
-            bad.append("%s の頂点・面を読めません" % name); continue
-        if name == "I1":                     # 基準の立方体と頂点を共有しないので
-            got = first_break(P, F)          # 追加ぶんだけで判定が決まる
+        if "基準の 12 面を $+8$ した組" in fs:          # I6 / I7
+            add_f = [tuple(x + 8 for x in f) for f in BF]
+        if "基準を使いません" in how:                   # I4
+            P, F = add_v, add_f
         else:
-            got = first_break(P, F)
-        # 期待する停止箇所は I 表（(b)）の 3 列目。行の中の最後の A?(T|S) を取る
-        if name == "I1":                 # I1 は「共線の面を 1 枚含む」入力
+            kill = {int(x) for x in re.findall(r"`(\d+)`", drop)}
+            if "12 面すべて" in drop:
+                kill = set(range(len(BF)))
+            P = BV + add_v
+            F = [f for k, f in enumerate(BF) if k not in kill] + add_f
+        got = first_break(P, F)
+        m2 = re.search(r"^\| %s \|[^|]*\|([^|]*)\|" % name, b, re.M)
+        cand = re.findall(r"(A[\w-]+)\s*[（(]\s*(T|S)\s*(?:側)?\s*[）)]",
+                          m2.group(1)) if m2 else []
+        want = "%s(%s)" % cand[-1] if cand else None
+        if want is None:
+            bad.append("%s の期待する停止箇所を読めません" % name)
+        elif want == "A5(S)":
+            if got != "A5(S) 以降":
+                bad.append("%s は %s で止まります（期待は A5(S)）" % (name, got))
+        elif got != want:
+            bad.append("%s は %s で止まります（期待は %s）" % (name, got, want))
+        if name == "I1":
             from collections import Counter as _C
             def _cr(a, c, d):
-                u = [c[i] - a[i] for i in range(3)]; v = [d[i] - a[i] for i in range(3)]
+                u = [c[k] - a[k] for k in range(3)]
+                v = [d[k] - a[k] for k in range(3)]
                 return (u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0])
             nc = sum(1 for f in F if _cr(P[f[0]], P[f[1]], P[f[2]]) == (0, 0, 0))
             if nc != 1:
                 bad.append("I1 の共線面が %d 枚です（1 枚であるべき）" % nc)
-        m2 = re.search(r"^\| %s \|[^|]*\|([^|]*)\|" % name, b, re.M)
-        cand = re.findall(r"(A[\w-]+)\s*[（(]\s*(T|S)\s*(?:側)?\s*[）)]",
-                          m2.group(1)) if m2 else []
-        want = "%s(%s)" % cand[-1] if cand else None   # 表記を正規化して比べる
-        if want is None:
-            bad.append("%s の期待する停止箇所を読めません" % name)
-        elif got != want:
-            bad.append("%s は %s で止まります（期待は %s）" % (name, got, want))
-    out.append(("I の構成が、期待する停止箇所で止まる（幾何を計算）", not bad, bad[:4]))
+    out.append(("I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
+                not bad, bad[:4]))
+
+    # ★ S 表の構成から、体積・残差・内側成分・A5 を計算して突き合わせる（18 巡目の指摘）
+    bad = []
+    srows = re.findall(r"^\| \*\*(S\d+)\*\* \| (.+) \|$", b, re.M)
+    if len(srows) != 7:
+        bad.append("S の構成の表が 7 行ではありません（%d 行）" % len(srows))
+    for name, spec in srows:
+        boxes = re.findall(r"`\[(-?\d+),(-?\d+)\]x\[(-?\d+),(-?\d+)\]x\[(-?\d+),(-?\d+)\]([+-])`",
+                           spec)
+        if not boxes:
+            bad.append("%s の成分を読めません" % name); continue
+        B = [([int(t[0]), int(t[2]), int(t[4])], [int(t[1]), int(t[3]), int(t[5])],
+              1 if t[6] == "+" else -1) for t in boxes]
+        vol = [6 * (hi[0]-lo[0]) * (hi[1]-lo[1]) * (hi[2]-lo[2]) for lo, hi, _ in B]
+        SB = sum(v * sg for v, (_, _, sg) in zip(vol, B))
+        inside = [[k for k in range(len(B)) if k != m
+                   and all(B[k][0][a] <= B[m][0][a] and B[m][1][a] <= B[k][1][a]
+                           for a in range(3))] for m in range(len(B))]
+        # 成分 m の「すぐ内側」での総巻き数 = 自身と、自身を含むすべての成分の符号の和
+        w = [B[m][2] + sum(B[k][2] for k in inside[m]) for m in range(len(B))]
+        n_in = sum(1 for x in w if x >= 2)
+        # 領域ごとの体積（成分 m の内側かつ、m に含まれる子の外側）
+        child = [[k for k in range(len(B)) if m in inside[k]
+                  and not any(m in inside[j] and j in inside[k] for j in range(len(B)))]
+                 for m in range(len(B))]
+        rvol = [vol[m] - sum(vol[c] for c in child[m]) for m in range(len(B))]
+        mu = sum(v for v, x in zip(rvol, w) if x > 0)
+        R = mu - SB
+        m3 = re.search(r"^\| %s \|.*$" % name, b, re.M)
+        cell = m3.group(0) if m3 else ""
+        if name in ("S4", "S5"):
+            # 頂点を共有しないこと、内部が重なるか（交差）／境界だけか（接触）
+            lo1, hi1, _ = B[0]; lo2, hi2, _ = B[1]
+            share = all((lo2[a] in (lo1[a], hi1[a])) or (hi2[a] in (lo1[a], hi1[a]))
+                        for a in range(3))
+            ov = [min(hi1[a], hi2[a]) - max(lo1[a], lo2[a]) for a in range(3)]
+            want = "交差" if all(x > 0 for x in ov) else "接触"
+            if share:
+                bad.append("%s の 2 成分が頂点を共有します" % name)
+            if any(x < 0 for x in ov):
+                bad.append("%s の 2 成分が離れています（A5 が破れません）" % name)
+            elif want not in cell:
+                bad.append("%s は %s のはずですが、表にその語がありません" % (name, want))
+        else:
+            mR = re.search(r"\$R = (-?)S_\{\\text\{内\}\}\$|\$R = (0)\$", cell)
+            if n_in == 0 and R != 0:
+                bad.append("%s は内側成分 0 個なのに R = %d です" % (name, R))
+            if ("内側成分 **%d 個**" % n_in) not in cell:
+                bad.append("%s の内側成分は %d 個です（表と違います）" % (name, n_in))
+            if n_in > 0:
+                Sin = sum(vol[m] * B[m][2] for m in range(len(B)) if w[m] >= 2)
+                if Sin != -R:
+                    bad.append("%s で ΣS(内側) = %d、-R = %d（一致しません）"
+                               % (name, Sin, -R))
+    # I6 / I7 は S4 / S5 と同じ構成であること（I 側は頂点を並べるので、突き合わせる）
+    for iname, sname in (("I6", "S4"), ("I7", "S5")):
+        mi = re.search(r"^\| \*\*%s\*\* \|[^|]*\|([^|]*)\|" % iname, b, re.M)
+        ms = dict(srows).get(sname, "")
+        bx = re.findall(r"`\[(-?\d+),(-?\d+)\]x\[(-?\d+),(-?\d+)\]x\[(-?\d+),(-?\d+)\]\+`", ms)
+        if mi and len(bx) == 2:
+            lo = [int(bx[1][0]), int(bx[1][2]), int(bx[1][4])]
+            hi = [int(bx[1][1]), int(bx[1][3]), int(bx[1][5])]
+            want = {(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1])
+                    for z in (lo[2], hi[2])}
+            got = {tuple(int(x) for x in t.strip("()").split(","))
+                   for t in re.findall(r"\([-\d, ]+\)", mi.group(1))}
+            if got != want:
+                bad.append("%s の頂点が %s の 2 つ目の立方体と一致しません" % (iname, sname))
+    out.append(("S の構成から、体積・内側成分・A5 が表と一致する", not bad, bad[:4]))
 
     # U 表: 方向を引数に取る関数（winding_by_ray / 退化判定）の回数は 16
     su = secs0.get("43.9", "")
@@ -789,14 +895,20 @@ EXP_MAIN = {
     "存在しない順序へ送る": "「順序 N」で送る先の行が実在する",
     "存在しない小節を参照": "§43.N(x) への参照がすべて実在する",
     "小節を飛ばす（(f) を (h) に）": "小節が (a) から連続している",
-    "I1 の共線面の向きを戻す": "I の構成が、期待する停止箇所で止まる（幾何を計算）",
-    "I1 の座標を壊す": "I の構成が、期待する停止箇所で止まる（幾何を計算）",
-    "I4 の面の向きを反転": "I の構成が、期待する停止箇所で止まる（幾何を計算）",
+    "I1 の共線面の向きを戻す": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
+    "I1 の座標を壊す": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
+    "I4 の面の向きを反転": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
     "U8 の回数を 1 に戻す": "U 表の呼び出し回数が、方向の本数と整合する",
     "fill を実コードと違える": "文書の値が実コードと一致する",
     "コードの引用の行番号を壊す": "コードの引用が実ファイルと一致する",
     "実ファイルの外を引く": "コードの引用が実ファイルと一致する",
     "I 表から面集合の併記を落とす": "I 表の各行に、面集合を併記した停止箇所と、構成がある",
+    "I2 の期待を A4(T) に": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
+    "S4 を接触しない位置に": "S の構成から、体積・内側成分・A5 が表と一致する",
+    "S7 の 3 枚目を内向きに": "S の構成から、体積・内側成分・A5 が表と一致する",
+    "I6 を S4 と違う位置に": "S の構成から、体積・内側成分・A5 が表と一致する",
+    "外向き法線の矛盾を戻す": "記号の取り残し（一般化の波及漏れ）",
+    "単一行の引用をずらす": "コードの引用が実ファイルと一致する",
     "I の構成を 1 つ消す": "I 表の各行に、面集合を併記した停止箇所と、構成がある",
     "レイの本数を食い違わせる": "レイの本数が、本文・表・「すべて評価」で一致する",
     "段 4 の標本数を食い違わせる": "段 4 の標本数が内部で整合する",
@@ -871,9 +983,8 @@ def selftest(text):
         ("存在しない §43.N を参照", "§43.5(f)", "§43.99"),
         ("存在しない小節を参照", "§43.5(g)", "§43.5(z)"),
         ("小節を飛ばす（(f) を (h) に）", "#### (f) 領域の列挙", "#### (h) 領域の列挙"),
-        ("I1 の共線面の向きを戻す", "`(0,2,1) (0,1,3) (1,2,3) (2,0,3)`",
-                                     "`(0,1,2) (0,1,3) (1,2,3) (2,0,3)`"),
-        ("I1 の座標を壊す", "(25,10,0)`", "(25,0,0)`"),
+        ("I1 の共線面の向きを戻す", "`(8,10,9) (8,9,11)", "`(8,9,10) (8,9,11)"),
+        ("I1 の座標を壊す", "(25,0,0) (25,10,0)`", "(25,0,0) (25,0,0)`"),
         ("I4 の面の向きを反転", "`(1,2,3) (0,3,2)", "`(1,3,2) (0,3,2)"),
         ("U8 の回数を 1 に戻す", "**16 本とも無効と判定し、有効 0 本を返す** | 16 |",
                                  "**有効 0 本**を返す | 1 |"),
@@ -881,7 +992,14 @@ def selftest(text):
         ("コードの引用の行番号を壊す", "config.hpp:36-37", "config.hpp:40-41"),
         ("実ファイルの外を引く", "`loader.hpp:44-65`", "`loader.hpp:44-99999`"),
         ("I 表から面集合の併記を落とす", "| I3 | 1 辺に 3 枚の面 | **A1(T)** |", "| I3 | 1 辺に 3 枚の面 | **A1** |"),
-        ("I の構成を 1 つ消す", "> **I5**: 基準から面を 1 枚取り除く。", ""),
+        ("I2 の期待を A4(T) に", "| I2 | 閉じたメッシュに面を 1 枚重ねる | **A1(T)**",
+                                 "| I2 | 閉じたメッシュに面を 1 枚重ねる | **A4(T)**"),
+        ("S4 を接触しない位置に", "`[5,15]x[0,10]x[10,20]+`", "`[50,60]x[0,10]x[10,20]+`"),
+        ("S7 の 3 枚目を内向きに", "`[4,6]x[4,6]x[4,6]+`", "`[4,6]x[4,6]x[4,6]-`"),
+        ("I6 を S4 と違う位置に", "`(5,0,10) (5,0,20)", "`(50,0,10) (5,0,20)"),
+        ("外向き法線の矛盾を戻す", "その面の法線の【先端から", "その面の外向き法線の【先端から"),
+        ("単一行の引用をずらす", "`loader.hpp:158`", "`loader.hpp:159`"),
+        ("I の構成を 1 つ消す", "| **I5** | 基準から面 0 を取り除く | なし | なし | `0` |\n", ""),
         ("レイの本数を食い違わせる", "レイの 16 方向", "レイの 20 方向"),
         ("段 4 の標本数を食い違わせる", "各 5,000 対、合わせて 10,000 対", "各 5,000 対、合わせて 12,000 対"),
         ("桁数を実データと違える", "**分子 3,899 桁 / 分母 3,882 桁**", "**分子 3,900 桁 / 分母 3,882 桁**"),
