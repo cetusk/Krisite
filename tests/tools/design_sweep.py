@@ -40,8 +40,8 @@ CHECKS = [
          mutate=(r"上限 $k_{\max} = k_0 + 40$", r"上限 $k_{\max} = 40$")),
     dict(name="(1) は H′ で書く",
          forbid=r"\*\*\(1\)\*\* \| \*\*前提成立・H 成立",
-         mutate=("| **(1)** | **前提成立・H′ 成立・一致。**",
-                 "| **(1)** | **前提成立・H 成立・一致。**")),
+         mutate=("| **(1)** | **前提成立・H′ 成立・E1 が一致。**",
+                 "| **(1)** | **前提成立・H 成立・E1 が一致。**")),
     dict(name="決定表は P-静/P-動 で書く（循環を作らない）",
          forbid=r"\| \*\*2\*\* \| \*\*前提通過が破れた",
          mutate=("| **2** | **P-静が破れた**", "| **2** | **前提通過が破れた**")),
@@ -50,38 +50,90 @@ CHECKS = [
          mutate=("> **★ 共線面を S から除くと、A1 が破れることがあります**",
                  "> **★ 共線面があると、S は必ず A1 を破ります**")),
     dict(name="R_A+R_B=R を「P3 そのもの」と書かない",
-         forbid=r"これは P3 そのものです(?!」と書いたのは誤り)",  # 取り下げの引用は除く
-         mutate=("**上の式と【代数的に同値】です**", "**これは P3 そのものです**")),
+         forbid=r"これは P3 そのものです(?!」と(?:書いたのは誤り|いう名付け))",  # 取り下げの引用は除く
+         mutate=("**$R_A+R_B=R$ と【必要十分】で同値**", "**これは P3 そのものです**")),
     dict(name="経緯の節への依存を作らない",
          forbid=r"（§(?:2[2-9]|3[0-4]|3[5-9]|4[0-2])(?:\.\d+)? を見|詳しくは §(?:3[5-9]|4[0-2])",
          mutate=("**列は同ディレクトリ `README.md` の 34 列**",
                  "**列は詳しくは §38.1 を見てください**")),
 ]
 
-# 式で持つ期待値（実測した数を書かない。文書から導ける関係だけを検査する）
+def num(b, pat, cast=int):
+    """文書から数を読む。見つからなければ None（＝期待値が落ちる）。"""
+    m = re.search(pat, b)
+    return cast(m.group(1).replace(",", "").replace("{", "").replace("}", "")) if m else None
+
+
+# 式で持つ期待値。**数はすべて文書から読み、スクリプトに直書きしない。**
+# 直書きすると、文書だけを書き換えたときに検出できない（10 巡目の指摘）。
 def expectations(b):
     out = []
     budgets = [int(x) for x in re.findall(r"\| (\d+) 秒 \|", b)]
-    out.append(("段の予算の合計が本文の合計と一致",
-                sum(budgets) == 630 and "**合計 630 秒**" in b))
-    out.append(("A5 の対の上限 = 2*C(1496,2)",
-                "2{,}236{,}520" in b and 2 * (1496 * 1495 // 2) == 2236520))
-    out.append(("代表点 = 2*(|S_A|+|S_B|)、共線面 0 枚で 5,984",
-                "5,984" in b and 2 * (1496 + 1496) == 5984))
-    out.append(("合成対照 = S 7 + I 7 + U 8 = 22",
-                "**22 構成**" in b and 7 + 7 + 8 == 22))
-    out.append(("自己検査の数: S/I/U の表の行数",
-                len(re.findall(r"^\| S[1-7] \|", b, re.M)) == 7 and
-                len(re.findall(r"^\| I[1-7] \|", b, re.M)) == 7 and
-                len(re.findall(r"^\| U[1-8] \|", b, re.M)) == 8))
-    out.append(("判定は (1)(2-a)(2-b)(3)(4a)(4b)(4c) の 7 種",
-                all(("**(%s)**" % k) in b for k in
-                    ["1", "2-a", "2-b", "3", "4a", "4b", "4c"])))
+    total = num(b, r"\*\*合計 ([\d,]+) 秒\*\*")
+    D = num(b, r"\*\*\$D = ([\d,]+)\$ 秒\*\*")
+    out.append(("段の予算の合計 = 本文の合計 かつ <= D",
+                bool(budgets) and total is not None and sum(budgets) == total
+                and D is not None and total <= D))
+
+    F = num(b, r"面数はどちらも ([\d,]+)")                      # 1,496
+    pairs = num(b, r"\$([\d,{}]+)\$ 対で、これが上限")                 # 2,236,520
+    reps = num(b, r"共線面が 0 枚なら ([\d,]+) 個")              # 5,984
+    out.append(("A5 の対の上限 = 2*C(F,2)",
+                None not in (F, pairs) and pairs == 2 * (F * (F - 1) // 2)))
+    out.append(("代表点 = 2*(F+F)", None not in (F, reps) and reps == 4 * F))
+
+    nS = len(re.findall(r"^\| S[1-7] \|", b, re.M))
+    nI = len(re.findall(r"^\| I[1-7] \|", b, re.M))
+    nU = len(re.findall(r"^\| U[1-8] \|", b, re.M))
+    nc = num(b, r"\*\*(\d+) 構成\*\*")
+    n14 = num(b, r"（(\d+) 構成）")
+    out.append(("構成数 = S+I+U", nc is not None and nc == nS + nI + nU))
+    out.append(("自己検査の構成数 = S+I", n14 is not None and n14 == nS + nI))
+    out.append(("S/I/U の行数 = 7/7/8", (nS, nI, nU) == (7, 7, 8)))
+
+    bits_xyz = num(b, r"`kHomoXyz = (\d)b\+15`")
+    bits_w = num(b, r"`kHomoW = (\d)b\+13`")
+    bb = num(b, r"\$b = (\d+)\$")
+    tot_bits = num(b, r"= (\d+)\$ ビット")
+    if None not in (bits_xyz, bits_w, bb, tot_bits):
+        x, w = bits_xyz * bb + 15, bits_w * bb + 13
+        out.append(("ビット幅: 3*(7b+15)+(6b+13) = 文書の 625",
+                    3 * x + w == tot_bits and ("**%d ビット**" % x) in b
+                    and ("**%d ビット**" % w) in b))
+    else:
+        out.append(("ビット幅の式が読めません", False))
+
+    by79 = num(b, r"真のビット詰め (\d+) バイト")
+    by81 = num(b, r"バイト境界丸め (\d+) バイト")
+    if None not in (tot_bits, by79, bits_xyz, bits_w, bb):
+        x, w = bits_xyz * bb + 15, bits_w * bb + 13
+        out.append(("79 = ceil(625/8)", by79 == -(-tot_bits // 8)))
+        out.append(("81 = 3*ceil(162/8)+ceil(139/8)",
+                    by81 == 3 * (-(-x // 8)) + (-(-w // 8))))
+
+    n261 = num(b, r"\*\*(\d+)\*\* \| \*\*実測\*\*（590 行を数えた）")
+    n3op = num(b, r"実測 ([\d,]+)\*\* —")
+    n4op = num(b, r"\| ([\d,]+) \| \*\*22\.1 GB\*\*")
+    out.append(("4 演算の面数 = 3 演算 * 4/3",
+                None not in (n3op, n4op) and n4op * 3 == n3op * 4))
+
+    out.append(("判定は (1)(2-a)(2-b)(3)(4a)(4b)(4c) の 7 種が【意味の表】にある",
+                all(re.search(r"^\| \*\*\(%s\)\*\* \|" % re.escape(k), b, re.M)
+                    for k in ["1", "2-a", "2-b", "3", "4a", "4b", "4c"])))
+
+    rows = [int(x) for x in re.findall(r"^\| \*\*(\d+)\*\* \| \*\*", b, re.M)]
+    out.append(("決定表の順序が 1..N で連続し、最終行が (1)",
+                rows == list(range(1, len(rows) + 1)) and len(rows) >= 8))
+
+    dirs = re.findall(r"\$\((\d),(\d),(\d)\)\$", b)
+    out.append(("レイ 16 方向が相異なる", len(dirs) == 16 and len(set(dirs)) == 16))
     return out
 
 
-def tables_ok(b):
-    L = b.split("\n"); bad = 0; n = 0; i = 0
+def tables_ok(b, quiet=False):
+    # 引用ブロック（"> "）の中の表も対象にする（11 巡目の指摘）
+    L = [re.sub(r"^> ?", "", x) for x in b.split("\n")]
+    bad = 0; n = 0; i = 0
     while i < len(L):
         if L[i].startswith("|"):
             blk = []; j = i
@@ -91,7 +143,9 @@ def tables_ok(b):
             sep = len(blk) > 1 and re.match(r"^\|[\s:\-|]+\|$", blk[1].strip())
             cols = [len(re.sub(r"\\\|", "", r).split("|")) for r in blk]
             if not sep or len(set(cols)) != 1:
-                print("  ★表が異常: %s" % blk[0][:70]); bad += 1
+                if not quiet:
+                    print("  ★表が異常: %s" % blk[0][:70])
+                bad += 1
             i = j
         else:
             i += 1
@@ -100,7 +154,7 @@ def tables_ok(b):
 
 def run(text, quiet=False):
     b = section43(text); bad = 0
-    n, tb = tables_ok(b); bad += tb
+    n, tb = tables_ok(b, quiet); bad += tb
     if not quiet:
         print("表 %d 個 / 異常 %d" % (n, tb))
     for c in CHECKS:
@@ -122,6 +176,15 @@ def run(text, quiet=False):
     return bad
 
 
+def mutate(text, a, m):
+    """§43 の【中】だけを変異させる。外（経緯の節）を書き換えても
+    番人は落ちないので、外を変異させると空回りを見逃す（11 巡目の指摘）。"""
+    k = text.index("## 43. ")
+    if a not in text[k:]:
+        return None
+    return text[:k] + text[k:].replace(a, m, 1)
+
+
 def selftest(text):
     """各検査について、変異を入れたら落ちることを確かめる。"""
     base = run(text, quiet=True)
@@ -131,14 +194,37 @@ def selftest(text):
     fail = 0
     for c in CHECKS:
         a, m = c["mutate"]
-        if a not in text:
-            print("★ %s: 変異の適用先 %r が見つかりません" % (c["name"], a[:40]))
+        mut = mutate(text, a, m)
+        if mut is None:
+            print("★ %s: 変異の適用先 %r が §43 に見つかりません" % (c["name"], a[:40]))
             fail += 1; continue
-        if run(text.replace(a, m, 1), quiet=True) == 0:
+        if run(mut, quiet=True) == 0:
             print("★ %s: 変異を入れても落ちません（空回り）" % c["name"])
             fail += 1
         else:
             print("  ok  %s — 変異を検出" % c["name"])
+    # 期待値にも変異を当てる（11 巡目の指摘。CHECKS だけでは 6 件が無検査だった）
+    EXP_MUT = [
+        ("面数 1,496 → 1,500", "面数はどちらも 1,496", "面数はどちらも 1,500"),
+        ("段 6 の予算だけ増やす", "| 300 秒 |", "| 400 秒 |"),
+        ("構成数 22 → 21", "**22 構成**", "**21 構成**"),
+        ("162 ビット → 160 ビット", "**162 ビット**", "**160 ビット**"),
+        ("79 バイト → 78 バイト", "真のビット詰め 79 バイト", "真のビット詰め 78 バイト"),
+        ("判定 (4b) の意味行を消す", "| **(4b)** | 判定不能（**こちらの未対応**） |\n", ""),
+        ("決定表の 1 行を消す", "| **8** | **$B$ に内側成分が 0 個**", "| **99** | **$B$ に内側成分が 0 個**"),
+        ("レイ方向を重複させる", "$(1,1,2)$", "$(1,1,1)$"),
+        ("4 演算の面数を 4/3 でなくする", "| 369,156,480 |", "| 369,156,481 |"),
+    ]
+    for name, a, m in EXP_MUT:
+        mut = mutate(text, a, m)
+        if mut is None:
+            print("★ 期待値の変異 %s: 適用先 %r が §43 に見つかりません" % (name, a[:36]))
+            fail += 1; continue
+        if run(mut, quiet=True) == 0:
+            print("★ 期待値の変異 %s: 落ちません（空回り）" % name); fail += 1
+        else:
+            print("  ok  期待値の変異 %s — 検出" % name)
+
     # 表の検査も変異させる
     k = text.index("## 43. ")   # §43 の中の区切り行を消す
     mut = text[:k] + text[k:].replace("|---|---|\n", "", 1)
@@ -146,7 +232,7 @@ def selftest(text):
         print("★ 表の検査: 区切り行を消しても落ちません"); fail += 1
     else:
         print("  ok  表の検査 — 区切り行の削除を検出")
-    print("変異 %d 件 / 検出できなかったもの %d 件" % (len(CHECKS) + 1, fail))
+    print("変異 %d 件 / 検出できなかったもの %d 件" % (len(CHECKS) + len(EXP_MUT) + 1, fail))
     return fail
 
 
