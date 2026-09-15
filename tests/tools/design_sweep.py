@@ -234,7 +234,9 @@ def expectations(b):
     out.append(("決定表の順序が 1..N で連続し、最終行が (1)",
                 rows == list(range(1, len(rows) + 1)) and len(rows) >= 8))
 
-    dirs = re.findall(r"\$\((\d),(\d),(\d)\)\$", b)
+    # 方向の表の中だけを見る（§43 全体だと I1〜I7 の座標と衝突する。16 巡目の指摘）
+    tbl = re.search(r"\| # \| 方向 \|.*?\n\n", b, re.S)
+    dirs = re.findall(r"\$\((\d),(\d),(\d)\)\$", tbl.group(0)) if tbl else []
     ndir = num(b, r"レイの (\d+) 方向")
     out.append(("レイの方向が、本文の本数と一致し、相異なり、零でない",
                 ndir is not None and len(dirs) == ndir and len(set(dirs)) == ndir
@@ -386,13 +388,16 @@ def structure(b):
         ("43.10", "KMSH", "原本 .kmesh の書式"),
         ("43.10", "（最近接・偶数優先）", "nearbyint の丸めモード"),
         ("43.10", "リトルエンディアン固定", "バイト順"),
+        ("43.10", "Python では `round()`（偶数優先）を使います", "Python 側の丸め"),
+        ("43.10", "$r[0..8]$ の 9 行、続いて $\\text{shift}[0..2]$ の 3 行", "hex の並び"),
+        ("43.10", "`int32` $\\times 3N_v$", "quantized の頂点の型"),
+        ("43.10", "最小の元の添字", "併合の代表の選び方"),
+        ("43.9", "3 辺だけが 1 枚に減って", "I1 が破る辺の本数"),
+        ("43.8", "$> 300 \\times 0.8$", "段 6 の起動判定の余裕"),
         ("43.8", "0x2545F4914F6CDD1D", "段 4 の乱数の定数"),
         ("43.8", "種は 1", "段 4 の種（0 は不動点）"),
         ("43.4", "A1(T)→A2(T)", "A1〜A4 を T→S の順に掛けること"),
         ("43.4", "A1 → A2 → A3 → A4 → A5", "検査の評価順"),
-        ("43.9", "| I4 | 頂点で 2 つの錐が接する | **A3**", "I4 の期待停止箇所"),
-        ("43.5", "16 方向を【すべて】評価", "レイを打ち切らないこと"),
-        ("43.9", "I1**: 基準に、一直線上", "I1〜I7 の構成"),
         ("43.13", "共線面があったときに判定を続ける機構", "共線面の未設計項目"),
         ("43.13", "経路 P で変換の生成までバイト一致", "経路 P の未確認項目"),
         ("43.13", "同一性 1・2 に残る libm 依存", "libm 依存の未確認項目"),
@@ -420,6 +425,128 @@ def structure(b):
     ]
     bad = [d for n, pat, d in LEFTOVER if re.search(pat, secs0.get(n, ""))]
     out.append(("記号の取り残し（一般化の波及漏れ）", not bad, bad))
+
+    # ★ 性質で見る（文言を鍵にしない。16 巡目の指摘。
+    #   文言を鍵にすると「項目を正しく直す」と「項目を消す」が区別できない）
+    s9 = secs0.get("43.9", "")
+    irows = re.findall(r"^\| (I\d+) \|[^|]*\| ([^|]*)\|", s9, re.M)
+    bad = []
+    for name, stop in irows:
+        if not re.search(r"A(?:0-3|[1-5])\((?:T|S)\)", stop):
+            bad.append("%s の期待する停止箇所に面集合の併記がありません: %s"
+                       % (name, stop.strip()[:40]))
+    have = {n for n, _ in irows}
+    for name in have:
+        if not re.search(r"\*\*%s\*\*: " % name, s9):
+            bad.append("%s の構成が書かれていません" % name)
+    out.append(("I 表の各行に、面集合を併記した停止箇所と、構成がある",
+                bool(irows) and not bad, bad[:4]))
+
+    # ★ コードの引用を、実ファイルと照合する（16 巡目の指摘。
+    #   旧い誤記を禁じるだけでは、新しい別の誤った行番号が通る）
+    # 範囲で引いているものは、範囲の【両端】も照合する
+    CITE_RANGE = [
+        ("tests/thingi10k/loader.hpp", 44, 65, "load_kmesh", "}"),
+        ("tests/thingi10k/loader.hpp", 173, 178, "auto next", "};"),
+        ("include/krisite/config.hpp", 36, 37, "kCoordMin", "kCoordMax"),
+    ]
+    CITE = [
+        ("include/krisite/config.hpp", 36, "kCoordMin"),
+        ("include/krisite/config.hpp", 37, "kCoordMax"),
+        ("include/krisite/geom/widths.hpp", 70, "kHomoW"),
+        ("include/krisite/geom/widths.hpp", 79, "kHomoXyz"),
+        ("include/krisite/csg/polysoup.hpp", 116, "w[n.src] > 0"),
+        ("tests/thingi10k/loader.hpp", 44, "load_kmesh"),
+        ("tests/thingi10k/loader.hpp", 158, "a == b"),
+        ("tests/thingi10k/loader.hpp", 173, "auto next"),
+        ("tests/thingi10k/thingi_cp1.cpp", 1690, "prepare(raw, 1000 + i)"),
+        ("CMakeLists.txt", 10, "KRISITE_COORD_BITS"),
+
+    ]
+    bad = []
+    for path, line, token in CITE:
+        base = os.path.basename(path)
+        # §43 がその行番号で引いているか（basename でも full path でも）
+        cited = False
+        for m in re.finditer(r"`(?:[\w/.]*/)?%s:(\d+)(?:-(\d+))?" % re.escape(base), b):
+            lo = int(m.group(1)); hi = int(m.group(2)) if m.group(2) else lo
+            if lo <= line <= hi:
+                cited = True; break
+        if not cited:
+            bad.append("%s:%d を §43 が引いていません（行番号を変えたなら表も直す）"
+                       % (base, line))
+            continue
+        f = os.path.join(HERE, "..", "..", *path.split("/"))
+        if not os.path.exists(f):
+            bad.append("%s がありません" % path); continue
+        L2 = io.open(f, encoding="utf-8").read().split("\n")
+        if line > len(L2) or token not in L2[line - 1]:
+            bad.append("%s:%d に %r がありません（実コードとずれています）"
+                       % (base, line, token))
+    for path, lo, hi, tlo, thi in CITE_RANGE:
+        base = os.path.basename(path)
+        found = [(int(x), int(y)) for x, y in
+                 re.findall(r"`(?:[\w/.]*/)?%s:(\d+)-(\d+)`" % re.escape(base), b)]
+        if (lo, hi) not in found:
+            bad.append("%s:%d-%d の範囲の引用がありません（文書: %s）"
+                       % (base, lo, hi, found))
+            continue
+        f = os.path.join(HERE, "..", "..", *path.split("/"))
+        L2 = io.open(f, encoding="utf-8").read().split("\n") if os.path.exists(f) else []
+        if hi > len(L2) or tlo not in L2[lo - 1] or thi not in L2[hi - 1]:
+            bad.append("%s:%d-%d の範囲の両端が実コードとずれています" % (base, lo, hi))
+    # 宣言していない範囲の引用があれば落とす（同じ引用が文書に複数あるとき、
+    # 片方だけ書き換わったのを捕まえる。16 巡目の指摘）
+    declared = {(os.path.basename(pp), l, h) for pp, l, h, _, _ in CITE_RANGE}
+    for base, l, h in re.findall(r"`(?:[\w/.]*/)?([\w.]+\.(?:hpp|cpp|py|txt)):(\d+)-(\d+)`", b):
+        if (base, int(l), int(h)) not in declared:
+            bad.append("宣言していない範囲の引用: %s:%s-%s" % (base, l, h))
+    out.append(("コードの引用が実ファイルと一致する", not bad, bad[:4]))
+
+    # ★ 文書の【値】を、実コードの値と照合する（16 巡目の指摘。
+    #   行番号だけでなく、引用した定数そのものを突き合わせる）
+    SRC = [
+        ("fill", r"\$\\mathrm\{fill\} = ([\d.]+)\$",
+         "tests/thingi10k/loader.hpp", r"double fill = ([\d.]+)"),
+        ("kCoordMin の式", r"\\mathtt\{kCoordMin\} = -2\^\{(b-1|b)\}",
+         "include/krisite/config.hpp", r"kCoordMin = -\(1LL << \(kCoordBits - (1)\)\)"),
+        ("xorshift の右シフト 1", r"シフト (\d+) / \d+ / \d+",
+         "tests/thingi10k/loader.hpp", r"seed \^= seed >> (\d+);"),
+        ("xorshift の左シフト", r"シフト \d+ / (\d+) / \d+",
+         "tests/thingi10k/loader.hpp", r"seed \^= seed << (\d+);"),
+        ("xorshift の右シフト 2", r"シフト \d+ / \d+ / (\d+)",
+         "tests/thingi10k/loader.hpp", r"seed >> 12;\s*\n.*\n\s*seed \^= seed >> (\d+);"),
+        ("b の既定", r"\$b = (\d+)\$", "CMakeLists.txt", r"KRISITE_COORD_BITS (\d+)"),
+    ]
+    bad = []
+    for name, dpat, path, spat in SRC:
+        dm = re.search(dpat, b)
+        f = os.path.join(HERE, "..", "..", *path.split("/"))
+        sm = re.search(spat, io.open(f, encoding="utf-8").read()) if os.path.exists(f) else None
+        if dm is None or sm is None:
+            bad.append("%s: 文書側=%s コード側=%s（読めません）"
+                       % (name, dm and dm.group(1), sm and sm.group(1)))
+        else:
+            dv = dm.group(1).replace("b-1", "1").replace("b", "0")
+            if dv != sm.group(1):
+                bad.append("%s: 文書 %r ≠ コード %r" % (name, dm.group(1), sm.group(1)))
+    out.append(("文書の値が実コードと一致する", not bad, bad[:4]))
+
+    # レイ: 本文の本数・表の本数・「すべて評価する」の本数が一致する
+    n1 = re.search(r"レイの (\d+) 方向", b)
+    n2 = re.search(r"(\d+) 方向を【すべて】評価", b)
+    tbl = re.search(r"\| # \| 方向 \|.*?\n\n", b, re.S)
+    ndirs = len(re.findall(r"\$\((\d),(\d),(\d)\)\$", tbl.group(0))) if tbl else 0
+    out.append(("レイの本数が、本文・表・「すべて評価」で一致する",
+                None not in (n1, n2) and int(n1.group(1)) == int(n2.group(1)) == ndirs,
+                [n1 and n1.group(1), n2 and n2.group(1), ndirs]))
+
+    # 段 4 の標本: 各 N 対 × 2 = 合計
+    m = re.search(r"各 ([\d,]+) 対、合わせて ([\d,]+) 対", b)
+    out.append(("段 4 の標本数が内部で整合する",
+                m is not None
+                and int(m.group(1).replace(",", "")) * 2 == int(m.group(2).replace(",", "")),
+                m.groups() if m else None))
     return out
 
 
@@ -543,6 +670,13 @@ EXP_MAIN = {
     "存在しない順序へ送る": "「順序 N」で送る先の行が実在する",
     "存在しない小節を参照": "§43.N(x) への参照がすべて実在する",
     "小節を飛ばす（(f) を (h) に）": "小節が (a) から連続している",
+    "fill を実コードと違える": "文書の値が実コードと一致する",
+    "コードの引用の行番号を壊す": "コードの引用が実ファイルと一致する",
+    "宣言外の範囲で引く": "コードの引用が実ファイルと一致する",
+    "I 表から面集合の併記を落とす": "I 表の各行に、面集合を併記した停止箇所と、構成がある",
+    "I の構成を 1 つ消す": "I 表の各行に、面集合を併記した停止箇所と、構成がある",
+    "レイの本数を食い違わせる": "レイの本数が、本文・表・「すべて評価」で一致する",
+    "段 4 の標本数を食い違わせる": "段 4 の標本数が内部で整合する",
     "桁数を実データと違える": "列 29 の分子・分母の桁数が実データと一致",
     "種を実データと違える": "種 = 1000 + 模型の添字 が実データと一致",
     "S7 の和を違える": "S7 の S_内 の和が合う",
@@ -553,7 +687,7 @@ EXP_MAIN = {
     "手順 6 の mid を消す": "必ず在るべき項目が消えていない",
     "手順 8 を消す": "必ず在るべき項目が消えていない",
     "評価順を入れ替える": "必ず在るべき項目が消えていない",
-    "I4 の停止箇所を変える": "必ず在るべき項目が消えていない",
+    "I4 の停止箇所から併記を落とす": "I 表の各行に、面集合を併記した停止箇所と、構成がある",
     "丸めモードの注を消す": "必ず在るべき項目が消えていない",
     "KMSH の書式を消す": "必ず在るべき項目が消えていない",
     "経路 P のクランプを消す": "必ず在るべき項目が消えていない",
@@ -614,6 +748,13 @@ def selftest(text):
         ("存在しない §43.N を参照", "§43.5(f)", "§43.99"),
         ("存在しない小節を参照", "§43.5(g)", "§43.5(z)"),
         ("小節を飛ばす（(f) を (h) に）", "#### (f) 領域の列挙", "#### (h) 領域の列挙"),
+        ("fill を実コードと違える", "$\\mathrm{fill} = 0.6$", "$\\mathrm{fill} = 0.5$"),
+        ("コードの引用の行番号を壊す", "config.hpp:36-37", "config.hpp:40-41"),
+        ("宣言外の範囲で引く", "`loader.hpp:44-65`", "`loader.hpp:44-70`"),
+        ("I 表から面集合の併記を落とす", "| I3 | 1 辺に 3 枚の面 | **A1(T)** |", "| I3 | 1 辺に 3 枚の面 | **A1** |"),
+        ("I の構成を 1 つ消す", "> **I5**: 基準から面を 1 枚取り除く。", ""),
+        ("レイの本数を食い違わせる", "レイの 16 方向", "レイの 20 方向"),
+        ("段 4 の標本数を食い違わせる", "各 5,000 対、合わせて 10,000 対", "各 5,000 対、合わせて 12,000 対"),
         ("桁数を実データと違える", "**分子 3,899 桁 / 分母 3,882 桁**", "**分子 3,900 桁 / 分母 3,882 桁**"),
         ("種を実データと違える", "添字 4232 → 種 5232", "添字 4232 → 種 5233"),
         ("S7 の和を違える", "$1296+48=1344$", "$1296+48=1444$"),
@@ -624,7 +765,7 @@ def selftest(text):
         ("手順 6 の mid を消す", r"$(p_i[k] - \mathrm{mid}[k]) \times", r"$(p_i[k]) \times"),
         ("手順 8 を消す", "| 8 | **同一格子点の併合**（下） |", ""),
         ("評価順を入れ替える", "A1 → A2 → A3 → A4 → A5", "A3 → A2 → A1 → A4 → A5"),
-        ("I4 の停止箇所を変える", "| I4 | 頂点で 2 つの錐が接する | **A3**", "| I4 | 頂点で 2 つの錐が接する | **A5**"),
+        ("I4 の停止箇所から併記を落とす", "| I4 | 頂点で 2 つの錐が接する | **A3(T)**", "| I4 | 頂点で 2 つの錐が接する | **A3**"),
         ("丸めモードの注を消す", "（最近接・偶数優先）", ""),
         ("KMSH の書式を消す", 'マジック `"KMSH"`（4 バイト）', "マジック（省略）"),
         ("経路 P のクランプを消す", "に【クランプ】する", "にする"),
