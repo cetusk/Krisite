@@ -379,7 +379,16 @@ def main(argv=None):
     print(f"\n**済み {done} / 失敗・打ち切り {bad} / 未起動 {skipped}**")
     if over > 0:
         print(f"**★ 期限を {over:.1f} 秒超過しました**（OS の終了・回収の遅延）")
-    return 0 if (bad == 0 and skipped == 0) else 1
+    rc_all = 0 if (bad == 0 and skipped == 0) else 1
+    # **★ 終了値と終了時刻を、自分で書き残します**（§32）。
+    # **端末の観測は保存物になりません。**
+    print(f"**終了時刻: {time.strftime('%Y-%m-%dT%H:%M:%S%z')}  投入スクリプトの終了値: {rc_all}**")
+    with open(os.path.join(a.logdir, f"summary_{run_id}.txt"), "w") as f:
+        f.write(f"run_id={run_id}\n終了時刻={time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n"
+                f"終了値={rc_all}\n済み={done}\n失敗・打ち切り={bad}\n未起動={skipped}\n"
+                f"期限超過秒={max(0.0, over):.3f}\n")
+        f.flush()
+    return rc_all
 
 
 def tail(path, n=5):
