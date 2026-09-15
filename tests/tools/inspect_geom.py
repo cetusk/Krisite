@@ -12,10 +12,16 @@ from fractions import Fraction as Fr
 from collections import Counter, defaultdict
 
 # レイの方向。**このファイルが原本です。** 相異なり、零ベクトルを含みません。
-DIRS = [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0),
-        (1, 0, 1), (0, 1, 1), (1, 1, 1), (2, 1, 0),
-        (1, 2, 0), (2, 0, 1), (1, 0, 2), (0, 2, 1),
-        (0, 1, 2), (2, 1, 1), (1, 2, 1), (1, 1, 2)]
+#
+# ★ 【正負の両方】を入れます。非負の八分区間だけだと、その反対側にある欠損
+#   （開いた曲面の穴など）を、どの方向からも見られません。
+#   実測: 面を 1 枚除いた立方体の内側で、非負 16 本では全方向が一致して 1 を返し、
+#   「測れない」と言えませんでした。正負 32 本にすると食い違いを検出します。
+_DIRS_POS = [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0),
+             (1, 0, 1), (0, 1, 1), (1, 1, 1), (2, 1, 0),
+             (1, 2, 0), (2, 0, 1), (1, 0, 2), (0, 2, 1),
+             (0, 1, 2), (2, 1, 1), (1, 2, 1), (1, 1, 2)]
+DIRS = _DIRS_POS + [tuple(-x for x in d) for d in _DIRS_POS]
 
 
 # --- ベクトル ------------------------------------------------------------
@@ -59,16 +65,13 @@ def box(lo, hi, sign=+1):
             corners = sorted(v for v in V if v[ax] == side)
             c0 = corners[0]
             rest = [v for v in corners if v != c0]
-            # c0 を起点に、法線まわりに反時計回りへ並べる
-            def key(v, c0=c0, ax=ax, nrm=nrm):
-                w = sub(v, c0)
-                return (0 if sum(1 for k in range(3) if w[k]) == 1 else 1)
+            # c0 の隣（1 成分だけ違う）2 つと、対角の 1 つ
             adj = [v for v in rest if sum(1 for k in range(3) if sub(v, c0)[k]) == 1]
             far = [v for v in rest if v not in adj][0]
             q1, q2, q3 = adj[0], far, adj[1]
-            if dot(cross(sub(q1, c0), sub(q2, c0)), [0, 0, 0][:0] or
-                   [nrm if k == ax else 0 for k in range(3)]) < 0:
-                q1, q3 = q3, q1
+            nvec = tuple(nrm if k == ax else 0 for k in range(3))
+            if dot(cross(sub(q1, c0), sub(q2, c0)), nvec) < 0:
+                q1, q3 = q3, q1                    # 法線の先端から見て反時計回りに
             F += [(idx[c0], idx[q1], idx[q2]), (idx[c0], idx[q2], idx[q3])]
     return V, F
 
@@ -133,7 +136,10 @@ def link_cycles(F, v):
 
 
 def check_a3(F):
-    """各頂点のリンクが単一の閉路か。戻り値: (頂点, 閉路数 or None) の一覧"""
+    """各頂点のリンクが単一の閉路か。戻り値: (頂点, 閉路数 or None) の一覧
+
+    **前提: A0-2 を先に通すこと**（面に同じ頂点が 2 回あると例外になります）。
+    """
     bad = []
     for v in sorted({x for f in F for x in f}):
         n = link_cycles(F, v)
@@ -149,11 +155,6 @@ def check_a4(F):
 
 
 # --- A5（面どうしの交わり） ---------------------------------------------
-def _tri_plane(P, f):
-    n = normal(P, f)
-    return n, dot(n, P[f[0]])
-
-
 def _seg_on_line(P, f, n2, d2):
     """三角形 f を平面 (n2,d2) で切った線分を、[点, 点] で返す（無ければ None）。"""
     vs = [P[i] for i in f]
@@ -258,6 +259,7 @@ def pair_a5(P, f1, f2):
       s=0 … 交わりが【空】なら正規
       s=1 … 交わりが【その頂点だけ】なら正規
       s=2 … 交わりが【その辺だけ】なら正規
+      s=3 … 同じ 3 頂点の組。A4 が先に数えるが、ここでも不正（接触）として扱う
     分類は "交差"（共面でなく、交わりが両方の相対内部と交わる）/ "接触"（それ以外の不正）。
     """
     s = len(set(f1) & set(f2))
@@ -374,6 +376,11 @@ def winding(P, F, q, faces=None):
                 continue
             den = dot(n, d)
             num = dot(n, sub(P[f[0]], tuple(q)))
+            T0 = [P[i2] for i2 in f]
+            ax0 = max(range(3), key=lambda k: abs(n[k]))
+            ij0 = [k for k in range(3) if k != ax0]
+            if num == 0 and _inside2(tuple(q), T0, ij0):
+                ok = False; break                  # 問い合わせ点が面の上にある
             if den == 0:
                 if num == 0:
                     ok = False; break              # 面の平面上を走る
@@ -423,13 +430,15 @@ def analyze(P, F):
                 return {"error": "巻き数を測れません（成分 %d を成分 %d から）" % (c, j)}
             if w != 0:
                 inside[c].append(j)
-    # 親 = c を含むもののうち、他のすべての包含者に含まれるもの
+    # 親 = c を含むもののうち、最も内側のもの
+    #     ＝ 他のすべての包含者に【含まれる】もの。
+    #     「j が k に含まれる」は k in inside[j]（inside[x] は x を含む成分の一覧）。
     parent = []
     for c in range(len(comps)):
         cand = inside[c]
         p = None
         for j in cand:
-            if all(j == k or j in inside[k] for k in cand):
+            if all(k == j or k in inside[j] for k in cand):
                 p = j; break
         parent.append(p)
     child = defaultdict(list)
