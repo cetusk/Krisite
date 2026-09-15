@@ -622,6 +622,103 @@ inline int pack_topo(const mesh::TopologyReport& t) {
            (t.no_degenerate ? 8 : 0);
 }
 
+/// **診断の検査器の版。** **意味が変わる修正のたびに上げます。**
+///
+/// **これを meta に入れておかないと、別の版が作った結果を再利用します**
+/// （`DESIGN-phase5-vertex-level.md` §23.10）。
+constexpr const char* kDiagCheckerVersion = "gmp-diag/2";
+
+/// 診断の結果の行を検査し、**再利用してよいキー**を `out_keys` に集めます。
+///
+/// **列数と先頭だけでは足りません**（§23.10 の指摘 2）。
+/// **型・意味・完結性・重複**まで見ます。
+inline bool validate_diag_rows(const std::string& path, std::vector<std::string>* out_keys) {
+    std::ifstream f(path);
+    if (!f) return true;  // **無ければ、これから作ります**
+    const auto is_uint = [](const std::string& t) {
+        return !t.empty() && t.find_first_not_of("0123456789") == std::string::npos;
+    };
+    const auto is_num = [](const std::string& t) {
+        if (t.empty()) return false;
+        char* e = nullptr;
+        std::strtod(t.c_str(), &e);
+        return e != nullptr && *e == '\0';
+    };
+    const auto is_rat = [](const std::string& t) {  // 有理数（`-3` / `7/2`）
+        if (t.empty()) return false;
+        const std::size_t sl = t.find('/');
+        const std::string a = (sl == std::string::npos) ? t : t.substr(0, sl);
+        const std::string b = (sl == std::string::npos) ? std::string("1") : t.substr(sl + 1);
+        if (a.empty() || b.empty()) return false;
+        const std::string a2 = (a[0] == '-' || a[0] == '+') ? a.substr(1) : a;
+        return !a2.empty() && a2.find_first_not_of("0123456789") == std::string::npos &&
+               b.find_first_not_of("0123456789") == std::string::npos;
+    };
+    const auto is_hash = [](const std::string& t) {
+        return t.size() == 16 && t.find_first_not_of("0123456789abcdef") == std::string::npos;
+    };
+    std::vector<std::string> seen_keys;
+    std::string line;
+    std::size_t ln = 0;
+    while (std::getline(f, line)) {
+        ++ln;
+        if (line.empty()) continue;
+        std::vector<std::string> t;
+        {
+            std::istringstream is(line);
+            std::string w;
+            while (is >> w) t.push_back(w);
+        }
+        const char* bad = nullptr;
+        if (t.size() < static_cast<std::size_t>(kDiagFixedCols)) bad = "列が足りません";
+        else if (t[0].find('x') == std::string::npos) bad = "キーの形が違います";
+        else if (t[1] != "ok") bad = "状態が ok ではありません";
+        else if (t[2] != "1") bad = "実施されていません";
+        else if (t[3] != "id1=ok") bad = "式 1 が一致していません";
+        else if (t[4] != "id2=ok" && t[4] != "id2=ng") bad = "式 2 の列の形が違います";
+        else if (!is_uint(t[5]) || !is_uint(t[6])) bad = "入力の三角形数が数ではありません";
+        else if (!is_num(t[7]) || std::strtod(t[7].c_str(), nullptr) < 0) bad = "対の秒が不正です";
+        else if (!is_hash(t[8]) || !is_hash(t[9])) bad = "ハッシュの形が違います";
+        else if (!is_uint(t[10]) || !is_uint(t[11])) bad = "時間の列が数ではありません";
+        else if (!is_num(t[12]) || !is_num(t[13])) bad = "篩の値が数ではありません";
+        if (bad == nullptr) {
+            for (int k = 0; k < 4 && bad == nullptr; ++k) {
+                if (!is_uint(t[14 + k])) bad = "三角形数が数ではありません";
+            }
+            for (int k = 0; k < 4 && bad == nullptr; ++k) {
+                // **位相は 4 項目を詰めた 0..15。診断で残すのは【15 のみ】**
+                if (t[18 + k] != "15") bad = "位相が完全ではありません";
+            }
+            for (int k = 0; k < 4 && bad == nullptr; ++k) {
+                if (!is_uint(t[22 + k])) bad = "unresolved が数ではありません";
+                else if (t[22 + k] != "0") bad = "unresolved が 0 ではありません";
+            }
+            if (bad == nullptr && t[26] != "0") bad = "式 1 の残差が 0 ではありません";
+            for (int k = 0; k < 6 && bad == nullptr; ++k) {
+                if (!is_rat(t[27 + k])) bad = "体積が有理数の形ではありません";
+            }
+        }
+        if (bad != nullptr) {
+            std::printf("**既存の診断結果の %zu 行目が再開に使えません**（%s）\n"
+                        "**この行を人が見てから、ファイルを退避してやり直してください。**\n",
+                        ln, bad);
+            return false;
+        }
+        if (std::find(seen_keys.begin(), seen_keys.end(), t[0]) != seen_keys.end()) {
+            std::printf("**既存の診断結果にキーの重複があります**: `%s`（%zu 行目）\n",
+                        t[0].c_str(), ln);
+            return false;
+        }
+        seen_keys.push_back(t[0]);
+    }
+    if (f.bad()) {
+        std::printf("**既存の診断結果を読めません**: `%s`\n", path.c_str());
+        return false;
+    }
+    out_keys->insert(out_keys->end(), seen_keys.begin(), seen_keys.end());
+    return true;
+}
+
 #if defined(KRISITE_TEST_GMP_DIAG)
 /// **4 出力の厳密体積整合性の診断**（§22.16 の式 1 と式 2）。
 ///
@@ -649,6 +746,17 @@ struct GmpDiag {
     bool topo_all_ok() const {
         for (int k = 0; k < 4; ++k) {
             if (topo[k] != 15) return false;
+        }
+        return true;
+    }
+
+    /// **4 つの出力すべてで `unresolved` が 0 か**（`SPEC-phase5.md` §3.-1）。
+    ///
+    /// **`unresolved > 0` は、除外の条件を満たしていても失敗**です。
+    /// **旧 3 演算では既にそうなっています。4 演算目も同じ扱いにします**（§23.10 の指摘 3）。
+    bool unres_all_zero() const {
+        for (int k = 0; k < 4; ++k) {
+            if (unres[k] != 0) return false;
         }
         return true;
     }
@@ -987,6 +1095,7 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
 #if defined(KRISITE_DIAG_MUTATE)
             const char* mut = std::getenv("KRI_DIAG_MUTATE");
             if (mut != nullptr && std::string(mut) == "topo4") diag->topo[3] = 0;  // ★ 壊す
+            if (mut != nullptr && std::string(mut) == "unres4") diag->unres[3] = 1;  // ★ 壊す
 #endif
         }
         // **4 演算の合成ハッシュ**（互換ハッシュとは別の列。§22.19.1）
@@ -1324,6 +1433,139 @@ int main(int argc, char** argv) {
         for (std::size_t i = 0; i < ids.size(); ++i) needed[i] = 1;
     }
 
+    // ---- 0.5 診断の静的な照合（**量子化より前に、全部ここで**）--------------------
+    //
+    // **★ 以前は量子化の後に照合していました**（§23.10 の指摘 2）。
+    // **止めるなら、実データに触れる前に止めるべきです。**
+    std::vector<std::string> diag_already;
+    if (gmp_diag) {
+        // **指紋。** **開けなければ失敗を返します**（空文字）。
+        // **以前は「読めない」を有効な指紋のように扱い得ました。**
+        const auto finger = [](const std::string& path) -> std::string {
+            std::ifstream f(path, std::ios::binary);
+            if (!f) return std::string();
+            unsigned long long h64 = 1469598103934665603ULL;
+            char ch = 0;
+            while (f.get(ch)) {
+                h64 ^= static_cast<unsigned char>(ch);
+                h64 *= 1099511628211ULL;
+            }
+            if (f.bad()) return std::string();
+            char b[32];
+            std::snprintf(b, sizeof b, "%016llx", h64);
+            return std::string(b);
+        };
+        const auto need_fp = [&](const std::string& path, const char* what) -> std::string {
+            const std::string fp = finger(path);
+            if (fp.empty()) {
+                std::printf("**%s を読めません**: `%s`\n", what, path.c_str());
+                std::exit(2);
+            }
+            return fp;
+        };
+        // **計画（全対象）と、今回回す 1 対は別のものです**（§23.10 の指摘 1）。
+        //
+        // **meta に固定するのは【計画】の指紋**で、
+        // **今回の対象は計画の部分集合であることだけを確かめます。**
+        const char* plan_env = std::getenv("KRI_GMP_PLAN");
+        const std::string plan_path =
+            (plan_env != nullptr && *plan_env != '\0') ? plan_env : (base + "_gmp_only.txt");
+        std::vector<std::string> plan;
+        {
+            std::ifstream f(plan_path);
+            if (!f) {
+                std::printf("**計画の一覧がありません**: `%s`\n", plan_path.c_str());
+                return 2;
+            }
+            std::string line;
+            while (std::getline(f, line)) {
+                if (!line.empty()) plan.push_back(line.substr(0, line.find(' ')));
+            }
+        }
+        for (const std::string& k : only) {
+            if (std::find(plan.begin(), plan.end(), k) == plan.end()) {
+                std::printf("**今回の対象が計画にありません**: `%s`（計画: `%s`）\n", k.c_str(),
+                            plan_path.c_str());
+                return 2;
+            }
+        }
+        // **入力そのものの指紋**（三角形数が同じでも座標が同じとは限りません）。
+        //
+        // **★ 対象は【計画の全模型】です。** 「今回回す 1 対の模型」で作ると、
+        // **同じ CP の 2 対目で meta が一致しません**（§23.12 の統合試験が捕まえました）。
+        std::string kfp;
+        {
+            std::vector<char> plan_need(ids.size(), 0);
+            for (const std::string& k : plan) {
+                const std::size_t xp = k.find('x');
+                if (xp == std::string::npos) continue;
+                for (const std::string& one : {k.substr(0, xp), k.substr(xp + 1)}) {
+                    for (std::size_t i2 = 0; i2 < ids.size(); ++i2) {
+                        if (ids[i2] == one) plan_need[i2] = 1;
+                    }
+                }
+            }
+            unsigned long long h64 = 1469598103934665603ULL;
+            for (std::size_t i2 = 0; i2 < ids.size(); ++i2) {
+                if (plan_need[i2] == 0) continue;
+                const std::string one = need_fp(root + "/kmesh/" + ids[i2] + ".kmesh", "入力");
+                for (char ch : ids[i2] + ":" + one + ";") {
+                    h64 ^= static_cast<unsigned char>(ch);
+                    h64 *= 1099511628211ULL;
+                }
+            }
+            char b[32];
+            std::snprintf(b, sizeof b, "%016llx", h64);
+            kfp = b;
+        }
+        std::string args;
+        for (int t = 2; t < argc; ++t) args += (t > 2 ? " " : "") + std::string(argv[t]);
+        char want[2048];
+        std::snprintf(want, sizeof want,
+                      "checker=%s\nb=%d\ncols=%d\nargs=%s\nlist=%s\nlist_fp=%s\npairs_fp=%s\n"
+                      "plan_fp=%s\nkmesh_fp=%s\nbin_fp=%s\n",
+                      kDiagCheckerVersion, KRISITE_COORD_BITS, kDiagFixedCols, args.c_str(),
+                      list.c_str(), need_fp(list, "模型の一覧").c_str(),
+                      need_fp(base + "_pairs.txt", "対の一覧").c_str(),
+                      need_fp(plan_path, "計画の一覧").c_str(), kfp.c_str(),
+                      need_fp("/proc/self/exe", "診断バイナリ").c_str());
+        const std::string meta_path = base + "_gmp.meta";
+        const std::string res_path = base + "_gmp_results.txt";
+        const bool has_meta = std::ifstream(meta_path).good();
+        const bool has_res = std::ifstream(res_path).good();
+        // **出所不明の結果は拒否します**（§23.10 の指摘 2）
+        if (has_res && !has_meta) {
+            std::printf("**結果があるのに meta がありません**: `%s`\n"
+                        "**出所が確かめられないので使いません。退避してからやり直してください。**\n",
+                        res_path.c_str());
+            return 2;
+        }
+        if (has_meta) {
+            std::ifstream mf(meta_path);
+            const std::string got((std::istreambuf_iterator<char>(mf)),
+                                  std::istreambuf_iterator<char>());
+            if (mf.bad()) {
+                std::printf("**meta を読めません**: `%s`\n", meta_path.c_str());
+                return 2;
+            }
+            if (got != want) {
+                std::printf("**診断の meta が一致しません**: `%s`\n--- 保存 ---\n%s--- 今回 ---\n%s",
+                            meta_path.c_str(), got.c_str(), want);
+                return 2;
+            }
+        } else {
+            std::ofstream of(meta_path);
+            of << want;
+            of.flush();
+            if (!of) {
+                std::printf("**診断の meta を書けません**: `%s`\n", meta_path.c_str());
+                return 2;
+            }
+        }
+        // **行の検査。列数だけでなく、型・意味・完結性・重複まで見ます。**
+        if (!validate_diag_rows(res_path, &diag_already)) return 2;
+    }
+
     // ---- 1. 量子化と受け入れ判定（**モデル単位**）----
     std::vector<Prepared> prep(ids.size());
     Counts c;
@@ -1452,85 +1694,14 @@ int main(int argc, char** argv) {
                  : (redo ? (base + "_struct_b" + std::to_string(KRISITE_COORD_BITS) + ".txt")
                          : (base + "_results.txt"));
     std::vector<std::string> already;
-    // **★ 診断は meta を照合します**（§22.24 の P1-2）。
-    //
-    // **以前は行の先頭 4 項目だけを見ており、途中で切れた行や、
-    // 別の条件で作られた結果を「済み」として飛ばしていました。**
-    if (gmp_diag) {
-        // **入力の指紋**（FNV-1a 64。暗号用ではありません。**取り違えを見つけるためのもの**）
-        const auto finger = [](const std::string& path) -> std::string {
-            std::ifstream f(path, std::ios::binary);
-            unsigned long long h64 = 1469598103934665603ULL;
-            char ch = 0;
-            while (f.get(ch)) {
-                h64 ^= static_cast<unsigned char>(ch);
-                h64 *= 1099511628211ULL;
-            }
-            char b[32];
-            std::snprintf(b, sizeof b, "%016llx", h64);
-            return f.bad() ? std::string("read-error") : std::string(b);
-        };
-        std::string args;
-        for (int t = 2; t < argc; ++t) args += (t > 2 ? " " : "") + std::string(argv[t]);
-        char want[1024];
-        std::snprintf(want, sizeof want,
-                      "b=%d\ncols=%d\nargs=%s\nlist=%s\nlist_fp=%s\npairs_fp=%s\nonly_fp=%s\n",
-                      KRISITE_COORD_BITS, kDiagFixedCols, args.c_str(), list.c_str(),
-                      finger(list).c_str(), finger(base + "_pairs.txt").c_str(),
-                      finger(only_path).c_str());
-        const std::string meta_path = base + "_gmp.meta";
-        std::ifstream mf(meta_path);
-        if (mf) {
-            const std::string got((std::istreambuf_iterator<char>(mf)),
-                                  std::istreambuf_iterator<char>());
-            if (got != want) {
-                std::printf("**診断の meta が一致しません**: `%s`\n--- 保存されている ---\n%s"
-                            "--- 今回 ---\n%s",
-                            meta_path.c_str(), got.c_str(), want);
-                return 2;
-            }
-        } else {
-            std::ofstream of(meta_path);
-            of << want;
-            of.flush();
-            if (!of) {
-                std::printf("**診断の meta を書けません**: `%s`\n", meta_path.c_str());
-                return 2;
-            }
-        }
-        // **行の検査。** **途中で切れた行・未実施・不一致は「済み」にしません。**
-        // **黙って飛ばすと二重に書くので、【止めて報告】します。**
-        std::ifstream f(base + "_gmp_results.txt");
-        std::string line;
-        std::size_t ln = 0;
-        while (std::getline(f, line)) {
-            ++ln;
-            if (line.empty()) continue;
-            std::vector<std::string> tok;
-            {
-                std::istringstream is(line);
-                std::string t;
-                while (is >> t) tok.push_back(t);
-            }
-            const char* bad = nullptr;
-            if (tok.size() < static_cast<std::size_t>(kDiagFixedCols)) bad = "列が足りません";
-            else if (tok[1] != "ok") bad = "状態が ok ではありません";
-            else if (tok[2] != "1") bad = "実施されていません";
-            else if (tok[3] != "id1=ok") bad = "式 1 が一致していません";
-            if (bad != nullptr) {
-                std::printf("**既存の診断結果の %zu 行目が再開に使えません**（%s）: `%s`\n"
-                            "**この行を人が見てから、ファイルを退避してやり直してください。**\n",
-                            ln, bad, base.c_str());
-                return 2;
-            }
-            already.push_back(tok[0]);
-        }
-    } else {
+    if (!gmp_diag) {
         std::ifstream f(base + "_results.txt");
         std::string line;
         while (std::getline(f, line)) {
             if (!line.empty()) already.push_back(line.substr(0, line.find(' ')));
         }
+    } else {
+        already = diag_already;  // **量子化より前に検査済み**（§23.10）
     }
     const auto seen = [&already](const std::string& k) {
         return std::find(already.begin(), already.end(), k) != already.end();
@@ -1685,6 +1856,12 @@ int main(int argc, char** argv) {
                 char b[96];
                 std::snprintf(b, sizeof b, "4演算の位相が不良(%d,%d,%d,%d)", diag.topo[0],
                               diag.topo[1], diag.topo[2], diag.topo[3]);
+                why = b;
+            } else if (!diag.unres_all_zero()) {
+                ok = false;
+                char b[96];
+                std::snprintf(b, sizeof b, "4演算にunresolvedが残る(%zu,%zu,%zu,%zu)",
+                              diag.unres[0], diag.unres[1], diag.unres[2], diag.unres[3]);
                 why = b;
             }
         }

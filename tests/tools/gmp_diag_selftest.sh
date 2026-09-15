@@ -85,13 +85,25 @@ chk "終了値" "$rc" 2
 chk "meta の不一致と言う" "$(grep -c 'meta が一致しません' "$T/run.log")" 1
 
 echo
-echo "## 7. 結果を書けない"
+echo "## 7a. 結果があるのに meta が無い（出所不明）"
 setup || exit 9
-mkdir "$T/synth_gmp_results.txt"      # ★ ディレクトリにして開けなくする
+mkdir "$T/synth_gmp_results.txt"      # ★ 「在る」が meta は無い
 rc=$(run "$BIN")
 chk "終了値" "$rc" 2
-chk "開けないと言う" "$(grep -c '結果ファイルを開けません' "$T/run.log")" 1
+chk "出所不明と言う" "$(grep -c '結果があるのに meta がありません' "$T/run.log")" 1
+chk "量子化に入らない" "$(grep -c '量子化 ' "$T/run.log")" 0
 rmdir "$T/synth_gmp_results.txt"
+
+echo
+echo "## 7b. 結果を書けない（meta はある）"
+setup || exit 9
+run "$BIN" > /dev/null                # meta と結果を作る
+rm "$T/synth_gmp_results.txt"         # 結果だけ消す
+chmod a-w "$T"                        # ★ 作れなくする
+rc=$(run "$BIN")
+chmod u+w "$T"
+chk "終了値" "$rc" 2
+chk "開けないと言う" "$(grep -c '結果ファイルを開けません' "$T/run.log")" 1
 
 echo
 echo "## 8. 不正な引数・設定の矛盾"
