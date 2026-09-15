@@ -67,64 +67,6 @@ def spawn(cmd, env, log_path, as_bytes):
     return pid
 
 
-def run_one(a, key, only_path, budget, log_path):
-    """1 対を回します。戻り値: (状態, 終了値, 秒, その子のピーク RSS[KiB])。"""
-    env = dict(os.environ, KRI_GMP_ONLY=only_path)
-    cmd = [os.path.abspath(a.bin)] + [a.list_of_key] + a.args.split()
-    t0 = time.monotonic()
-    pid = spawn(cmd, env, log_path, int(a.as_gib * (1 << 30)))
-    status, rc, rss = "ok", None, 0
-    deadline = t0 + budget
-    while True:
-        wpid, st, ru = os.wait4(pid, os.WNOHANG)
-        if wpid == pid:
-            rc = exit_code(st)
-            rss = ru.ru_maxrss
-            break
-        if time.monotonic() >= deadline:
-            status = "打ち切り"
-            try:
-                os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            t_kill = time.monotonic() + a.grace
-            while time.monotonic() < t_kill:
-                wpid, st, ru = os.wait4(pid, os.WNOHANG)
-                if wpid == pid:
-                    # **猶予の内に回収できたら、実際の終了状態を解釈します**（§25.3）
-                    rc, rss = exit_code(st), ru.ru_maxrss
-                    break
-                time.sleep(0.05)
-            else:
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                _, st, ru = os.wait4(pid, 0)
-                rc, rss = exit_code(st), ru.ru_maxrss
-            break
-        time.sleep(0.05)
-    dt = time.monotonic() - t0
-    if status == "ok" and rc != 0:
-        status = "失敗"
-    return status, rc, dt, rss
-
-
-def check_only(a, lp, pp, only_path, log_path):
-    """**駆動に照合だけさせます**（量子化もブール演算もしません）。
-
-    **★ 再利用してよいかを、この層では決めません**（§25.1）。
-    **meta・入力・バイナリ・設定・行の検査は、駆動の 1 か所だけが持ちます。**
-
-    戻り値: 0 = すべて済み（**検証した再利用**）/ 3 = 回す対がある / それ以外 = 拒否
-    """
-    env = dict(os.environ, KRI_GMP_ONLY=only_path, KRI_GMP_PLAN=pp, KRI_GMP_CHECK_ONLY="1")
-    cmd = [os.path.abspath(a.bin), lp] + a.args.split()
-    pid = spawn(cmd, env, log_path, int(a.as_gib * (1 << 30)))
-    _, st, _ = os.wait4(pid, 0)
-    return exit_code(st)
-
-
 def exit_code(st):
     """待機状態を終了値に直します（**シグナルは負で返します**）。"""
     if hasattr(os, "waitstatus_to_exitcode"):
@@ -133,6 +75,69 @@ def exit_code(st):
         except ValueError:
             pass
     return os.WEXITSTATUS(st) if os.WIFEXITED(st) else -os.WTERMSIG(st)
+
+
+def supervise(pid, budget, grace):
+    """**期限つきで子を待ちます。** 戻り値: (終了値, ピーク RSS[KiB], 打ち切ったか)。
+
+    **★ 無期限の `os.wait4(pid, 0)` は使いません**（§27）。
+    **照合の子も、本計算の子も、合成検定の子も、すべてここを通します。**
+    **1 か所にまとめないと、どれかに監督が抜けます**（実際に照合が抜けていました）。
+    """
+    t0 = time.monotonic()
+    while True:
+        wpid, st, ru = os.wait4(pid, os.WNOHANG)
+        if wpid == pid:
+            return exit_code(st), ru.ru_maxrss, False
+        if time.monotonic() - t0 >= budget:
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            t_kill = time.monotonic() + grace
+            while time.monotonic() < t_kill:
+                wpid, st, ru = os.wait4(pid, os.WNOHANG)
+                if wpid == pid:
+                    # **猶予の内に回収できたら、実際の終了状態を解釈します**
+                    return exit_code(st), ru.ru_maxrss, True
+                time.sleep(0.02)
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            _, st, ru = os.wait4(pid, 0)
+            return exit_code(st), ru.ru_maxrss, True
+        time.sleep(0.02)
+
+
+def run_one(a, key, only_path, budget, log_path):
+    """1 対を回します。戻り値: (状態, 終了値, 秒, その子のピーク RSS[KiB])。"""
+    env = dict(os.environ, KRI_GMP_ONLY=only_path)
+    cmd = [os.path.abspath(a.bin), a.list_of_key] + a.args.split()
+    t0 = time.monotonic()
+    pid = spawn(cmd, env, log_path, int(a.as_gib * (1 << 30)))
+    rc, rss, cut = supervise(pid, budget, a.grace)
+    dt = time.monotonic() - t0
+    status = "打ち切り" if cut else ("ok" if rc == 0 else "失敗")
+    return status, rc, dt, rss
+
+
+def check_only(a, lp, pp, only_path, log_path, budget):
+    """**駆動に照合だけさせます**（量子化もブール演算もしません）。
+
+    **★ 再利用してよいかを、この層では決めません**（§25.1）。
+    **meta・入力・バイナリ・設定・行の検査は、駆動の 1 か所だけが持ちます。**
+
+    **★ 期限つきで監督します**（§27）。**打ち切ったら `None`** を返します。
+
+    戻り値: 0 = すべて済み（**検証した再利用**）/ 3 = 回す対がある /
+            `None` = 打ち切り / それ以外 = 拒否
+    """
+    env = dict(os.environ, KRI_GMP_ONLY=only_path, KRI_GMP_PLAN=pp, KRI_GMP_CHECK_ONLY="1")
+    cmd = [os.path.abspath(a.bin), lp] + a.args.split()
+    pid = spawn(cmd, env, log_path, int(a.as_gib * (1 << 30)))
+    rc, _, cut = supervise(pid, budget, a.grace)
+    return None if cut else rc
 
 
 def main(argv=None):
@@ -191,27 +196,14 @@ def main(argv=None):
             print(f"**合成検定の予算がありません**（残り {remain:.1f} 秒）")
             return 1
         slog = os.path.join(a.logdir, f"synth_{run_id}.log")
-        a.list_of_key = None
         pid = spawn([os.path.abspath(a.synth_check)], dict(os.environ), slog,
                     int(a.as_gib * (1 << 30)))
         t0 = time.monotonic()
-        rc = None
-        while True:
-            wpid, st, _ = os.wait4(pid, os.WNOHANG)
-            if wpid == pid:
-                rc = exit_code(st)
-                break
-            if time.monotonic() - t0 >= budget:
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                os.wait4(pid, 0)
-                rc = -9
-                break
-            time.sleep(0.02)
-        print(f"  合成検定: {'通過' if rc == 0 else '**不通過**'}（終了値 {rc}、"
-              f"{time.monotonic() - t0:.1f} 秒）  ログ: {slog}")
+        rc, _, cut = supervise(pid, budget, a.grace)
+        if cut:
+            rc = None
+        print(f"  合成検定: {'通過' if rc == 0 else ('**打ち切り**' if rc is None else '**不通過**')}"
+              f"（終了値 {rc}、{time.monotonic() - t0:.1f} 秒）  ログ: {slog}")
         if rc != 0:
             tail(slog)
             print("**合成検定が通らないので、対を 1 つも起動しません。**")
@@ -237,7 +229,13 @@ def main(argv=None):
             f.write(k + "\n")
         # ---- 1. 照合（駆動に聞きます。量子化もブール演算もしません）----
         clog = os.path.join(a.logdir, f"{stem}_{run_id}_{k}_check.log")
-        rc = check_only(a, lp, pp, only_path, clog)
+        rc = check_only(a, lp, pp, only_path, clog, budget)
+        if rc is None:
+            print(f"  {k}: **照合が期限で打ち切られました**。**未検証を成功に数えません。**"
+                  f"  ログ: {clog}")
+            bad += 1
+            stopped = True
+            continue
         if rc == 0:
             print(f"  {k}: **済み**（駆動が照合した再利用。起動しません）  ログ: {clog}")
             done += 1
@@ -262,7 +260,16 @@ def main(argv=None):
         status, rc, dt, rss = run_one(a, k, only_path, budget, log_path)
         # ---- 3. 完了は、もう一度【駆動に照合させて】数えます ----
         vlog = os.path.join(a.logdir, f"{stem}_{run_id}_{k}_verify.log")
-        vrc = check_only(a, lp, pp, only_path, vlog)
+        vremain = t_end - time.monotonic()
+        vbudget = min(a.per_pair, vremain - a.grace)
+        if vbudget <= 0:
+            # **照合できないまま「済み」にしません**（§27）
+            print(f"  {k}: **事後の照合に予算が残っていません**（残り {vremain:.1f} 秒）。"
+                  f"**未検証を成功に数えません。**")
+            bad += 1
+            stopped = True
+            continue
+        vrc = check_only(a, lp, pp, only_path, vlog, vbudget)
         okrow = (vrc == 0)
         print(f"  {k}: {status}（終了値 {rc}、{dt:.1f} 秒、ピーク RSS {rss / 1024:.0f} MiB、"
               f"期限 {budget:.1f} 秒、照合 {'通過' if okrow else '**不通過**'}）  ログ: {log_path}")

@@ -25,6 +25,8 @@ if [ "${KRI_GMP_CHECK_ONLY:-0}" = "1" ]; then
   case "${MOCK_CHECK:-auto}" in
     reject) exit 2 ;;
     done)   exit 0 ;;
+    slow)   sleep 0.7; exit 0 ;;          # ★ 仕様担当が再現した条件
+    hang)   sleep 300; exit 0 ;;          # 止まったまま
     *) grep -q "^$key " "${base}_gmp_results.txt" 2>/dev/null && exit 0 || exit 3 ;;
   esac
 fi
@@ -140,6 +142,44 @@ chk "結果を作っていない" "$([ -f "$T/list_gmp_results.txt" ] && echo �
 rc=$($R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s11c \
      --synth-check "$T/nope" > /dev/null 2>&1; echo $?)
 chk "合成検定が無い → 終了値" "$rc" 2
+
+
+echo "## 12. ★ 照合の子が期限で止まること（仕様担当の再現）"
+# 照合だけ 0.7 秒待つ模擬。全体 0.3 秒・猶予 0.05 秒・対ごと 0.2 秒
+clean; t0=$(date +%s%N)
+out=$(MOCK=ok MOCK_CHECK=slow $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s12 --deadline 0.3 --grace 0.05 --per-pair 0.2 2>&1); rc=$?
+t1=$(date +%s%N); ms=$(( (t1-t0)/1000000 ))
+chk "終了値（成功にしない）" "$rc" 1
+chk "済み 0" "$(echo "$out" | grep -c '済み 0')" 1
+chk "未検証を成功に数えないと言う" "$(echo "$out" | grep -c '未検証を成功に数えません')" 1
+chk "全体が 1.5 秒以内に戻る（無期限待機でない）" "$([ "$ms" -le 1500 ] && echo はい || echo いいえ)" はい
+ok "実測 ${ms} ミリ秒"
+
+echo
+echo "## 13. 照合が止まったまま（KILL まで）"
+clean; t0=$(date +%s%N)
+out=$(MOCK=ok MOCK_CHECK=hang $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s13 --deadline 2 --grace 0.3 --per-pair 0.5 2>&1); rc=$?
+t1=$(date +%s%N); ms=$(( (t1-t0)/1000000 ))
+chk "終了値" "$rc" 1
+chk "照合が打ち切られたと言う" "$(echo "$out" | grep -c '照合が期限で打ち切られました')" 1
+chk "以降を起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
+chk "全体が 3 秒以内に戻る" "$([ "$ms" -le 3000 ] && echo はい || echo いいえ)" はい
+ok "実測 ${ms} ミリ秒"
+
+echo
+echo "## 14. 事後の照合に予算が残らない"
+# 本計算が対ごとの期限をすべて使い切ると、事後の照合に予算が残りません
+clean; out=$(MOCK=slow MOCK_CHECK=auto $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s14 --deadline 0.9 --grace 0.3 --per-pair 0.5 2>&1); rc=$?
+chk "終了値" "$rc" 1
+chk "済みにしない" "$(echo "$out" | grep -c '済み 0')" 1
+# **照合まで届けば「不通過」、予算が尽きていれば「未検証を成功に数えません」。**
+# **どちらでも、済みには数えません。**
+n=$(echo "$out" | grep -cE '照合 \*\*不通過\*\*|未検証を成功に数えません')
+chk "未検証・不通過のどちらかで止まる" "$([ "$n" -ge 1 ] && echo はい || echo いいえ)" はい
+chk "以降を起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
 
 echo
 printf '**OK %d / NG %d**\n' "$OK" "$NG"
