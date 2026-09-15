@@ -117,14 +117,29 @@ def main(argv=None):
                 "--saved", a.saved, "--key", a.key],
     }
 
-    state = {}
+    state = {n: "未起動" for n, _ in STAGES}
+
+    def report(rc):
+        """★ **停止したときも (A) 実行状態をそのまま並べます**（§44.7 (E)）。"""
+        print("実行状態: %s" % state)
+        notrun = [n for n, _ in STAGES if state[n] == "未起動"]
+        print("未起動の段: %s" % (notrun if notrun else "無し"))
+        print("**案 II へは自動で進みません。**")
+        print("出力: %s" % out)
+        return rc
+
     for name, budget in STAGES:
         now = time.monotonic()
+        # ★ **この枝は、いまの枠の算術では到達しません**（自己検定で確かめました）。
+        #   段が「完了」するのは子が `t_term` より前に終わったときで、
+        #   `t_term <= d_abs - grace` なので、完了した時刻 T は必ず `T < d_abs - grace`、
+        #   すなわち `d_abs - T > grace`。**次の段は必ず起動できます。**
+        #   最初の段も `grace < deadline` を引数検査で強制しているので当たりません。
+        #   **残すのは、枠の算術を将来変えたときの備えです。空回りしていることを明記します。**
         if d_abs - now <= a.grace:
             print("[%s] ★ 残り %.1f 秒では終了猶予 %g 秒を確保できません。起動しません。"
                   % (name, d_abs - now, a.grace))
-            state[name] = "未起動"
-            return 4
+            return report(4)
         t_kill = min(now + budget, d_abs)
         t_term = max(now, t_kill - a.grace)
         log = os.path.join(out, "child_%s.log" % name)
@@ -149,34 +164,31 @@ def main(argv=None):
             state[name] = "回収不能"
             print("[%s] ★ 回収できていません（pid=%d、群 %d）。後続を起動しません。"
                   % (name, pid, pid))
-            return 2
+            return report(2)
         if st == sup.CUT:
             state[name] = "打ち切り"
             print("[%s] ★ 打ち切り、または期限後の回収。**未完了として区切ります。**" % name)
-            return 3
+            return report(3)
         if code == 127:
             state[name] = "起動失敗"
             print("[%s] ★ 起動できなかった可能性があります（終了値 127）。後続を起動しません。" % name)
-            return 6
+            return report(6)
         if code != 0:
             state[name] = "失敗"
             print("[%s] ★ 子が終了値 %s で終わりました。後続を起動しません。" % (name, code))
-            return 1
+            return report(1)
         state[name] = "完了"
         miss = [f for f in ARTIFACTS[name]
                 if not os.path.exists(os.path.join(out, f))
                 or os.path.getsize(os.path.join(out, f)) == 0]
         if miss:
             print("[%s] ★ 成果物が無いか空です: %s。後続を起動しません。" % (name, ", ".join(miss)))
-            return 5
+            return report(5)
 
     print("全 %d 段を回しました。経過 %.2f 秒（絶対期限 %g 秒）"
           % (len(STAGES), time.monotonic() - t0, a.deadline))
-    print("実行状態: %s" % state)
     print("**案 I は E2〜E5・C1・C2 の全数判定をせず、$Q$ の認定もしません。**")
-    print("**案 II へは自動で進みません。**")
-    print("出力: %s" % out)
-    return 0
+    return report(0)
 
 
 if __name__ == "__main__":

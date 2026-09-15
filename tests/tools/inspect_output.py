@@ -117,6 +117,36 @@ def det3(a, b, c):
             + a[2] * (b[0] * c[1] - b[1] * c[0]))
 
 
+def e0_violations(V, F):
+    """$E0$ の違反。戻り値: `(参照範囲, 3 頂点相異, 同次分母 0)` の一覧。
+
+    **段 `measure` と合成対照が、この同じ実装を呼びます**
+    （**写しを検査して本体が壊れたままになる形**を避けるため）。
+    """
+    oor = [i for i, f in enumerate(F) if max(f) >= len(V) or min(f) < 0]
+    dup = [i for i, f in enumerate(F) if len(set(f)) < 3]
+    w0 = [i for i, v in enumerate(V) if v[3] == 0]
+    return oor, dup, w0
+
+
+def e1_violations(F):
+    r"""$E1$（各無向辺で $\#(u,v)=\#(v,u)$）の違反した有向辺。"""
+    cnt = {}
+    for f in F:
+        for k in range(3):
+            cnt[(f[k], f[(k + 1) % 3])] = cnt.get((f[k], f[(k + 1) % 3]), 0) + 1
+    return [e for e in cnt if cnt[e] != cnt.get((e[1], e[0]), 0)]
+
+
+def shared_by_coord(P, f1, f2):
+    """**座標で**共有する点の一覧。**添字では判定しません**（§44.3）。"""
+    out = []
+    for i in f1:
+        if any(P[i] == P[j] for j in f2) and P[i] not in out:
+            out.append(P[i])
+    return out
+
+
 def classify_e4(P, f1, f2):
     """§44.3 の 4 行に分類。**3 分類に当たらなければ「未判定」**（正規扱いにしません）。"""
     import inspect_geom as ig
@@ -135,18 +165,44 @@ def classify_e4(P, f1, f2):
         if ig._area2(poly, ij) != 0:
             return "不正（正の面積を共有）"
         return _shared_or_undecided(P, f1, f2, poly)
-    s, ok, kind = ig.pair_a5(P, f1, f2)
-    if ok:
-        return "正規（交わり空、または共有する単体と一致）"
-    if kind == "交差":
+    # ★ 非共面。**`pair_a5` に丸投げしません** — あれは共有を【添字】で数えるので、
+    #   併合漏れで同じ座標の別添字があると、幾何としては辺を共有する 2 枚が
+    #   「共有しない」と扱われ、**実在し得る欠陥が「未判定」へ静かに流れます**（§44.3）。
+    d1, d2 = ig.dot(n1, P[f1[0]]), ig.dot(n2, P[f2[0]])
+    s1, s2 = ig._seg_on_line(P, f1, n2, d2), ig._seg_on_line(P, f2, n1, d1)
+    if not s1 or not s2:
+        return "正規（交わり空）"
+    dv = ig.cross(n1, n2)
+    ax = max(range(3), key=lambda k: abs(dv[k]))
+    lo = max(min(p[ax] for p in s1), min(p[ax] for p in s2))
+    hi = min(max(p[ax] for p in s1), max(p[ax] for p in s2))
+    if lo > hi:
+        return "正規（交わり空）"
+    base = s1[0]
+
+    def at(t):
+        lam = Fr(t - base[ax], dv[ax])
+        return tuple(base[k] + lam * dv[k] for k in range(3))
+
+    pts = [at(lo)] if lo == hi else [at(lo), at(hi)]
+    sh = shared_by_coord(P, f1, f2)
+    if len(pts) == len(sh) and sorted(pts) == sorted(tuple(Fr(x) for x in q) for q in sh):
+        return "正規（共有する単体と一致）"
+    mid = at(Fr(lo + hi, 2)) if lo != hi else pts[0]
+
+    def strict(T, n):
+        k0 = max(range(3), key=lambda k: abs(n[k]))
+        return ig._strict_inside2(mid, T, [k for k in range(3) if k != k0])
+
+    if strict(T1, n1) and strict(T2, n2):
         return "不正（真の交差）"
     return "未判定（3 分類に当たりません）"
 
 
 def _shared_or_undecided(P, f1, f2, poly):
     """交わりが、**座標で見た**共有頂点・辺と一致するか。**添字では判定しません。**"""
-    sh = [P[i] for i in f1 if any(P[i] == P[j] for j in f2)]
-    if len(poly) == len(sh) and sorted(poly) == sorted(sh):
+    sh = shared_by_coord(P, f1, f2)
+    if len(poly) == len(sh) and sorted(poly) == sorted(tuple(Fr(x) for x in q) for q in sh):
         return "正規（共有する単体と一致）"
     return "未判定（3 分類に当たりません）"
 
@@ -157,6 +213,7 @@ def c2_sample(P, f, a):
     import struct as _st
     n = ig.normal(P, f)
     d = ig.dot(n, P[f[0]])
+    plane_hit = False
     for name, path in (("A", a.in_a), ("B", a.in_b)):
         with open(path, "rb") as fp:
             b = fp.read()
@@ -178,11 +235,47 @@ def c2_sample(P, f, a):
             ax = max(range(3), key=lambda k: abs(m[k]))
             ij = [k for k in range(3) if k != ax]
             T = [Q[i] for i in g]
+            plane_hit = True
             if all(ig._inside2(P[i], T, ij) for i in f):
                 same = ig.dot(n, m) > 0
                 return ("単一の入力三角形に収まる（%s の面 %d、向きは%s）"
                         % (name, gi, "同じ" if same else "★ 逆"))
-    return "未判定（単一の入力三角形に収まりません）"
+    # ★ **「支持平面の不一致」と「収まらない」を分けます**（§44.8 の負の対照）。
+    #   潰すと、**どの入力平面にも載っていない出力面**が違反 `C2` ではなく
+    #   「未判定」として記録され、報告が通ってしまいます。
+    if not plane_hit:
+        return "**違反 C2**（どの入力三角形の支持平面とも一致しません）"
+    return "未判定（支持平面は一致しますが、単一の入力三角形に収まりません）"
+
+
+def compare_line(ex, ea, eb, op="union"):
+    """直線上の階段関数を比べます。戻り値 `(C1-c の区間数, C1-b の区間数, 区間数)`。
+
+    **段 `measure` と合成対照が、この同じ実装を呼びます。**
+    """
+    ts = sorted({t for t, _ in ex + ea + eb})
+    if not ts:
+        return None
+    c = b = 0
+    for k in range(len(ts) + 1):
+        m = (ts[0] - 1 if k == 0 else
+             (ts[-1] + 1 if k == len(ts) else (ts[k - 1] + ts[k]) / 2))
+        wx = sum(sg for t, sg in ex if t < m)
+        wa = sum(sg for t, sg in ea if t < m)
+        wb = sum(sg for t, sg in eb if t < m)
+        if op == "union":
+            want = 1 if (wa > 0 or wb > 0) else 0
+        elif op == "isect":
+            want = 1 if (wa > 0 and wb > 0) else 0
+        elif op == "diff_ab":
+            want = 1 if (wa > 0 and not wb > 0) else 0
+        else:
+            want = 1 if (wb > 0 and not wa > 0) else 0
+        if (1 if wx > 0 else 0) != want:
+            c += 1
+        elif wx != want:
+            b += 1
+    return c, b, len(ts) + 1
 
 
 def c1_sample(P, F, a, log):
@@ -200,6 +293,7 @@ def c1_sample(P, F, a, log):
         ins[name] = (Q, [tuple(G[3 * i:3 * i + 3]) for i in range(nf)])
 
     st = [1]
+    skipped = {}
 
     def nxt():
         x = st[0]
@@ -216,31 +310,34 @@ def c1_sample(P, F, a, log):
             continue
         ev = events(P, F, o, d)
         if ev is None:
+            skipped["退化（出力）"] = skipped.get("退化（出力）", 0) + 1
             continue
         ea = events(ins["A"][0], ins["A"][1], o, d)
         eb = events(ins["B"][0], ins["B"][1], o, d)
         if ea is None or eb is None:
+            skipped["退化（入力）"] = skipped.get("退化（入力）", 0) + 1
             continue
-        log("[union] C1: 試行 %d 本目で非退化な直線を得ました（交点 X %d / A %d / B %d）"
+        # ★ **A と B の両方に交点を持つことを条件にします。**
+        #   **1 回目の実行では、A を 1 度も通らない直線が 1 本目で採られました**
+        #   （交点 X 2 / A 0 / B 4）。**最も見たい相互作用の領域を外します。**
+        if not ea or not eb:
+            skipped["A か B を外した"] = skipped.get("A か B を外した", 0) + 1
+            continue
+        r = compare_line(ev, ea, eb, "union")
+        if r is None:
+            skipped["交点なし"] = skipped.get("交点なし", 0) + 1
+            continue
+        bad_c, bad_b, nseg = r
+        log("[union] C1: 試行 %d 本目で採用（交点 X %d / A %d / B %d）"
             % (attempt, len(ev), len(ea), len(eb)))
-        ts = sorted({t for t, _ in ev + ea + eb})
-        bad_c, bad_b = 0, 0
-        for k in range(len(ts) + 1):
-            m = (ts[0] - 1 if k == 0 else
-                 (ts[-1] + 1 if k == len(ts) else (ts[k - 1] + ts[k]) / 2))
-            wx = sum(sg for t, sg in ev if t < m)
-            wa = sum(sg for t, sg in ea if t < m)
-            wb = sum(sg for t, sg in eb if t < m)
-            want = 1 if (wa > 0 or wb > 0) else 0
-            if (1 if wx > 0 else 0) != want:
-                bad_c += 1
-            elif wx != want:
-                bad_b += 1
-        log("[union] C1: 区間 %d 個 / `C1-c` %d 個 / `C1-b` %d 個" % (len(ts) + 1, bad_c, bad_b))
+        log("[union] C1: 採った直線 o=%s d=%s" % (tuple(str(x) for x in o), d))
+        log("[union] C1: 区間 %d 個 / `C1-c` %d 個 / `C1-b` %d 個" % (nseg, bad_c, bad_b))
+        log("[union] C1: 捨てた直線の内訳 %s" % (skipped if skipped else "無し"))
         log("[union]   **通った分岐**: 非退化の直線 1 本、交点 %d 個。"
             "**この直線が通らない食い違いは見えません。**" % len(ev))
         return "`C1-c` %d 個 / `C1-b` %d 個" % (bad_c, bad_b)
-    return "**未測定**（32 回引いても非退化な直線が得られませんでした）"
+    log("[union] C1: 捨てた直線の内訳 %s" % (skipped if skipped else "無し"))
+    return "**未測定**（32 回引いても条件を満たす直線が得られませんでした）"
 
 
 def events(P, F, o, d):
@@ -337,9 +434,7 @@ def stage_measure(a, log):
         V, F, sha = read_soup(os.path.join(a.out, "b_out_%s.bin" % op), nx, nw)
         data[op] = (V, F)
         total_tri += len(F)
-        oor = [i for i, f in enumerate(F) if max(f) >= len(V) or min(f) < 0]
-        dup = [i for i, f in enumerate(F) if len(set(f)) < 3]
-        w0 = [i for i, v in enumerate(V) if v[3] == 0]
+        oor, dup, w0 = e0_violations(V, F)
         log("[%s] 頂点 %d / 面 %d / sha256 %s" % (op, len(V), len(F), sha))
         log("[%s] E0 参照範囲 %s（違反 %d）/ 3 頂点相異 %s（違反 %d）/ 同次分母 0 %s（%d 個）"
             % (op, "通過" if not oor else "★ 破れ", len(oor),
@@ -348,6 +443,8 @@ def stage_measure(a, log):
         if oor or dup or w0:
             stop = True
     log("対象の合計 %d 三角形" % total_tri)
+    log("**発火回数**: E0 の判定を %d 面 + %d 頂点ぶん行いました"
+        % (total_tri, sum(len(data[o][0]) for o in OPS)))
     if stop:
         log("★ E0 が破れました。後続の計算が定義できません。ここで止めます。")
         return 1
@@ -356,14 +453,10 @@ def stage_measure(a, log):
     e1_ok = {}
     for op in OPS:
         V, F = data[op]
-        cnt = {}
-        for f in F:
-            for k in range(3):
-                cnt[(f[k], f[(k + 1) % 3])] = cnt.get((f[k], f[(k + 1) % 3]), 0) + 1
-        bad = [e for e in cnt if cnt[e] != cnt.get((e[1], e[0]), 0)]
+        bad = e1_violations(F)
         e1_ok[op] = not bad
-        log("[%s] E1 各無向辺で #(u,v)=#(v,u): %s（違反 %d 本）"
-            % (op, "通過" if not bad else "★ 破れ", len(bad)))
+        log("[%s] E1 各無向辺で #(u,v)=#(v,u): %s（違反 %d 本、有向辺 %d 本を数えました）"
+            % (op, "通過" if not bad else "★ 破れ", len(bad), 3 * len(F)))
     log("**E1 が破れた出力では、C1 の巻き数判定を【未評価】にします**（階段関数を巻き数と"
         "読むには閉じた向き付き曲面の前提が要るため）。")
 

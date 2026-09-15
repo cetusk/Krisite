@@ -364,6 +364,19 @@ int main(int argc, char** argv) {
                      depth, nthreads, nsi_mode, verify_delta ? 1 : 0, fine_k, fine_budget, fine_mb,
                      skip_disjoint, skip_boxside ? 1 : 0, repair ? 1 : 0);
         std::fprintf(fp, "requantized=0\n");
+        // ★ **$\\chi$ の基準に効く旗**を記録します（§44.6-5）。
+        //   `legacy_nonzero_inside` は取り下げられた定義（$w \\ne 0$）への旧経路で、
+        //   **既定は偽（= $w > 0$）**。**この駆動は触りません。**
+        //   旗は `PolySoup::indicator`（`polysoup.hpp:75` の `Indicator`）にあります。
+        //   **この駆動は触りません。** `from_mesh` が作った値をそのまま記録します。
+        std::fprintf(fp, "legacy_nonzero_inside_a=%d\nlegacy_nonzero_inside_b=%d\n",
+                     A.indicator.legacy_nonzero_inside ? 1 : 0,
+                     B.indicator.legacy_nonzero_inside ? 1 : 0);
+        std::fprintf(fp, "verify_split_delta=%d\nverify_split_manifold=%d\n"
+                         "verify_split_naive=%d\n",
+                     tm.verify_split_delta ? 1 : 0, tm.verify_split_manifold ? 1 : 0,
+                     tm.verify_split_naive ? 1 : 0);
+        std::fprintf(fp, "from_mesh_verify_nsi=%d\n", fm.verify_nsi ? 1 : 0);
         for (int i = 0; i < 4; ++i) {
             std::fprintf(fp, "op%d=%s tri=%zu vert=%zu hash=%llu\n", i, name[i],
                          out[i].triangles.size(), out[i].vertices.size(), hash_mesh(out[i]));
