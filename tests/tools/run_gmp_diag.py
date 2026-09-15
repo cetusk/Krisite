@@ -45,20 +45,16 @@ def parse_args(argv=None):
     return ap.parse_args(argv)
 
 
-def preexec(as_bytes):
-    def f():
-        resource.setrlimit(resource.RLIMIT_AS, (as_bytes, as_bytes))
-        os.setsid()  # **子を独立した群にして、群ごと止められるようにします**
-    return f
-
-
 def spawn(cmd, env, log_path, as_bytes):
     """fork + exec します。**`os.wait4` を使うため `subprocess` は通しません。**
 
-    **試験専用の遅延**: 環境変数 ``KRI_DIAG_TEST_SPAWN_DELAY``（秒）があれば、
-    **起動の前にその秒数だけ待ちます**。
-    **仕様担当が再現した「起動前に使った時間が再付与される」形を、回帰試験に残すため**です
-    （§28）。**既定では読まれても 0 で、本番の経路に影響しません。**
+    **★ 子は【いちばん最初に】`setsid()` します**（§29）。
+    **ログを開いてから群を作ると、その間に親が `killpg` を撃っても届きません。**
+
+    **試験専用の遅延**（既定では読まれても 0。本番の経路に影響しません）:
+
+    * ``KRI_DIAG_TEST_SPAWN_DELAY`` … 親が **起動の前**に待つ秒数（§28）
+    * ``KRI_DIAG_TEST_CHILD_DELAY`` … 子が **群を作る前**に待つ秒数（§29）
     """
     d = os.environ.get("KRI_DIAG_TEST_SPAWN_DELAY")
     if d:
@@ -66,14 +62,35 @@ def spawn(cmd, env, log_path, as_bytes):
     pid = os.fork()
     if pid == 0:  # 子
         try:
+            cd = os.environ.get("KRI_DIAG_TEST_CHILD_DELAY")
+            if cd:
+                time.sleep(float(cd))
+            os.setsid()          # ★ まずここ
             fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
             os.dup2(fd, 1)
             os.dup2(fd, 2)
-            preexec(as_bytes)()
+            resource.setrlimit(resource.RLIMIT_AS, (as_bytes, as_bytes))
             os.execvpe(cmd[0], cmd, env)
         except BaseException:
             os._exit(127)
     return pid
+
+
+def signal_child(pid, sig):
+    """**群へ送り、群がまだ無ければ【子へ直接】送ります**（§29）。
+
+    **送れたかを返します。** **送信の失敗を、成功と同じに扱わないため**です。
+    """
+    try:
+        os.killpg(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        os.kill(pid, sig)
+        return True
+    except ProcessLookupError:
+        return False
 
 
 def exit_code(st):
@@ -86,35 +103,43 @@ def exit_code(st):
     return os.WEXITSTATUS(st) if os.WIFEXITED(st) else -os.WTERMSIG(st)
 
 
-def supervise(pid, t_term, t_kill):
-    """**絶対の期限で子を待ちます。** 戻り値: (終了値, ピーク RSS[KiB], 打ち切ったか)。
-
-    **★ 相対の予算を受けません**（§28）。**`spawn` の前に決めた絶対時刻を受けます。**
-    **相対で受けると、起動に時間がかかったぶんが【再付与】されます**
-    （仕様担当が、`spawn` を 0.4 秒待つ形に置き換えて再現しました）。
+def supervise(pid, t_term, t_kill, hard_cap=30.0):
+    """**絶対の期限で子を待ちます。** 戻り値: (終了値, ピーク RSS[KiB], 期限を守れなかったか)。
 
     * ``t_term`` … **遅くともこの時刻に `TERM`**（全体の期限 − 猶予 で上から抑えます）
     * ``t_kill`` … **遅くともこの時刻に `KILL`**（全体の期限で上から抑えます）
+
+    **★ 3 つを分けます**（§29）。
+
+    1. **終了値**（子が何を返したか）
+    2. **期限を守れたか**（**回収の時刻が `t_term` を過ぎていれば、守れていません**）
+    3. **停止を送ったか**
+
+    **「終了値 0 で回収できた」を、そのまま成功に渡しません。**
+    **監督の開始が遅れた場合、子が期限を過ぎて自然終了していることがあります。**
+
+    **★ 無期限の待機はしません。** `KILL` は届くまで毎周回送り直し、
+    それでも回収できなければ ``hard_cap`` 秒で諦めて報告します。
     """
     sent_term = False
     while True:
         wpid, st, ru = os.wait4(pid, os.WNOHANG)
         if wpid == pid:
-            return exit_code(st), ru.ru_maxrss, sent_term
+            # **回収できた時刻で、期限を守れたかを判定します**
+            late = time.monotonic() > t_term
+            return exit_code(st), ru.ru_maxrss, (sent_term or late)
         now = time.monotonic()
         if not sent_term and now >= t_term:
             sent_term = True
-            try:
-                os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
+            if not signal_child(pid, signal.SIGTERM):
+                # **送れませんでした**（群がまだ無い / もう居ない）。
+                # **次の周回で回収を試み、届かなければ KILL へ進みます。**
                 pass
         if sent_term and now >= t_kill:
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            _, st, ru = os.wait4(pid, 0)   # **KILL は捕まえられないので、すぐ戻ります**
-            return exit_code(st), ru.ru_maxrss, True
+            signal_child(pid, signal.SIGKILL)  # **届くまで毎周回送り直します**
+            if now >= t_kill + hard_cap:
+                print(f"**子 {pid} を {hard_cap:.0f} 秒かけても回収できませんでした**")
+                return None, 0, True
         time.sleep(0.01)
 
 
@@ -136,6 +161,9 @@ def run_one(a, key, only_path, budget, log_path, t_end):
     t_term, t_kill = deadlines(a, t_end, budget)   # ★ spawn の【前】に決めます
     t0 = time.monotonic()
     pid = spawn(cmd, env, log_path, int(a.as_gib * (1 << 30)))
+    sd = os.environ.get("KRI_DIAG_TEST_SUPERVISE_DELAY")   # 試験専用（§29）
+    if sd:
+        time.sleep(float(sd))
     rc, rss, cut = supervise(pid, t_term, t_kill)
     dt = time.monotonic() - t0
     status = "打ち切り" if cut else ("ok" if rc == 0 else "失敗")
