@@ -103,43 +103,48 @@ def exit_code(st):
     return os.WEXITSTATUS(st) if os.WIFEXITED(st) else -os.WTERMSIG(st)
 
 
+# 監督の結果。**「打ち切ったが回収した」と「回収できていない」を分けます**（§30）
+DONE, CUT, UNREAPED = "完了", "打ち切り", "回収不能"
+
+_supervise_calls = 0  # 試験専用の注入で使う呼び出し回数
+
+
 def supervise(pid, t_term, t_kill, hard_cap=30.0):
-    """**絶対の期限で子を待ちます。** 戻り値: (終了値, ピーク RSS[KiB], 期限を守れなかったか)。
+    """**絶対の期限で子を待ちます。** 戻り値: (終了値, ピーク RSS[KiB], 状態)。
 
     * ``t_term`` … **遅くともこの時刻に `TERM`**（全体の期限 − 猶予 で上から抑えます）
     * ``t_kill`` … **遅くともこの時刻に `KILL`**（全体の期限で上から抑えます）
 
-    **★ 3 つを分けます**（§29）。
+    **★ 状態は 3 つに分かれます**（§30）。
 
-    1. **終了値**（子が何を返したか）
-    2. **期限を守れたか**（**回収の時刻が `t_term` を過ぎていれば、守れていません**）
-    3. **停止を送ったか**
+    ``DONE``      期限の内に回収できた
+    ``CUT``       **止めた、または期限を過ぎてから回収した**（回収はできている）
+    ``UNREAPED``  **回収できていない。** 終了値も RSS も**分かりません**（`None`）
 
-    **「終了値 0 で回収できた」を、そのまま成功に渡しません。**
-    **監督の開始が遅れた場合、子が期限を過ぎて自然終了していることがあります。**
+    **`UNREAPED` を `CUT` と同じに扱うと、子が生きているのに次の子を起動します。**
 
-    **★ 無期限の待機はしません。** `KILL` は届くまで毎周回送り直し、
-    それでも回収できなければ ``hard_cap`` 秒で諦めて報告します。
+    **試験専用**: ``KRI_DIAG_TEST_UNREAPED_AT`` に呼び出し回数（1 起点、コンマ区切り）を
+    書くと、その回だけ ``UNREAPED`` を返します。**実プロセスを壊す必要がありません。**
     """
+    global _supervise_calls
+    _supervise_calls += 1
+    forced = os.environ.get("KRI_DIAG_TEST_UNREAPED_AT", "")
+    if forced and str(_supervise_calls) in forced.split(","):
+        return None, None, UNREAPED
     sent_term = False
     while True:
         wpid, st, ru = os.wait4(pid, os.WNOHANG)
         if wpid == pid:
-            # **回収できた時刻で、期限を守れたかを判定します**
             late = time.monotonic() > t_term
-            return exit_code(st), ru.ru_maxrss, (sent_term or late)
+            return exit_code(st), ru.ru_maxrss, (CUT if (sent_term or late) else DONE)
         now = time.monotonic()
         if not sent_term and now >= t_term:
             sent_term = True
-            if not signal_child(pid, signal.SIGTERM):
-                # **送れませんでした**（群がまだ無い / もう居ない）。
-                # **次の周回で回収を試み、届かなければ KILL へ進みます。**
-                pass
+            signal_child(pid, signal.SIGTERM)
         if sent_term and now >= t_kill:
             signal_child(pid, signal.SIGKILL)  # **届くまで毎周回送り直します**
             if now >= t_kill + hard_cap:
-                print(f"**子 {pid} を {hard_cap:.0f} 秒かけても回収できませんでした**")
-                return None, 0, True
+                return None, None, UNREAPED
         time.sleep(0.01)
 
 
@@ -164,9 +169,13 @@ def run_one(a, key, only_path, budget, log_path, t_end):
     sd = os.environ.get("KRI_DIAG_TEST_SUPERVISE_DELAY")   # 試験専用（§29）
     if sd:
         time.sleep(float(sd))
-    rc, rss, cut = supervise(pid, t_term, t_kill)
+    rc, rss, state = supervise(pid, t_term, t_kill)
     dt = time.monotonic() - t0
-    status = "打ち切り" if cut else ("ok" if rc == 0 else "失敗")
+    if state == UNREAPED:
+        print(f"  ★ **子 {pid} を回収できていません**（対象 {key}）。"
+              f"**以降、新しい子を起動しません。**")
+        return UNREAPED, rc, dt, rss
+    status = CUT if state == CUT else ("ok" if rc == 0 else "失敗")
     return status, rc, dt, rss
 
 
@@ -185,8 +194,11 @@ def check_only(a, lp, pp, only_path, log_path, budget, t_end):
     cmd = [os.path.abspath(a.bin), lp] + a.args.split()
     t_term, t_kill = deadlines(a, t_end, budget)   # ★ spawn の【前】に決めます
     pid = spawn(cmd, env, log_path, int(a.as_gib * (1 << 30)))
-    rc, _, cut = supervise(pid, t_term, t_kill)
-    return None if cut else rc
+    rc, _, state = supervise(pid, t_term, t_kill)
+    if state == UNREAPED:
+        print(f"  ★ **照合の子 {pid} を回収できていません**。**以降、新しい子を起動しません。**")
+        return UNREAPED
+    return None if state == CUT else rc
 
 
 def main(argv=None):
@@ -249,8 +261,11 @@ def main(argv=None):
         pid = spawn([os.path.abspath(a.synth_check)], dict(os.environ), slog,
                     int(a.as_gib * (1 << 30)))
         t0 = time.monotonic()
-        rc, _, cut = supervise(pid, t_term, t_kill)
-        if cut:
+        rc, _, state = supervise(pid, t_term, t_kill)
+        if state == UNREAPED:
+            print(f"  ★ **合成検定の子 {pid} を回収できていません。対を起動しません。**")
+            return 1
+        if state == CUT:
             rc = None
         print(f"  合成検定: {'通過' if rc == 0 else ('**打ち切り**' if rc is None else '**不通過**')}"
               f"（終了値 {rc}、{time.monotonic() - t0:.1f} 秒）  ログ: {slog}")
@@ -280,6 +295,11 @@ def main(argv=None):
         # ---- 1. 照合（駆動に聞きます。量子化もブール演算もしません）----
         clog = os.path.join(a.logdir, f"{stem}_{run_id}_{k}_check.log")
         rc = check_only(a, lp, pp, only_path, clog, budget, t_end)
+        if rc == UNREAPED:
+            print(f"  {k}: **照合の子を回収できていません。以降を起動しません。**  ログ: {clog}")
+            bad += 1
+            stopped = True
+            continue
         if rc is None:
             print(f"  {k}: **照合が期限で打ち切られました**。**未検証を成功に数えません。**"
                   f"  ログ: {clog}")
@@ -308,6 +328,14 @@ def main(argv=None):
         a.list_of_key = lp
         os.environ["KRI_GMP_PLAN"] = pp
         status, rc, dt, rss = run_one(a, k, only_path, budget, log_path, t_end)
+        # ---- 2.5 回収できていなければ、【事後照合も起動しません】（§30）----
+        if status == UNREAPED:
+            print(f"  {k}: **回収不能**（終了値 不明、ピーク RSS 不明、{dt:.1f} 秒）"
+                  f"  ログ: {log_path}")
+            tail(log_path)
+            bad += 1
+            stopped = True
+            continue
         # ---- 3. 完了は、もう一度【駆動に照合させて】数えます ----
         vlog = os.path.join(a.logdir, f"{stem}_{run_id}_{k}_verify.log")
         vremain = t_end - time.monotonic()
@@ -320,8 +348,14 @@ def main(argv=None):
             stopped = True
             continue
         vrc = check_only(a, lp, pp, only_path, vlog, vbudget, t_end)
+        if vrc == UNREAPED:
+            print(f"  {k}: **事後照合の子を回収できていません。以降を起動しません。**")
+            bad += 1
+            stopped = True
+            continue
         okrow = (vrc == 0)
-        print(f"  {k}: {status}（終了値 {rc}、{dt:.1f} 秒、ピーク RSS {rss / 1024:.0f} MiB、"
+        rss_txt = "不明" if rss is None else f"{rss / 1024:.0f} MiB"
+        print(f"  {k}: {status}（終了値 {rc}、{dt:.1f} 秒、ピーク RSS {rss_txt}、"
               f"期限 {budget:.1f} 秒、照合 {'通過' if okrow else '**不通過**'}）  ログ: {log_path}")
         if status != "ok" or not okrow:
             bad += 1

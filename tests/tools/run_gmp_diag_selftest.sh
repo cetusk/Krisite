@@ -16,6 +16,8 @@ cat > "$T/mock" <<'M'
 # 模擬の駆動。**結果の行は自分で書きます**（投入の層が「行の完全性」を見るため）
 key=$(head -1 "${KRI_GMP_ONLY:-/dev/null}" 2>/dev/null | awk '{print $1}')
 base="${1%.txt}"
+# **起動の履歴**（回収不能の後に子が起動していないことを見るため）
+[ -n "${T_HIST:-}" ] && echo "$([ "${KRI_GMP_CHECK_ONLY:-0}" = 1 ] && echo check || echo compute) $key" >> "$T_HIST"
 row() {  # 34 列の完全な行
   printf '%s ok 1 id1=ok id2=ok 12 12 0.1 %016x %016x 1 1 0 0 4 4 4 4 15 15 15 15 0 0 0 0 0 0 1 1 1 1 1 1\n' \
     "$key" 1 2 >> "${base}_gmp_results.txt"
@@ -46,6 +48,7 @@ esac
 M
 chmod +x "$T/mock"
 export T_CNT="$T/check_count"
+export T_HIST="$T/history"
 printf 'a1xa2\nb1xb2\nc1xc2\n' > "$T/plan.txt"
 : > "$T/list.txt"
 TGT="$T/list.txt:$T/plan.txt"
@@ -261,6 +264,37 @@ chk "本計算は走った（行が 1 つ）" "$(wc -l < "$T/list_gmp_results.tx
 chk "事後照合が打ち切られる" "$(echo "$out" | grep -c '照合 \*\*不通過\*\*')" 1
 chk "済み 0" "$(echo "$out" | grep -c '済み 0')" 1
 chk "以降を起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
+
+
+echo "## 21. ★ 回収不能の後に、子を起動しない（仕様担当の再現）"
+# 監督の n 回目を「回収不能」にします。1=事前照合 / 2=本計算 / 3=事後照合
+for at in 1 2 3; do
+  clean; rm -f "$T_CNT" "$T_HIST"
+  out=$(KRI_DIAG_TEST_UNREAPED_AT=$at MOCK=ok MOCK_CHECK=auto $R --bin "$T/mock" \
+        --target "$TGT" --args "0" --logdir "$T/log" --run-id "s21_$at" \
+        --deadline 30 --grace 0.2 --per-pair 2 2>&1); rc=$?
+  n=$(wc -l < "$T_HIST" 2>/dev/null || echo 0)
+  chk "回収不能 $at 回目 → 終了値" "$rc" 1
+  chk "回収不能 $at 回目 → 済み 0" "$(echo "$out" | grep -c '済み 0')" 1
+  # **見たい性質は「回収不能より後に子を起動しないこと」**です。
+  # **強制の回収不能は即座に返るので、その子が履歴を書く前に親が進むことがあります**
+  # （$at 件ちょうどではなく、$at 件【以下】で判定します）。
+  chk "回収不能 $at 回目 → 起動した子は $at 件以下（実測 $n）" \
+      "$([ "$n" -le "$at" ] && echo はい || echo いいえ)" はい
+  m=$(echo "$out" | grep -c '回収できていません')
+  chk "回収不能 $at 回目 → 回収できていないと言う（1 件以上）" \
+      "$([ "$m" -ge 1 ] && echo はい || echo いいえ)" はい
+  chk "回収不能 $at 回目 → 以降を起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
+done
+
+echo
+echo "## 22. ★ 分からない RSS を「0 MiB」と出さない"
+clean; rm -f "$T_CNT" "$T_HIST"
+out=$(KRI_DIAG_TEST_UNREAPED_AT=2 MOCK=ok MOCK_CHECK=auto $R --bin "$T/mock" \
+      --target "$TGT" --args "0" --logdir "$T/log" --run-id s22 \
+      --deadline 30 --grace 0.2 --per-pair 2 2>&1)
+chk "RSS を不明と出す" "$(echo "$out" | grep -c 'ピーク RSS 不明')" 1
+chk "0 MiB と書かない" "$(echo "$out" | grep -c 'ピーク RSS 0 MiB')" 0
 
 echo
 printf '**OK %d / NG %d**\n' "$OK" "$NG"
