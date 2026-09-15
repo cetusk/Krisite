@@ -1,0 +1,10 @@
+checker=gmp-diag/2
+b=21
+cols=34
+args=0 6 8 0 0 1 1 0 0 16 2 1 0 1 1
+list=data/thingi10k/cp2b.txt
+list_fp=d2c360b5308e1454
+pairs_fp=3682e078e53e0954
+plan_fp=791bfc2bebbe70c0
+kmesh_fp=562445a7b7030553
+bin_fp=2d9878294d4e510d
