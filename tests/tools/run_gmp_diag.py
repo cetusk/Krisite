@@ -39,6 +39,8 @@ def parse_args(argv=None):
     ap.add_argument("--as-gib", type=float, default=8.0, help="仮想アドレス空間の上限（GiB）")
     ap.add_argument("--logdir", required=True, help="対ごとの出力を残す場所")
     ap.add_argument("--run-id", default=None, help="実行の識別子（ログ名に入ります）")
+    ap.add_argument("--synth-check", default=None, metavar="実行ファイル",
+                    help="**合成検定**（検査器の正例・負例）。**同じ期限の内側で、対より先に回します**")
     ap.add_argument("--dry-run", action="store_true", help="起動せず、計画だけ出す")
     return ap.parse_args(argv)
 
@@ -173,6 +175,47 @@ def main(argv=None):
     if a.dry_run:
         print("**計画だけ出しました。起動していません。**")
         return 0
+
+    # ---- 合成検定（**同じ期限の内側**。§26）------------------------------------
+    #
+    # **検査器が破れを検出できることを、実データの前に確かめます**
+    # （`CLAUDE.md`「判定器を先に検定した形が要点」）。
+    # **通らなければ、対は 1 つも起動しません。**
+    if a.synth_check:
+        if not os.path.exists(a.synth_check):
+            print(f"**合成検定の実行ファイルがありません**: {a.synth_check}")
+            return 2
+        remain = t_end - time.monotonic()
+        budget = min(a.per_pair, remain - a.grace)
+        if budget <= 0:
+            print(f"**合成検定の予算がありません**（残り {remain:.1f} 秒）")
+            return 1
+        slog = os.path.join(a.logdir, f"synth_{run_id}.log")
+        a.list_of_key = None
+        pid = spawn([os.path.abspath(a.synth_check)], dict(os.environ), slog,
+                    int(a.as_gib * (1 << 30)))
+        t0 = time.monotonic()
+        rc = None
+        while True:
+            wpid, st, _ = os.wait4(pid, os.WNOHANG)
+            if wpid == pid:
+                rc = exit_code(st)
+                break
+            if time.monotonic() - t0 >= budget:
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                os.wait4(pid, 0)
+                rc = -9
+                break
+            time.sleep(0.02)
+        print(f"  合成検定: {'通過' if rc == 0 else '**不通過**'}（終了値 {rc}、"
+              f"{time.monotonic() - t0:.1f} 秒）  ログ: {slog}")
+        if rc != 0:
+            tail(slog)
+            print("**合成検定が通らないので、対を 1 つも起動しません。**")
+            return 1
 
     done, skipped, bad, stopped = 0, 0, 0, False
     for lp, pp, k in plan:

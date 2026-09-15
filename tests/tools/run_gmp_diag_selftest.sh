@@ -122,6 +122,25 @@ for bad in "--deadline -5" "--deadline nan" "--per-pair 0" "--as-gib -1" "--grac
   chk "$bad → 終了値" "$rc" 2
 done
 
+
+echo "## 11. 合成検定を期限の内側で回す"
+printf '#!/usr/bin/env bash\nexit ${SYNTH_RC:-0}\n' > "$T/synth"; chmod +x "$T/synth"
+clean; out=$(MOCK=ok SYNTH_RC=0 $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" \
+      --run-id s11a --synth-check "$T/synth"); rc=$?
+chk "通過 → 終了値" "$rc" 0
+chk "合成検定を先に回す" "$(echo "$out" | grep -c '合成検定: 通過')" 1
+chk "対も回る" "$(echo "$out" | grep -c '済み 3')" 1
+
+clean; out=$(MOCK=ok SYNTH_RC=1 $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" \
+      --run-id s11b --synth-check "$T/synth"); rc=$?
+chk "不通過 → 終了値" "$rc" 1
+chk "対を 1 つも起動しない" "$(echo "$out" | grep -c '対を 1 つも起動しません')" 1
+chk "結果を作っていない" "$([ -f "$T/list_gmp_results.txt" ] && echo あり || echo なし)" なし
+
+rc=$($R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s11c \
+     --synth-check "$T/nope" > /dev/null 2>&1; echo $?)
+chk "合成検定が無い → 終了値" "$rc" 2
+
 echo
 printf '**OK %d / NG %d**\n' "$OK" "$NG"
 [ "$NG" -eq 0 ]
