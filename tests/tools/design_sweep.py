@@ -55,6 +55,10 @@ CHECKS = [
     dict(name="R_A+R_B=R を「P3 そのもの」と書かない",
          forbid=r"これは P3 そのものです(?!」と(?:書いたのは誤り|いう名付け))",  # 取り下げの引用は除く
          mutate=("**$R_A+R_B=R$ と【必要十分】で同値**", "**これは P3 そのものです**")),
+    dict(name="取り下げた記述が復活していない（P3′ の強さ・仮定）",
+         forbid=r"P3′ は P3 より弱い|P3′ を仮定したうえで",
+         mutate=("> **★ P3 と P3′ は【比較不能】です**（どちらも他方を導きません。§43.3）。",
+                 "> **P3′ は P3 より弱い条件です**（§43.3）。")),
     dict(name="E3 の右辺が全箇所で -R_B",
          forbid=r"内側成分\}_j\) = -R(?!_B)",
          mutate=(r"$\sum_j S(\text{内側成分}_j) = -R_B$。**B のみ**",
@@ -225,67 +229,106 @@ def expectations(b):
 
 
 def structure(b):
-    """★ 12 巡で最も多い誤りの形 —「中核の語・節を直して、参照元を洗っていない」—
-    を機械的に見る（13 巡目の指摘）。数え上げではなく【参照の整合】を見る。"""
+    """「中核の語・節を直して、参照元を洗っていない」形を機械的に見る。
+
+    ★ 何を見て、何を見ないかを先に書く。
+      見る  : 参照の実在（§43.N / §43.N(x) / 順序 N）、小節の連続、
+              **参照の固定**（「この主張はこの節を指すはず」を表で宣言）、
+              **記号の取り残し**（一般化した記号が古いまま残っていないか）
+      見ない: 「説明の中身が参照先と合っているか」。
+              13〜14 巡目に語の重なりで測ろうとしたが、**正しい言い換えで落ち、
+              実際の欠陥は素通り**した。当てにならない番人は流されるので採らない。
+              この範囲は独立レビューが担う。
+    """
     out = []
-    heads = dict(re.findall(r"^### (43\.\d+) (.+)$", b, re.M))
-    subs = {}                                   # "43.5" -> {"a": 見出し, ...}
+    heads, subs = {}, {}
+    cur = None
+    for ln in b.split("\n"):
+        m = re.match(r"^### (43\.\d+) (.+)$", ln)
+        if m:
+            cur = m.group(1); heads[cur] = m.group(2); subs[cur] = {}
+        m = re.match(r"^#### \(([a-z])\) (.+)$", ln)
+        if m and cur:
+            subs[cur][m.group(1)] = m.group(2)
+    rows = set(re.findall(r"^\| \*\*(\d+)\*\* \| \*\*", b, re.M))
+
+    refs = set(re.findall(r"§(43\.\d+)", b))
+    out.append(("§43.N への参照がすべて実在する",
+                all(r in heads for r in refs),
+                sorted(r for r in refs if r not in heads)))
+    srefs = re.findall(r"§(43\.\d+)\(([a-z])\)", b)
+    bad = [f"§{n}({x})" for n, x in srefs if x not in subs.get(n, {})]
+    out.append(("§43.N(x) への参照がすべて実在する", not bad, bad))
+    gaps = [n for n, d in subs.items() if d and
+            sorted(d) != [chr(ord("a") + k) for k in range(len(d))]]
+    out.append(("小節が (a) から連続している", not gaps, gaps))
+    miss = sorted(x for x in set(re.findall(r"順序 (\d+)", b)) if x not in rows)
+    out.append(("「順序 N」で送る先の行が実在する", not miss, miss))
+
+    secs0 = {}
     cur = None
     for ln in b.split("\n"):
         m = re.match(r"^### (43\.\d+) ", ln)
         if m:
-            cur = m.group(1); subs[cur] = {}
-        m = re.match(r"^#### \(([a-z])\) (.+)$", ln)
-        if m and cur:
-            subs[cur][m.group(1)] = m.group(2)
+            cur = m.group(1); secs0[cur] = []
+        if cur:
+            secs0[cur].append(ln)
+    secs0 = {k: "\n".join(v) for k, v in secs0.items()}
 
-    # (1) §43.N への参照がすべて実在する
-    refs = set(re.findall(r"§(43\.\d+)", b))
-    out.append(("§43.N への参照がすべて実在する",
-                all(r in heads for r in refs), sorted(r for r in refs if r not in heads)))
-
-    # (2) §43.N(x) への参照がすべて実在する
-    srefs = re.findall(r"§(43\.\d+)\(([a-z])\)", b)
-    bad = [f"§{n}({x})" for n, x in srefs if x not in subs.get(n, {})]
-    out.append(("§43.N(x) への参照がすべて実在する", not bad, bad))
-
-    # (3) 小節が (a) から連続している
-    gaps = [n for n, d in subs.items() if d and
-            sorted(d) != [chr(ord("a") + i) for i in range(len(d))]]
-    out.append(("小節が (a) から連続している", not gaps, gaps))
-
-    # (4) ★ 本文が「(x) は …」と小節の役割を述べるとき、見出しの語を含む
-    #     改番したのに本文の説明が古い、という形（13 巡目の誤り 1）を捕まえる
+    # ★ 参照の固定: 「この語を含む行は、この節を指す」。改番の取り残しを捕まえる。
+    #   行を特定する語と、要求する参照先を【宣言】する。
+    PINS = [
+        ("採用領域が", "§43.5(g)"),
+        ("領域の列挙がそれに依る", "§43.5(f)"),
+        ("$\\mathrm{vol}$ と領域の定義は", "§43.5(f)"),
+        ("H′ の定義は", "§43.5(e)"),
+        ("「内側成分」の定義は", "§43.5(e)"),
+        ("その段が書くと決めたファイル", "§43.8"),
+    ]
     bad = []
-    for n, d in subs.items():
-        for x, title in d.items():
-            # 見出しから 2 文字の語をすべて作り、説明の近くに 1 つでもあるかを見る。
-            # 記号や飾りを剥がしてから作る。
-            core = re.sub(r"[*（(].*", "", title).strip()
-            grams = {core[i:i + 2] for i in range(max(0, len(core) - 1))}
-            if not grams:
-                continue
-            for m in re.finditer(r"\(%s\)\*\*[^。\n]{0,16}?は" % x, b):
-                # 文脈は【その行だけ】。次の行まで見ると、隣の説明を拾って空回りする
-                ls = b.rfind("\n", 0, m.start()) + 1
-                le = b.find("\n", m.start())
-                ctx = b[ls: le if le > 0 else len(b)]
-                if not any(g in ctx for g in grams):
-                    bad.append("%s(%s)「%s」の説明に見出しの語がありません"
-                               % (n, x, core[:16]))
-    out.append(("小節の役割の説明が、その小節の見出しと合っている", not bad, bad))
+    for key, want in PINS:
+        for ln in b.split("\n"):
+            if key in ln and want not in ln and "PINS" not in ln:
+                bad.append("「%s」を含む行が %s を指していません: %s"
+                           % (key, want, ln.strip()[:60]))
+    out.append(("参照の固定（改番の取り残し）", not bad, bad[:4]))
 
-    # (5) 決定表の各行に送る記述（「順序 N」）の行が実在する
-    rows = set(re.findall(r"^\| \*\*(\d+)\*\* \| \*\*", b, re.M))
-    sent = set(re.findall(r"順序 (\d+)", b))
-    miss = sorted(x for x in sent if x not in rows and "〜" not in x)
-    out.append(("「順序 N」で送る先の行が実在する", not miss, miss))
+    # ★ 必須の項目: 一度書くと決めたものが、消えていないか。
+    #   参照元の主張（「§43.13 に項目として立ててあります」など）が空振りしないよう、
+    #   実際に在るべき語を宣言する。
+    MUST = [
+        ("43.13", "共線面があったときに判定を続ける機構", "共線面の未設計項目"),
+        ("43.13", "経路 P で変換の生成までバイト一致", "経路 P の未確認項目"),
+        ("43.13", "同一性 1・2 に残る libm 依存", "libm 依存の未確認項目"),
+        ("43.7", "$S_j = 0$", "順序 7 の S_j=0 の受け皿"),
+        ("43.7", "$R_A = 0$", "順序 7 の R_A=0 の自己検査"),
+        ("43.8", "transform_A.hex", "経路 P へ渡す変換の受け渡しファイル"),
+        ("43.3", "P3′", "P3′ の定義"),
+        ("43.5", "包含", "包含の森の手順"),
+    ]
+    bad = [d for n, key, d in MUST if key not in secs0.get(n, "")]
+    out.append(("必ず在るべき項目が消えていない", not bad, bad))
+
+    # ★ 記号の取り残し: 一般化した記号が、古いまま残っていないか。
+    #   (節, その節にあってはならない正規表現, 説明)
+    LEFTOVER = [
+        ("43.5", r"\\mathrm\{measure\}\(w_B>0\) = ", "measure の手順が B 専用"),
+        ("43.5", r"\\cdot\\mathrm\{vol\}\(\\text\{領域\}_j\) = S\(B\)", "検算が B 専用"),
+        ("43.3", r"\*\*E2\*\* \| \*\*\$R_B =", "E2 が B 専用"),
+        ("43.3", r"\*\*E4\*\* \| \*\*\$\\sum_j S_j = S\(B\)\$", "E4 が B 専用"),
+    ]
+    bad = [d for n, pat, d in LEFTOVER if re.search(pat, secs0.get(n, ""))]
+    out.append(("記号の取り残し（一般化の波及漏れ）", not bad, bad))
     return out
 
 
 def tables_ok(b, quiet=False):
-    # 引用ブロック（"> "）の中の表も対象にする（11 巡目の指摘）
-    L = [re.sub(r"^> ?", "", x) for x in b.split("\n")]
+    # 引用ブロック（"> "）の中の表も対象にする（11 巡目）。
+    # ただし、引用の内外がまたがる表は Markdown として壊れるので、
+    # 剥がす【前】に引用の深さが表の中で揃っていることも見る（14 巡目）。
+    raw = b.split("\n")
+    L = [re.sub(r"^> ?", "", x) for x in raw]
+    depth = [1 if x.startswith(">") else 0 for x in raw]
     bad = 0; n = 0; i = 0
     while i < len(L):
         if L[i].startswith("|"):
@@ -293,6 +336,10 @@ def tables_ok(b, quiet=False):
             while j < len(L) and L[j].startswith("|"):
                 blk.append(L[j]); j += 1
             n += 1
+            if len(set(depth[i:j])) != 1:
+                if not quiet:
+                    print("  ★表が引用の内外にまたがる: %s" % blk[0][:60])
+                bad += 1
             sep = len(blk) > 1 and re.match(r"^\|[\s:\-|]+\|$", blk[1].strip())
             cols = [len(re.sub(r"\\\|", "", r).split("|")) for r in blk]
             if not sep or len(set(cols)) != 1:
@@ -368,7 +415,6 @@ EXP_MAIN = {
     "81 バイト → 80 バイト": "81 = 3*ceil(162/8)+ceil(139/8)",
     "バイト数の行を消す": "バイト数の行が読めません（削除されたか、書式が変わった）",
     "保存値 S(A) の末尾を変える": "保存値 S(A)/S(B)/R が cp3_gmp_results.txt と一致（列番号も文書から）",
-    "保存値の列番号を 33 → 35": "保存値 S(A)/S(B)/R が cp3_gmp_results.txt と一致（列番号も文書から）",
     # 列番号を壊すと「読めません」側が先に落ちるので、そちらを主検出器にする
     "保存値の列番号を壊す": "保存値を読めません（式が変わったか、証拠が無い）",
     "予言値 殻間の末尾を変える": "予言値: 殻間+2*内側 = S(B) かつ 内側 = -R",
@@ -393,10 +439,14 @@ EXP_MAIN = {
     "A5 の対の数を積に": "式が変わっていない: A5 の対の数",
     "|S_A| の符号を反転": "式が変わっていない: |S_A| の式",
     "存在しない §43.N を参照": "§43.N への参照がすべて実在する",
+    "存在しない順序へ送る": "「順序 N」で送る先の行が実在する",
     "存在しない小節を参照": "§43.N(x) への参照がすべて実在する",
     "小節を飛ばす（(f) を (h) に）": "小節が (a) から連続している",
-    "改番の取り残しを作る（(g) の説明を別の役割にする）":
-        "小節の役割の説明が、その小節の見出しと合っている",
+    "必須項目を消す（§43.13 の共線面）": "必ず在るべき項目が消えていない",
+    "必須項目を消す（順序 7 の S_j=0）": "必ず在るべき項目が消えていない",
+    "参照の固定を破る（採用領域の参照を (f) に戻す）": "参照の固定（改番の取り残し）",
+    "記号の取り残しを作る（E2 を B 専用に戻す）": "記号の取り残し（一般化の波及漏れ）",
+    "measure の手順を B 専用に戻す": "記号の取り残し（一般化の波及漏れ）",
     "存在しない順序へ送る": "「順序 N」で送る先の行が実在する",
 }
 
@@ -446,9 +496,16 @@ def selftest(text):
         ("存在しない §43.N を参照", "§43.5(f)", "§43.99"),
         ("存在しない小節を参照", "§43.5(g)", "§43.5(z)"),
         ("小節を飛ばす（(f) を (h) に）", "#### (f) 領域の列挙", "#### (h) 領域の列挙"),
-        ("改番の取り残しを作る（(g) の説明を別の役割にする）",
-         "> **(g)**（この節）**は「$w$ の大小で【内外】を決めてはいけない」と言います。**",
-         "> **(g)**（この節）**は「領域を列挙する手順」を与えます。**"),
+        ("必須項目を消す（§43.13 の共線面）",
+         "- **共線面があったときに判定を続ける機構**（**未設計**。", "- **（消した）**（"),
+        ("必須項目を消す（順序 7 の S_j=0）",
+         "**／ どれかの成分で $S_j = 0$**", "**／ （消した）**"),
+        ("参照の固定を破る（採用領域の参照を (f) に戻す）",
+         "採用領域が $w>0$ だからです**（§43.5(g)）", "採用領域が $w>0$ だからです**（§43.5(f)）"),
+        ("記号の取り残しを作る（E2 を B 専用に戻す）",
+         "| **E2** | **$R_X = -", "| **E2** | **$R_B = -"),
+        ("measure の手順を B 専用に戻す",
+         r"**$\mathrm{measure}(w_X>0) = \sum", r"**$\mathrm{measure}(w_B>0) = \sum"),
         ("存在しない順序へ送る", "（§43.7 の順序 6）", "（§43.7 の順序 99）"),
         ("§43.12 の 261 を 262 に", "| **条件を満たす【行】** | **261** |",
                                     "| **条件を満たす【行】** | **262** |"),
@@ -512,7 +569,14 @@ def selftest(text):
     # 変異が 1 つも当たっていない検査を落とす（12 巡目の指摘。
     # docstring が「足さなければ selftest が落ちる」と書いていたのに未実装だった）
     all_names = (["検査:" + c["name"] for c in CHECKS]
+                 + ["構造:" + n for n, _, _ in structure(section43(text))]
                  + ["期待値:" + n for n, _ in expectations(section43(text))])
+    dead = sorted(set(EXP_MAIN) - {n for n, _, _ in EXP_MUT})
+    if dead:
+        print("★ EXP_MAIN に、対応する変異が無い鍵が %d 件あります:" % len(dead))
+        for d in dead:
+            print("     %s" % d)
+        fail += len(dead)
     naked = [n for n in all_names if n not in covered]
     if naked:
         print("★ 変異が登録されていない検査が %d 件あります（空回りか判別できません）:"
