@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# 投入の層の自己検査（DESIGN-phase5-vertex-level.md §23.11）
+#
+# **模擬のバイナリだけを使います。** 実データも本物の駆動も動かしません。
+# **実駆動とつないだ試験は `gmp_diag_integration.sh`** です（役割が違います）。
+set -u
+R="python3 tests/tools/run_gmp_diag.py"
+OK=0; NG=0
+ok() { OK=$((OK+1)); printf '  OK   %s\n' "$1"; }
+ng() { NG=$((NG+1)); printf '  **NG** %s\n' "$1"; }
+chk() { if [ "$2" = "$3" ]; then ok "$1（$2）"; else ng "$1: 期待 $3、実測 $2"; fi; }
+
+T=$(mktemp -d); mkdir -p "$T/log"
+cat > "$T/mock" <<'M'
+#!/usr/bin/env bash
+# 模擬の駆動。**結果の行は自分で書きます**（投入の層が「行の完全性」を見るため）
+key=$(head -1 "${KRI_GMP_ONLY:-/dev/null}" 2>/dev/null | awk '{print $1}')
+base="${1%.txt}"
+# **起動の履歴**（回収不能の後に子が起動していないことを見るため）
+[ -n "${T_HIST:-}" ] && echo "$([ "${KRI_GMP_CHECK_ONLY:-0}" = 1 ] && echo check || echo compute) $key" >> "$T_HIST"
+row() {  # 34 列の完全な行
+  printf '%s ok 1 id1=ok id2=ok 12 12 0.1 %016x %016x 1 1 0 0 4 4 4 4 15 15 15 15 0 0 0 0 0 0 1 1 1 1 1 1\n' \
+    "$key" 1 2 >> "${base}_gmp_results.txt"
+}
+# **照合専用**（KRI_GMP_CHECK_ONLY=1）。0 = 済み / 3 = 回す対がある / 2 = 拒否
+if [ "${KRI_GMP_CHECK_ONLY:-0}" = "1" ]; then
+  case "${MOCK_CHECK:-auto}" in
+    reject) exit 2 ;;
+    done)   exit 0 ;;
+    slow)   sleep 0.7; exit 0 ;;          # ★ 仕様担当が再現した条件
+    hang2)  # ★ 【事前は 3、事後だけ止まる】（§29 の試験 3）
+            n=$(cat "$T_CNT" 2>/dev/null || echo 0); echo $((n+1)) > "$T_CNT"
+            if [ "$n" -ge 1 ]; then trap '' TERM; sleep 300; fi
+            grep -q "^$key " "${base}_gmp_results.txt" 2>/dev/null && exit 0 || exit 3 ;;
+    hang)   sleep 300; exit 0 ;;          # 止まったまま（TERM で死ぬ）
+    ignore) trap '' TERM; sleep 300 ;;    # ★ TERM を【無視】する（KILL の検査）
+    *) grep -q "^$key " "${base}_gmp_results.txt" 2>/dev/null && exit 0 || exit 3 ;;
+  esac
+fi
+case "${MOCK:-ok}" in
+  ok)    row; exit 0 ;;
+  ignoremain) trap '' TERM; sleep 300 ;;  # ★ 本計算が TERM を無視する
+  slow)  sleep 30; exit 0 ;;
+  fail)  exit 1 ;;
+  norow) exit 0 ;;                       # 終了値 0 なのに行を書かない
+  hog)   python3 -c "a=bytearray(64*1024*1024*1024)"; exit $? ;;
+esac
+M
+chmod +x "$T/mock"
+export T_CNT="$T/check_count"
+export T_HIST="$T/history"
+printf 'a1xa2\nb1xb2\nc1xc2\n' > "$T/plan.txt"
+: > "$T/list.txt"
+TGT="$T/list.txt:$T/plan.txt"
+clean() { rm -f "$T/list_gmp_results.txt"; }
+
+echo "# 投入の層の自己検査"
+echo
+echo "## 1. 計画だけ（起動しない）"
+out=$($R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --dry-run); rc=$?
+chk "終了値" "$rc" 0
+chk "件数を先に出す" "$(echo "$out" | grep -c 'これから 3 対を回します')" 1
+chk "起動していないと言う" "$(echo "$out" | grep -c '起動していません')" 1
+
+echo
+echo "## 2. 正常（行が完全なら済み）"
+clean; out=$(MOCK=ok $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s2); rc=$?
+chk "終了値" "$rc" 0
+chk "済み 3" "$(echo "$out" | grep -c '済み 3 / 失敗・打ち切り 0 / 未起動 0')" 1
+
+echo
+echo "## 3. ★ 終了値 0 でも、行が無ければ済みにしない"
+clean; out=$(MOCK=norow $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s3); rc=$?
+chk "終了値" "$rc" 1
+chk "照合が不通過（1 件目で停止）" "$(echo "$out" | grep -c '照合 \*\*不通過\*\*')" 1
+
+echo
+echo "## 4. 失敗が終了値に届く"
+clean; out=$(MOCK=fail $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s4); rc=$?
+chk "終了値" "$rc" 1
+chk "1 件目で停止（失敗 1 / 未起動 2）" "$(echo "$out" | grep -c '失敗・打ち切り 1 / 未起動 2')" 1
+
+echo
+echo "## 5. 対ごとの期限で打ち切る"
+clean; t0=$(date +%s)
+out=$(MOCK=slow $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s5 \
+      --deadline 60 --grace 2 --per-pair 3); rc=$?
+t1=$(date +%s)
+chk "終了値" "$rc" 1
+chk "1 件目で打ち切り、以降は起動しない" "$(echo "$out" | grep -cE '^  [abc][0-9]x[abc][0-9]: 打ち切り')" 1
+chk "全体が 20 秒以内に戻る" "$([ $((t1-t0)) -le 20 ] && echo はい || echo いいえ)" はい
+
+echo
+echo "## 6. 全計画に 1 つの期限（起動しない対が出る）"
+# **照合も予算の内側**なので、予算が無ければ 1 対目から起動しません（決定的）
+clean; out=$(MOCK=ok $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s6 \
+      --deadline 2.001 --grace 2 --per-pair 5); rc=$?
+chk "終了値" "$rc" 1
+# **予算が無ければ、起動しないか、起動しても期限で打ち切られます。どちらでも済みにしません。**
+n=$(echo "$out" | grep -cE '予算切れ|照合が期限で打ち切られました')
+chk "1 対目で拒まれる" "$([ "$n" -ge 1 ] && echo はい || echo いいえ)" はい
+chk "以降は停止条件で起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
+chk "行を作っていない" "$([ -f "$T/list_gmp_results.txt" ] && echo あり || echo なし)" なし
+
+echo
+echo "## 7. CP を 2 つ渡しても期限は 1 つ"
+printf 'd1xd2\n' > "$T/plan2.txt"; : > "$T/list2.txt"
+clean; out=$(MOCK=ok $R --bin "$T/mock" --target "$TGT" --target "$T/list2.txt:$T/plan2.txt" \
+      --args "0" --logdir "$T/log" --run-id s7 --dry-run)
+chk "4 対（2 つの CP）" "$(echo "$out" | grep -c 'これから 4 対を回します')" 1
+chk "期限は 1 つと表示" "$(echo "$out" | grep -c '全計画に 1 つの期限')" 1
+
+echo
+echo "## 8. 仮想アドレス空間の上限"
+printf 'a1xa2\n' > "$T/one.txt"
+clean; out=$(MOCK=hog $R --bin "$T/mock" --target "$T/list.txt:$T/one.txt" --args "0" \
+      --logdir "$T/log" --run-id s8 --deadline 60 --per-pair 30 --as-gib 1); rc=$?
+chk "終了値" "$rc" 1
+chk "上限が効いた証拠" "$(echo "$out" | grep -c 'MemoryError')" 1
+chk "ピーク RSS を出す" "$(echo "$out" | grep -c 'ピーク RSS')" 1
+
+echo
+echo "## 9. 入力が無い / 形が違う"
+rc=$($R --bin "$T/mock" --target "$T/list.txt:$T/nope.txt" --args "0" --logdir "$T/log" > /dev/null 2>&1; echo $?)
+chk "計画が無い → 終了値" "$rc" 2
+: > "$T/empty.txt"
+rc=$($R --bin "$T/mock" --target "$T/list.txt:$T/empty.txt" --args "0" --logdir "$T/log" > /dev/null 2>&1; echo $?)
+chk "空の計画 → 終了値" "$rc" 2
+rc=$($R --bin "$T/mock" --target "$T/list.txt" --args "0" --logdir "$T/log" > /dev/null 2>&1; echo $?)
+chk "target の形が違う → 終了値" "$rc" 2
+
+
+echo "## 10. 不正な予算の指定"
+for bad in "--deadline -5" "--deadline nan" "--per-pair 0" "--as-gib -1" "--grace 1200"; do
+  rc=$($R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" $bad > /dev/null 2>&1; echo $?)
+  chk "$bad → 終了値" "$rc" 2
+done
+
+
+echo "## 11. 合成検定を期限の内側で回す"
+printf '#!/usr/bin/env bash\nexit ${SYNTH_RC:-0}\n' > "$T/synth"; chmod +x "$T/synth"
+clean; out=$(MOCK=ok SYNTH_RC=0 $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" \
+      --run-id s11a --synth-check "$T/synth"); rc=$?
+chk "通過 → 終了値" "$rc" 0
+chk "合成検定を先に回す" "$(echo "$out" | grep -c '合成検定: 通過')" 1
+chk "対も回る" "$(echo "$out" | grep -c '済み 3')" 1
+
+clean; out=$(MOCK=ok SYNTH_RC=1 $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" \
+      --run-id s11b --synth-check "$T/synth"); rc=$?
+chk "不通過 → 終了値" "$rc" 1
+chk "対を 1 つも起動しない" "$(echo "$out" | grep -c '対を 1 つも起動しません')" 1
+chk "結果を作っていない" "$([ -f "$T/list_gmp_results.txt" ] && echo あり || echo なし)" なし
+
+rc=$($R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s11c \
+     --synth-check "$T/nope" > /dev/null 2>&1; echo $?)
+chk "合成検定が無い → 終了値" "$rc" 2
+
+
+echo "## 12. ★ 照合の子が期限で止まること（仕様担当の再現）"
+# 照合だけ 0.7 秒待つ模擬。全体 0.3 秒・猶予 0.05 秒・対ごと 0.2 秒
+clean; t0=$(date +%s%N)
+out=$(MOCK=ok MOCK_CHECK=slow $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s12 --deadline 0.3 --grace 0.05 --per-pair 0.2 2>&1); rc=$?
+t1=$(date +%s%N); ms=$(( (t1-t0)/1000000 ))
+chk "終了値（成功にしない）" "$rc" 1
+chk "済み 0" "$(echo "$out" | grep -c '済み 0')" 1
+chk "未検証を成功に数えないと言う" "$(echo "$out" | grep -c '未検証を成功に数えません')" 1
+chk "全体が 1.5 秒以内に戻る（無期限待機でない）" "$([ "$ms" -le 1500 ] && echo はい || echo いいえ)" はい
+ok "実測 ${ms} ミリ秒"
+
+echo
+echo "## 13. 照合が止まったまま（KILL まで）"
+clean; t0=$(date +%s%N)
+out=$(MOCK=ok MOCK_CHECK=hang $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s13 --deadline 2 --grace 0.3 --per-pair 0.5 2>&1); rc=$?
+t1=$(date +%s%N); ms=$(( (t1-t0)/1000000 ))
+chk "終了値" "$rc" 1
+chk "照合が打ち切られたと言う" "$(echo "$out" | grep -c '照合が期限で打ち切られました')" 1
+chk "以降を起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
+chk "全体が 3 秒以内に戻る" "$([ "$ms" -le 3000 ] && echo はい || echo いいえ)" はい
+ok "実測 ${ms} ミリ秒"
+
+echo
+echo "## 14. 事後の照合に予算が残らない"
+# 本計算が対ごとの期限をすべて使い切ると、事後の照合に予算が残りません
+clean; out=$(MOCK=slow MOCK_CHECK=auto $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s14 --deadline 0.9 --grace 0.3 --per-pair 0.5 2>&1); rc=$?
+chk "終了値" "$rc" 1
+chk "済みにしない" "$(echo "$out" | grep -c '済み 0')" 1
+# **照合まで届けば「不通過」、予算が尽きていれば「未検証を成功に数えません」。**
+# **どちらでも、済みには数えません。**
+n=$(echo "$out" | grep -cE '照合 \*\*不通過\*\*|未検証を成功に数えません')
+chk "未検証・不通過のどちらかで止まる" "$([ "$n" -ge 1 ] && echo はい || echo いいえ)" はい
+chk "以降を起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
+
+
+echo "## 15. ★ TERM を無視する子は KILL まで行く"
+clean; t0=$(date +%s%N)
+out=$(MOCK=ignoremain MOCK_CHECK=auto $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s15 --deadline 3 --grace 0.3 --per-pair 0.5 2>&1); rc=$?
+t1=$(date +%s%N); ms=$(( (t1-t0)/1000000 ))
+chk "終了値" "$rc" 1
+# **KILL なら終了値は -9**（TERM で死ぬなら -15）
+chk "KILL の終了状態" "$(echo "$out" | grep -oE '終了値 -9' | head -1)" "終了値 -9"
+chk "打ち切りとして数える" "$(echo "$out" | grep -cE '^  [abc][0-9]x[abc][0-9]: 打ち切り')" 1
+chk "全体が 3.5 秒以内に戻る" "$([ "$ms" -le 3500 ] && echo はい || echo いいえ)" はい
+ok "実測 ${ms} ミリ秒"
+
+echo
+echo "## 16. ★ 起動前に使った時間が再付与されないこと（仕様担当の再現）"
+# spawn の前に 0.4 秒待たせます。全体 0.3 秒・猶予 0.05 秒・対ごと 0.2 秒
+clean; t0=$(date +%s%N)
+out=$(KRI_DIAG_TEST_SPAWN_DELAY=0.4 MOCK=ok MOCK_CHECK=auto $R --bin "$T/mock" \
+      --target "$TGT" --args "0" --logdir "$T/log" --run-id s16 \
+      --deadline 0.3 --grace 0.05 --per-pair 0.2 2>&1); rc=$?
+t1=$(date +%s%N); ms=$(( (t1-t0)/1000000 ))
+chk "終了値（成功にしない）" "$rc" 1
+chk "済み 0" "$(echo "$out" | grep -c '済み 0')" 1
+ok "実測 ${ms} ミリ秒（全体の期限 300 ミリ秒 + 起動前の 400 ミリ秒）"
+
+echo
+echo "## 17. 事後照合の 2 つの場面を分けて見る"
+# 17a. 予算不足で【未起動】
+# **対ごとの上限を効かせず、全体の期限で切らせます**（t_term = D − 猶予）
+clean; out=$(MOCK=slow MOCK_CHECK=auto $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s17a --deadline 1.0 --grace 0.3 --per-pair 5 2>&1)
+chk "予算不足で未起動" "$(echo "$out" | grep -c '事後の照合に予算が残っていません')" 1
+# 17b. 起動した照合が【打ち切られる】
+clean; out=$(MOCK=ok MOCK_CHECK=hang $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s17b --deadline 3 --grace 0.2 --per-pair 0.4 2>&1)
+chk "起動した照合が打ち切られる" "$(echo "$out" | grep -c '照合が期限で打ち切られました')" 1
+
+
+echo "## 18. ★ 群ができる前の停止（仕様担当の再現）"
+# 子が群を作る前に 0.2 秒待ちます。TERM 期限 0.03 秒・KILL 期限 0.06 秒
+clean; rm -f "$T_CNT"; t0=$(date +%s%N)
+out=$(KRI_DIAG_TEST_CHILD_DELAY=0.2 MOCK=slow MOCK_CHECK=auto $R --bin "$T/mock" \
+      --target "$TGT" --args "0" --logdir "$T/log" --run-id s18 \
+      --deadline 0.09 --grace 0.03 --per-pair 0.03 2>&1); rc=$?
+t1=$(date +%s%N); ms=$(( (t1-t0)/1000000 ))
+chk "終了値（成功にしない）" "$rc" 1
+chk "済み 0" "$(echo "$out" | grep -c '済み 0')" 1
+chk "無期限に待たない（3 秒以内）" "$([ "$ms" -le 3000 ] && echo はい || echo いいえ)" はい
+ok "実測 ${ms} ミリ秒"
+
+echo
+echo "## 19. ★ 期限を過ぎてからの回収を、成功に渡さない"
+# 監督の開始を 0.3 秒遅らせ、子は 0.15 秒で正常終了します
+clean; rm -f "$T_CNT"
+out=$(KRI_DIAG_TEST_SUPERVISE_DELAY=0.3 MOCK=ok MOCK_CHECK=auto $R --bin "$T/mock" \
+      --target "$TGT" --args "0" --logdir "$T/log" --run-id s19 \
+      --deadline 1 --grace 0.05 --per-pair 0.05 2>&1); rc=$?
+chk "終了値（成功にしない）" "$rc" 1
+chk "打ち切りとして数える" "$(echo "$out" | grep -cE '^  [abc][0-9]x[abc][0-9]: 打ち切り')" 1
+chk "済み 0" "$(echo "$out" | grep -c '済み 0')" 1
+
+echo
+echo "## 20. ★ 事後照合だけが止まる（事前は 3、本計算は 0）"
+clean; rm -f "$T_CNT"
+out=$(MOCK=ok MOCK_CHECK=hang2 $R --bin "$T/mock" --target "$TGT" --args "0" \
+      --logdir "$T/log" --run-id s20 --deadline 4 --grace 0.2 --per-pair 0.5 2>&1); rc=$?
+chk "終了値" "$rc" 1
+chk "本計算は走った（行が 1 つ）" "$(wc -l < "$T/list_gmp_results.txt")" 1
+chk "事後照合が打ち切られる" "$(echo "$out" | grep -c '照合 \*\*不通過\*\*')" 1
+chk "済み 0" "$(echo "$out" | grep -c '済み 0')" 1
+chk "以降を起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
+
+
+echo "## 21. ★ 回収不能の後に、子を起動しない（仕様担当の再現）"
+# 監督の n 回目を「回収不能」にします。1=事前照合 / 2=本計算 / 3=事後照合
+for at in 1 2 3; do
+  clean; rm -f "$T_CNT" "$T_HIST"
+  out=$(KRI_DIAG_TEST_UNREAPED_AT=$at MOCK=ok MOCK_CHECK=auto $R --bin "$T/mock" \
+        --target "$TGT" --args "0" --logdir "$T/log" --run-id "s21_$at" \
+        --deadline 30 --grace 0.2 --per-pair 2 2>&1); rc=$?
+  n=$(wc -l < "$T_HIST" 2>/dev/null || echo 0)
+  chk "回収不能 $at 回目 → 終了値" "$rc" 1
+  chk "回収不能 $at 回目 → 済み 0" "$(echo "$out" | grep -c '済み 0')" 1
+  # **見たい性質は「回収不能より後に子を起動しないこと」**です。
+  # **強制の回収不能は即座に返るので、その子が履歴を書く前に親が進むことがあります**
+  # （$at 件ちょうどではなく、$at 件【以下】で判定します）。
+  chk "回収不能 $at 回目 → 起動した子は $at 件以下（実測 $n）" \
+      "$([ "$n" -le "$at" ] && echo はい || echo いいえ)" はい
+  m=$(echo "$out" | grep -c '回収できていません')
+  chk "回収不能 $at 回目 → 回収できていないと言う（1 件以上）" \
+      "$([ "$m" -ge 1 ] && echo はい || echo いいえ)" はい
+  chk "回収不能 $at 回目 → 以降を起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
+done
+
+echo
+echo "## 22. ★ 分からない RSS を「0 MiB」と出さない"
+clean; rm -f "$T_CNT" "$T_HIST"
+out=$(KRI_DIAG_TEST_UNREAPED_AT=2 MOCK=ok MOCK_CHECK=auto $R --bin "$T/mock" \
+      --target "$TGT" --args "0" --logdir "$T/log" --run-id s22 \
+      --deadline 30 --grace 0.2 --per-pair 2 2>&1)
+chk "RSS を不明と出す" "$(echo "$out" | grep -c 'ピーク RSS 不明')" 1
+chk "0 MiB と書かない" "$(echo "$out" | grep -c 'ピーク RSS 0 MiB')" 0
+
+echo
+printf '**OK %d / NG %d**\n' "$OK" "$NG"
+[ "$NG" -eq 0 ]

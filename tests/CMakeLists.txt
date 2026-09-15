@@ -205,6 +205,13 @@ if(KRISITE_GMP_FOUND)
     krisite_add_test(volume_gmp     csg/test_volume_gmp.cpp)
     target_link_libraries(volume_gmp PRIVATE krisite_gmp)
 
+    # DESIGN-phase5-vertex-level §22.17。**4 出力の厳密体積整合性の【検査器】を検定する**
+    #
+    # **実データに掛ける前に、検査器が破れを検出できることを確かめます。**
+    # 正例（各出力の解析値と式 1・式 2）と負例（N1 / N2）を対で持ちます。
+    krisite_add_test(gmp_identity   csg/test_gmp_identity.cpp)
+    target_link_libraries(gmp_identity PRIVATE krisite_gmp)
+
     # 開発中に素早く回すための短縮版
     add_test(NAME fixed_int_gmp_quick COMMAND fixed_int_gmp 40000)
     add_test(NAME predicates_gmp_quick COMMAND predicates_gmp 5000)
@@ -673,3 +680,34 @@ if(KRISITE_BUILD_MUTANTS)
     krisite_add_mutant(14 KRISITE_MUTATION_EDGE_AXIS_LAST=1 adaptive        PASS)
     krisite_add_mutant(14 KRISITE_MUTATION_EDGE_AXIS_LAST=1 split_semantics PASS)
 endif()
+
+# ---- Thingi10K の駆動（実データ。CMake の制御下に置きます）-------------------
+#
+# **これまで CMake にターゲットがなく、コンパイラを直接呼んで作っていました**
+# （`DESIGN-phase5-vertex-level.md` §22.13）。**どの旗の制御下にもありません**でした。
+#
+# **`EXCLUDE_FROM_ALL` です** — 実データ（`data/thingi10k/`）が要るので、
+# 既定のビルドにも `ctest` にも入れません。**明示的に作るときだけ作ります。**
+#
+#   cmake --build build --target thingi_cp1        GMP なし（既定）
+#   cmake --build build --target thingi_cp1_gmp    GMP つき（診断用。KRISITE_GMP_FOUND のときだけ）
+
+add_executable(thingi_cp1 EXCLUDE_FROM_ALL thingi10k/thingi_cp1.cpp)
+target_link_libraries(thingi_cp1 PRIVATE krisite krisite_test_util)
+
+# **GMP つきの版は【別のターゲット】です。**
+# **同じ .cpp を定義の有無で分けます**（`repair_pinch_gmp` と同じ形）。
+# **GMP なしの版は GMP に依存しません** — リンクもしません。
+if(KRISITE_GMP_FOUND)
+    add_executable(thingi_cp1_gmp EXCLUDE_FROM_ALL thingi10k/thingi_cp1.cpp)
+    target_link_libraries(thingi_cp1_gmp PRIVATE krisite krisite_test_util krisite_gmp)
+    target_compile_definitions(thingi_cp1_gmp PRIVATE KRISITE_TEST_GMP_DIAG=1)
+
+    # **回帰試験のためだけの版。** 変異の口（`KRI_DIAG_MUTATE`）が開きます。
+    # **本番の `thingi_cp1_gmp` には、この経路ごとありません。**
+    add_executable(thingi_cp1_gmp_mut EXCLUDE_FROM_ALL thingi10k/thingi_cp1.cpp)
+    target_link_libraries(thingi_cp1_gmp_mut PRIVATE krisite krisite_test_util krisite_gmp)
+    target_compile_definitions(thingi_cp1_gmp_mut
+                               PRIVATE KRISITE_TEST_GMP_DIAG=1 KRISITE_DIAG_MUTATE=1)
+endif()
+
