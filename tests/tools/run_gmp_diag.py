@@ -56,6 +56,16 @@ def spawn(cmd, env, log_path, as_bytes):
     * ``KRI_DIAG_TEST_SPAWN_DELAY`` … 親が **起動の前**に待つ秒数（§28）
     * ``KRI_DIAG_TEST_CHILD_DELAY`` … 子が **群を作る前**に待つ秒数（§29）
     """
+    # **試験専用: 親の側で【起動を求めた瞬間】に同期記録します**（§31）。
+    #
+    # **子が書いた履歴では、後続起動の不在を証明できません**
+    # （誤って起動した子が、まだ書いていないだけかもしれません）。
+    # **親が fork の前に書けば、取りこぼしようがありません。**
+    sl = os.environ.get("KRI_DIAG_TEST_SPAWN_LOG")
+    if sl:
+        with open(sl, "a") as f:
+            f.write(" ".join(cmd) + "\n")
+            f.flush()
     d = os.environ.get("KRI_DIAG_TEST_SPAWN_DELAY")
     if d:
         time.sleep(float(d))
