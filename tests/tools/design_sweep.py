@@ -347,6 +347,89 @@ def cube_from_rule(lo, hi, sign):
     return V, F
 
 
+def count_a5(P1, F1, P2, F2):
+    """2 つのメッシュの三角形の対について、§43.4 の A5 の手順で
+    【交差】と【接触】を厳密に数える（有理数）。頂点は共有しない前提（s=0）。
+    交差 = 共面でなく、交わりが両方の相対内部と交わる。それ以外の非空の交わりは接触。"""
+    from fractions import Fraction as Fr
+
+    def sub(a, c): return [a[k] - c[k] for k in range(3)]
+    def cross(u, v):
+        return [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]]
+    def dot(u, v): return sum(u[k]*v[k] for k in range(3))
+
+    def tri_pts(P, f): return [P[f[0]], P[f[1]], P[f[2]]]
+
+    def seg_tri(p, q, T):
+        """線分 pq（同一平面内でない）と三角形 T の交わりを、区間 [t0,t1] で返す"""
+        n = cross(sub(T[1], T[0]), sub(T[2], T[0]))
+        d0 = dot(n, sub(p, T[0])); d1 = dot(n, sub(q, T[0]))
+        if d0 == d1:
+            return None
+        t = Fr(-d0, d1 - d0)
+        if t < 0 or t > 1:
+            return None
+        x = [Fr(p[k]) + t * (q[k] - p[k]) for k in range(3)]
+        # 重心座標で三角形の中か（境界を含む）
+        for a, c in ((0, 1), (1, 2), (2, 0)):
+            e = sub(T[c], T[a])
+            w = [x[k] - T[a][k] for k in range(3)]
+            if dot(cross(e, w), n) < 0:
+                return None
+        return x
+
+    nx = nt = 0
+    for f1 in F1:
+        T1 = tri_pts(P1, f1)
+        n1 = cross(sub(T1[1], T1[0]), sub(T1[2], T1[0]))
+        for f2 in F2:
+            T2 = tri_pts(P2, f2)
+            n2 = cross(sub(T2[1], T2[0]), sub(T2[2], T2[0]))
+            cop = cross(n1, n2) == [0, 0, 0] and dot(n1, sub(T2[0], T1[0])) == 0
+            # 各三角形の 3 辺を相手の三角形と交わらせ、交点があるか
+            pts = []
+            for (A, B_) in ((T1, T2), (T2, T1)):
+                for a, c in ((0, 1), (1, 2), (2, 0)):
+                    x = seg_tri(A[a], A[c], B_)
+                    if x is not None:
+                        pts.append(x)
+            if cop:
+                # 共面: 2 次元に射影して重なる面積があるか（箱の重なりで近似せず、
+                # 頂点が相手の中にあるか／辺が交わるかで判定）
+                ax = max(range(3), key=lambda k: abs(n1[k]))
+                ij = [k for k in range(3) if k != ax]
+                def inside2(pt, T):
+                    sg = 0
+                    for a, c in ((0, 1), (1, 2), (2, 0)):
+                        e = [T[c][ij[0]]-T[a][ij[0]], T[c][ij[1]]-T[a][ij[1]]]
+                        w = [pt[ij[0]]-T[a][ij[0]], pt[ij[1]]-T[a][ij[1]]]
+                        cr = e[0]*w[1] - e[1]*w[0]
+                        if cr != 0:
+                            if sg and (cr > 0) != (sg > 0):
+                                return False
+                            sg = cr
+                    return True
+                area = any(inside2(v, T2) for v in T1) or any(inside2(v, T1) for v in T2)
+                if area:
+                    nt += 1
+            elif pts:
+                # 非共面: 交わりが両方の相対内部と交わるか
+                def rel_int(x, T):
+                    n = cross(sub(T[1], T[0]), sub(T[2], T[0]))
+                    for a, c in ((0, 1), (1, 2), (2, 0)):
+                        e = sub(T[c], T[a])
+                        w = [x[k] - T[a][k] for k in range(3)]
+                        if dot(cross(e, w), n) <= 0:
+                            return False
+                    return True
+                mid = [sum(p[k] for p in pts) / len(pts) for k in range(3)]
+                if len(pts) >= 2 and rel_int(mid, T1) and rel_int(mid, T2):
+                    nx += 1
+                else:
+                    nt += 1
+    return nx, nt
+
+
 def signed6(P, F):
     s = 0
     for f in F:
@@ -493,6 +576,8 @@ def structure(b):
         ("43.10", "（最近接・偶数優先）", "nearbyint の丸めモード"),
         ("43.10", "リトルエンディアン固定", "バイト順"),
         ("43.9", "座標が辞書順で最小のもの", "三角形分割の q_0 の決め方"),
+        ("43.9", "並び順も規則で決めます", "頂点・面の並び順の規則"),
+        ("43.4", "I4 は【意図して】原点の添字 0 を", "I4 が添字 0 を共有すること"),
         ("43.4", "共面【でなく】", "A5 段 (vi) の共面の限定"),
         ("43.10", "Python では `round()`（偶数優先）を使います", "Python 側の丸め"),
         ("43.10", "$r[0..8]$ の 9 行、続いて $\\text{shift}[0..2]$ の 3 行", "hex の並び"),
@@ -569,6 +654,7 @@ def structure(b):
         ("CMakeLists.txt", 10, "KRISITE_COORD_BITS", "既定"),
     ]
     bad = []
+    CODE_TOKEN = [(pp, l, tk) for pp, l, tk, _ in CITE]
     for path, line, token, ctx in CITE:
         base = os.path.basename(path)
         # §43 がその行番号で引いているか（basename でも full path でも）
@@ -591,12 +677,19 @@ def structure(b):
             continue
         # 文書側: その引用が付いている行の【少なくとも 1 本】に期待する語があるか
         # （同じ引用を複数の文脈で使うことがあるので、全部には求めない）
-        cs = ctx if isinstance(ctx, tuple) else (ctx,)
+        # ★ 引用の取り違え: その行に【別の行の】コード語が書かれていたら落とす。
+        #   語の在否（「この語が無ければ落とす」）にすると、正しい言い換えで落ちる
+        #   — docstring が 13〜14 巡目に却下した形。20 巡目に同じ形で再発した。
+        others = [(l2, t2) for pp2, l2, t2 in
+                  [(os.path.basename(pp2), l2, t2) for pp2, l2, t2 in CODE_TOKEN]
+                  if pp2 == base and l2 != line]
         for ln in b.split("\n"):
-            if re.search(r"`(?:[\w/.]*/)?%s:%d`" % (re.escape(base), line), ln) \
-                    and not any(c in ln for c in cs):
-                bad.append("%s:%d の引用が、%s のどれも含まない行に付いています（取り違え）"
-                           % (base, line, "/".join(cs)))
+            if not re.search(r"`(?:[\w/.]*/)?%s:%d`" % (re.escape(base), line), ln):
+                continue
+            for l2, t2 in others:
+                if t2 in ln and token not in ln:
+                    bad.append("%s:%d の引用が、%s:%d の語 %r を書いた行に付いています（取り違え）"
+                               % (base, line, base, l2, t2))
     for path, lo, hi, tlo, thi in CITE_RANGE:
         base = os.path.basename(path)
         found = [(int(x), int(y)) for x, y in
@@ -712,8 +805,16 @@ def structure(b):
                  for t in re.findall(r"\([-\d, ]+\)", vs)]
         add_f = [tuple(int(x) for x in t.strip("()").split(","))
                  for t in re.findall(r"\([-\d, ]+\)", fs)]
-        if "基準の 12 面を $+8$ した組" in fs:          # I6 / I7
-            add_f = [tuple(x + 8 for x in f) for f in BF]
+        mo = re.search(r"基準の (\d+) 面を \$\+(\d+)\$ した組", fs)   # I6 / I7
+        if mo:
+            if int(mo.group(1)) != len(BF):
+                bad.append("%s の「基準の %s 面」が、基準の面数 %d と違います"
+                           % (name, mo.group(1), len(BF)))
+            off = int(mo.group(2))
+            if off != len(BV):
+                bad.append("%s の offset が %d、基準の頂点数は %d（ずれています）"
+                           % (name, off, len(BV)))
+            add_f = [tuple(x + off for x in f) for f in BF]
         if "基準を使いません" in how:                   # I4
             P, F = add_v, add_f
         else:
@@ -794,8 +895,17 @@ def structure(b):
                 bad.append("%s の 2 成分が頂点を共有します" % name)
             if any(x < 0 for x in ov):
                 bad.append("%s の 2 成分が離れています（A5 が破れません）" % name)
-            elif want not in cell:
-                bad.append("%s は %s のはずですが、表にその語がありません" % (name, want))
+            else:
+                # ★ 三角形を作って、交差・接触を厳密に数える（20 巡目の指摘）
+                P1, F1 = cube_from_rule(B[0][0], B[0][1], B[0][2])
+                P2, F2 = cube_from_rule(B[1][0], B[1][1], B[1][2])
+                nx, nt = count_a5(P1, F1, P2, F2)
+                mc = re.search(r"交差 (\d+) 件・接触 (\d+) 件", cell)
+                if mc is None:
+                    bad.append("%s の (v) 列に「交差 N 件・接触 M 件」がありません" % name)
+                elif (nx, nt) != (int(mc.group(1)), int(mc.group(2))):
+                    bad.append("%s は交差 %d 件・接触 %d 件（表は %s）"
+                               % (name, nx, nt, mc.group(0)))
         else:
             mR = re.search(r"\$R = (-?)S_\{\\text\{内\}\}\$|\$R = (0)\$", cell)
             if n_in == 0 and R != 0:
@@ -846,6 +956,20 @@ def structure(b):
                 bad.append("%s の呼び出し回数が %r（方向を引数に取るなら 16）"
                            % (name, cells[-2]))
     out.append(("U 表の呼び出し回数が、方向の本数と整合する", not bad, bad[:4]))
+
+    # 本文に書いた「規則だけで [a,b]^3 の - は -N」を、規則から計算して照合する
+    diag = set(re.findall(r"対角線は \$(q_\d+q_\d+)\$", b))
+    out.append(("三角形分割の対角線が、全箇所で同じ",
+                diag == {"q_0q_2"}, sorted(diag)))
+
+    mm2 = re.search(r"\$\[(\d+),(\d+)\]\^3\$ の `-` は符号つき 6 倍体積 \$(-?\d+)\$", b)
+    if mm2:
+        lo_ = int(mm2.group(1)); hi_ = int(mm2.group(2)); want_ = int(mm2.group(3))
+        cV, cF = cube_from_rule([lo_]*3, [hi_]*3, -1)
+        out.append(("本文の「規則だけで -N」が、規則から出る値と一致",
+                    signed6(cV, cF) == want_, [signed6(cV, cF), want_]))
+    else:
+        out.append(("本文の「規則だけで -N」を読めません", False, None))
 
     mg = re.search(r"\$> (\d+) \\times ([\d.]+)\$", b)
     st6 = num(b, r"\| 6 \| \*\*A5\*\*[^|]*\| (\d+) 秒 \|")
@@ -991,6 +1115,12 @@ EXP_MAIN = {
     "存在しない順序へ送る": "「順序 N」で送る先の行が実在する",
     "存在しない小節を参照": "§43.N(x) への参照がすべて実在する",
     "小節を飛ばす（(f) を (h) に）": "小節が (a) から連続している",
+    "I6 の offset を +9 に": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
+    "S4 の A5 の件数を違える": "S の構成から、体積・内側成分・A5 が表と一致する",
+    "-1296 を違える": "本文の「規則だけで -N」が、規則から出る値と一致",
+    "対角線を q0q1 に": "三角形分割の対角線が、全箇所で同じ",
+    "I4 の索引共有の注を消す": "必ず在るべき項目が消えていない",
+    "並び順の規則を消す": "必ず在るべき項目が消えていない",
     "段 6 の起動判定の数を食い違わせる": "段 6 の起動判定が、段 6 の予算と同じ数を使う",
     "基準立方体の面を全反転": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
     "基準立方体の体積を違える": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
@@ -1088,6 +1218,13 @@ def selftest(text):
         ("存在しない §43.N を参照", "§43.5(f)", "§43.99"),
         ("存在しない小節を参照", "§43.5(g)", "§43.5(z)"),
         ("小節を飛ばす（(f) を (h) に）", "#### (f) 領域の列挙", "#### (h) 領域の列挙"),
+        ("I6 の offset を +9 に", "基準の 12 面を $+8$ した組", "基準の 12 面を $+9$ した組"),
+        ("S4 の A5 の件数を違える", "交差 0 件・接触 31 件", "交差 1 件・接触 31 件"),
+        ("-1296 を違える", "符号つき 6 倍体積 $-1296$", "符号つき 6 倍体積 $-1300$"),
+        ("対角線を q0q1 に", "対角線は $q_0q_2$", "対角線は $q_0q_1$"),
+        ("I4 の索引共有の注を消す", "I4 は【意図して】原点の添字 0 を",
+                                     "I4 も別の頂点を並べるので添字は一致しないので"),
+        ("並び順の規則を消す", "並び順も規則で決めます", "並び順は決めません"),
         ("段 6 の起動判定の数を食い違わせる", "$> 300 \\times 0.8$", "$> 200 \\times 0.8$"),
         ("基準立方体の面を全反転", "(0,1,3) (0,3,2) (4,6,7)", "(0,3,1) (0,2,3) (4,7,6)"),
         ("基準立方体の体積を違える", "符号つき 6 倍体積 $+6000$", "符号つき 6 倍体積 $+5000$"),
