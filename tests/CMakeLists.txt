@@ -702,5 +702,12 @@ if(KRISITE_GMP_FOUND)
     add_executable(thingi_cp1_gmp EXCLUDE_FROM_ALL thingi10k/thingi_cp1.cpp)
     target_link_libraries(thingi_cp1_gmp PRIVATE krisite krisite_test_util krisite_gmp)
     target_compile_definitions(thingi_cp1_gmp PRIVATE KRISITE_TEST_GMP_DIAG=1)
+
+    # **回帰試験のためだけの版。** 変異の口（`KRI_DIAG_MUTATE`）が開きます。
+    # **本番の `thingi_cp1_gmp` には、この経路ごとありません。**
+    add_executable(thingi_cp1_gmp_mut EXCLUDE_FROM_ALL thingi10k/thingi_cp1.cpp)
+    target_link_libraries(thingi_cp1_gmp_mut PRIVATE krisite krisite_test_util krisite_gmp)
+    target_compile_definitions(thingi_cp1_gmp_mut
+                               PRIVATE KRISITE_TEST_GMP_DIAG=1 KRISITE_DIAG_MUTATE=1)
 endif()
 

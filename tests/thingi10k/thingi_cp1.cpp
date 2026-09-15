@@ -607,6 +607,21 @@ struct PairStruct {
     }
 };
 
+/// **診断の行の固定部の列数**（`why` は末尾の自由文なので含みません）。
+///
+/// **起動前の照合で使います**（`run_cp23.manifest` の `cols=` と同じ考え）。
+constexpr int kDiagFixedCols = 34;
+
+/// 位相の 4 項目を 1 つの整数に詰めます（**項目を落とさないため**）。
+///
+///   bit0 辺多様体 / bit1 頂点多様体 / bit2 向き / bit3 退化なし
+/// **空のメッシュは 15（すべて真）**として扱います（`check_topology` が早期に返すため）。
+inline int pack_topo(const mesh::TopologyReport& t) {
+    if (t.empty) return 15;
+    return (t.edge_manifold ? 1 : 0) | (t.vertex_manifold ? 2 : 0) | (t.oriented ? 4 : 0) |
+           (t.no_degenerate ? 8 : 0);
+}
+
 #if defined(KRISITE_TEST_GMP_DIAG)
 /// **4 出力の厳密体積整合性の診断**（§22.16 の式 1 と式 2）。
 ///
@@ -621,11 +636,22 @@ struct GmpDiag {
     std::string id2_res = "?";     ///< 式 2 の残差
     std::string v6[4];             ///< ∪ / ∩ / A∖B / B∖A の 6 倍体積
     std::string va6, vb6;          ///< 入力 A / B の 6 倍体積
-    std::size_t tri4 = 0;          ///< B∖A の三角形数
-    int topo4 = -1;                ///< B∖A の位相（1 = ok / 0 = NG / -1 = 未検査）
+    /// **4 演算ぶんを揃えます**（§22.24。旧 3 演算と項目を揃えない記録は残しません）
+    std::size_t tri[4] = {0, 0, 0, 0};    ///< 各出力の三角形数
+    int topo[4] = {-1, -1, -1, -1};       ///< 各出力の位相（`pack_topo`。-1 = 未検査）
+    std::size_t unres[4] = {0, 0, 0, 0};  ///< 各出力の `unresolved`
+    double vol_err = -1, diff_err = -1;   ///< 浮動小数点の篩（**対象の印そのもの**）
     double ms_gmp = 0;             ///< **`mpq` の時間だけ**（対の時間とは別に記録）
     double ms_op4 = 0;             ///< 4 演算目（B∖A）の生成時間
     unsigned long long hash4 = 0;  ///< 4 演算の合成ハッシュ（互換ハッシュとは別の列）
+
+    /// **4 つの出力すべてが位相の 4 項目を満たすか。**
+    bool topo_all_ok() const {
+        for (int k = 0; k < 4; ++k) {
+            if (topo[k] != 15) return false;
+        }
+        return true;
+    }
 };
 
 /// `mpq` を 10 進の文字列にします（**丸めません**）。
@@ -741,6 +767,14 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_tp)
                     .count();
             ps->add(bs, ts, tr, soup.polys.size());
+#if defined(KRISITE_TEST_GMP_DIAG)
+            // **旧 3 演算と項目を揃えて記録します**（§22.24）
+            if (diag != nullptr) {
+                diag->topo[k3] = pack_topo(tr);
+                diag->tri[k3] = out3[k3].triangles.size();
+                diag->unres[k3] = ts.split.unresolved;
+            }
+#endif
             if (dump_nm && !tr.empty && (!tr.edge_manifold || !tr.vertex_manifold)) {
                 dump_nonmanifold(kOpName[k3], out3[k3]);
                 // **分裂の【前】の構造**（`IMPL-phase5.md` §98 との突き合わせ）。
@@ -934,20 +968,26 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
         const auto t_op4 = std::chrono::steady_clock::now();
         std::printf("      [%6.1f s] B∖A 中核…\n", lap());
         std::fflush(stdout);
-        const csg::PolySoup soup4 = csg::boolean(B, A, csg::BoolOp::Difference, o);
-        const csg::SoupMesh m4 = csg::to_mesh(soup4, tm);
+        csg::BoolStats bs4;
+        csg::ToMeshStats ts4;
+        const csg::PolySoup soup4 = csg::boolean(B, A, csg::BoolOp::Difference, o, &bs4);
+        const csg::SoupMesh m4 = csg::to_mesh(soup4, tm, &ts4);
         diag->ms_op4 =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_op4)
                 .count();
         std::printf("      [%6.1f s] B∖A 出口 完了（三角形 %zu、頂点 %zu）\n", lap(),
                     m4.triangles.size(), m4.vertices.size());
         std::fflush(stdout);
-        diag->tri4 = m4.triangles.size();
+        // **旧 3 演算と同じ 4 項目で見ます**（§22.24。辺・頂点・向き・退化なし）
         {
             const mesh::TopologyReport t4 = mesh::check_topology(m4.triangles);
-            diag->topo4 = (t4.empty || (t4.edge_manifold && t4.vertex_manifold && t4.oriented))
-                              ? 1
-                              : 0;
+            diag->topo[3] = pack_topo(t4);
+            diag->tri[3] = m4.triangles.size();
+            diag->unres[3] = ts4.split.unresolved;
+#if defined(KRISITE_DIAG_MUTATE)
+            const char* mut = std::getenv("KRI_DIAG_MUTATE");
+            if (mut != nullptr && std::string(mut) == "topo4") diag->topo[3] = 0;  // ★ 壊す
+#endif
         }
         // **4 演算の合成ハッシュ**（互換ハッシュとは別の列。§22.19.1）
         diag->hash4 = hash_mesh(mu) ^ (hash_mesh(mi) * 3) ^ (hash_mesh(md) * 7) ^
@@ -965,6 +1005,22 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
         kritest::mesh_volume6(v6[kritest::kOpDiffBA], m4);
         kritest::input_volume6(va6, a);
         kritest::input_volume6(vb6, b);
+#if defined(KRISITE_DIAG_MUTATE)
+        // **変異（回帰試験のためだけ）。** **この定義がある版でしか読みません。**
+        //
+        // **本番の `thingi_cp1_gmp` には、この経路ごとありません**
+        // （`CLAUDE.md`「計測の機構にも外す経路を用意してください」）。
+        {
+            const char* mut = std::getenv("KRI_DIAG_MUTATE");
+            if (mut != nullptr && std::string(mut) == "id1") {
+                mpq_t one;
+                mpq_init(one);
+                mpq_set_ui(one, 1, 1);
+                mpq_add(v6[kritest::kOpIsect], v6[kritest::kOpIsect], one);  // ★ 壊す
+                mpq_clear(one);
+            }
+        }
+#endif
         diag->id1_ok = kritest::identity1_residual(res, v6);
         diag->id1_res = q_str(res);
         diag->id2_ok = kritest::identity2_residual(res, v6, va6, vb6);
@@ -1002,6 +1058,13 @@ bool check_one(const mesh::TriMesh& a, const mesh::TriMesh& b, const csg::BoolOp
         ps->tri3[1] = mi.triangles.size();
         ps->tri3[2] = md.triangles.size();
         ps->diff_err = kritest::difference_error(vd, va, vi);
+#if defined(KRISITE_TEST_GMP_DIAG)
+        // **篩の値そのものを診断の行にも残します**（§22.24。対象の印の根拠）
+        if (diag != nullptr) {
+            diag->vol_err = ps->vol_err;
+            diag->diff_err = ps->diff_err;
+        }
+#endif
         ps->ms_vol =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_vol)
                 .count();
@@ -1088,7 +1151,15 @@ int main(int argc, char** argv) {
         const std::size_t dot = b.rfind(".txt");
         return (dot == std::string::npos) ? b : b.substr(0, dot);
     }();
-    const std::string base = "data/thingi10k/" + stem;
+    // **データの根は、一覧のパスから導きます**（`DESIGN-phase5-vertex-level.md` §22.23）。
+    //
+    // **これまで "data/thingi10k/" を直書きしていたため、合成の入力で駆動を回せませんでした。**
+    // **駆動そのものの回帰試験が書けない**ので、根を可変にします。
+    const std::string root = [&list] {
+        const std::size_t sl = list.find_last_of('/');
+        return (sl == std::string::npos) ? std::string(".") : list.substr(0, sl);
+    }();
+    const std::string base = root + "/" + stem;
     const std::size_t limit = (argc > 2) ? std::strtoul(argv[2], nullptr, 10) : 0;
     const unsigned depth = (argc > 3) ? static_cast<unsigned>(std::atoi(argv[3])) : 6;
     const unsigned nthreads = (argc > 4) ? static_cast<unsigned>(std::atoi(argv[4])) : 16;
@@ -1099,7 +1170,19 @@ int main(int argc, char** argv) {
     // **★ 量子化より【前】で弾きます。** 最初はここより後ろに置いたため、
     // **GMP なしの版に診断を頼むと、弾く前に 2,668 模型の量子化が走りました**
     // （`CLAUDE.md`「量子化も実データ計算であり資源を使う」）。
-    const bool gmp_diag = (argc > 16) && (std::atoi(argv[16]) != 0);
+    //
+    // **★ `atoi` は不正な文字列を 0 と読みます**（`"x"` → 0 → 通常実行）。
+    // **厳密に "0" か "1" だけを受けます。**
+    bool gmp_diag = false;
+    if (argc > 16) {
+        const std::string v = argv[16];
+        if (v == "1") {
+            gmp_diag = true;
+        } else if (v != "0") {
+            std::printf("**第 16 引数は 0 か 1 だけです**（受け取った値: `%s`）\n", v.c_str());
+            return 2;
+        }
+    }
 #if !defined(KRISITE_TEST_GMP_DIAG)
     if (gmp_diag) {
         std::printf(
@@ -1107,6 +1190,14 @@ int main(int argc, char** argv) {
         return 2;
     }
 #endif
+    // **設定の矛盾も、量子化より前で拒否します**（§22.19.1）。
+    //
+    // **診断は 1 巡目（索引 ON）にだけ GMP を掛ける設計**なので、
+    // **索引の突き合わせ（2 巡目）と同時には走らせません。**
+    if (gmp_diag && verify_index) {
+        std::printf("**診断と索引の突き合わせは同時に指定できません**（第 4 引数を 0 に）\n");
+        return 2;
+    }
     // **済みの対をやり直すモード。** 既定は追記（再開）
     const bool redo = (argc > 6) && (std::atoi(argv[6]) != 0);
     // **NSI の扱い**:
@@ -1129,17 +1220,40 @@ int main(int argc, char** argv) {
     std::size_t verified = 0;
     // **この対だけを回す**（空なら全件）。失敗の分類のように、
     // **少数の対だけ構造を採りたい**場面のためです（`SPEC-phase5.md` §1.5.4）。
+    //
+    // **★ 診断は【専用の一覧】を読みます**（§22.23）。
+    // **`_only.txt` を共有すると、CP2 / CP3 の投入標本（各 295 対）をそのまま
+    // 診断に流し込む経路ができます。**
     std::vector<std::string> only;
+    //
+    // **★ 診断のときだけ、対象の一覧を環境変数で差し替えられます**（§22.26）。
+    // **投入の駆動が「1 対 1 プロセス」で回すために要ります**
+    // （対ごとの期限と、対ごとのピーク RSS を採るため）。
+    // **通常の実行では読みません。**
+    const std::string only_path = [&] {
+        if (gmp_diag) {
+            const char* ov = std::getenv("KRI_GMP_ONLY");
+            if (ov != nullptr && *ov != '\0') return std::string(ov);
+            return base + "_gmp_only.txt";
+        }
+        return base + "_only.txt";
+    }();
     {
-        std::ifstream f(base + "_only.txt");
+        std::ifstream f(only_path);
         std::string line;
         while (std::getline(f, line)) {
             if (!line.empty()) only.push_back(line.substr(0, line.find(' ')));
         }
     }
+    // **診断では対象の指定を必須にします。** 全件に掛ける経路を作りません（§3.0）。
+    if (gmp_diag && only.empty()) {
+        std::printf("**診断には対象の一覧が要ります**（`%s` が空か存在しません）\n",
+                    only_path.c_str());
+        return 2;
+    }
     // 資源上限で落ちた対（1 行 1 対）。**手で足すのではなく、監視スクリプトが足します**
     std::vector<std::string> skip;
-    {
+    if (!gmp_diag) {  // **診断では読みません**（停止の一覧は通常の実行のためのもの）
         std::ifstream f(base + "_skip.txt");
         std::string line;
         while (std::getline(f, line)) {
@@ -1156,18 +1270,88 @@ int main(int argc, char** argv) {
     if (limit != 0 && ids.size() > limit) ids.resize(limit);
     std::printf("CP1: %zu 件、深度 %u、b=%d\n", ids.size(), depth, KRISITE_COORD_BITS);
 
+    // ---- 0. 診断の対象（**量子化より前に決めます**）------------------------------
+    //
+    // **★ 対の組み方は「量子化後の三角形数の昇順で隣どうし」**なので、
+    // **対の集合を再現するには一覧の全模型を量子化する必要があります**（2,668 / 6,735 件）。
+    // **診断で 5 対を見るためにそれを走らせるのは、実データ計算の無駄です。**
+    //
+    // **そこで診断では、実行が書き残した `<base>_pairs.txt` を【読みます】。**
+    // **書き直しません。** 変換の種は一覧の添字（`1000 + i`）なので、
+    // **一覧が同じなら入力は同一**です。
+    //
+    // **そして「一覧が同じか」は、対の一覧が持つ三角形数と、
+    // 実際に量子化した三角形数を突き合わせて確かめます**（下の照合）。
+    std::vector<std::pair<std::size_t, std::size_t>> diag_pairs;  // 一覧での添字の組
+    std::vector<std::pair<std::size_t, std::size_t>> diag_tris;   // 対の一覧が主張する三角形数
+    std::vector<char> needed(ids.size(), 0);
+    if (gmp_diag) {
+        std::map<std::string, std::size_t> index;
+        for (std::size_t i = 0; i < ids.size(); ++i) index[ids[i]] = i;
+        std::map<std::string, std::pair<std::size_t, std::size_t>> want;  // キー -> 三角形数
+        {
+            std::ifstream pf(base + "_pairs.txt");
+            if (!pf) {
+                std::printf("**対の一覧がありません**: `%s_pairs.txt`\n", base.c_str());
+                return 2;
+            }
+            std::string key;
+            std::size_t na = 0, nb = 0;
+            while (pf >> key >> na >> nb) want[key] = {na, nb};
+        }
+        for (const std::string& key : only) {
+            const auto it = want.find(key);
+            if (it == want.end()) {
+                std::printf("**対の一覧に無い対です**: `%s`\n", key.c_str());
+                return 2;
+            }
+            const std::size_t xp = key.find('x');
+            const std::string ia = key.substr(0, xp), ib = key.substr(xp + 1);
+            if (index.count(ia) == 0 || index.count(ib) == 0) {
+                std::printf("**模型の一覧に無い模型です**: `%s`\n", key.c_str());
+                return 2;
+            }
+            diag_pairs.push_back({index[ia], index[ib]});
+            diag_tris.push_back(it->second);
+            needed[index[ia]] = 1;
+            needed[index[ib]] = 1;
+        }
+        std::size_t nneed = 0;
+        for (char v : needed) nneed += (v != 0);
+        std::printf("\n**診断: %zu 対、量子化するのは %zu 模型だけです**（一覧の全 %zu 件ではなく）\n",
+                    diag_pairs.size(), nneed, ids.size());
+    } else {
+        for (std::size_t i = 0; i < ids.size(); ++i) needed[i] = 1;
+    }
+
     // ---- 1. 量子化と受け入れ判定（**モデル単位**）----
     std::vector<Prepared> prep(ids.size());
     Counts c;
-    for (std::size_t i = 0; i < ids.size(); ++i) {
-        const krithingi::RawMesh raw =
-            krithingi::load_kmesh("data/thingi10k/kmesh/" + ids[i] + ".kmesh");
-        prep[i] = prepare(raw, 1000 + i);
-        c.dropped_total += prep[i].dropped;
-        c.merged_total += prep[i].merged;
-        if (prep[i].dropped > 0) ++c.models_with_dropped;
-        ++c.reject[static_cast<int>(prep[i].reject)];
-        if ((i + 1) % 200 == 0) std::printf("  量子化 %zu / %zu\n", i + 1, ids.size());
+    {
+        std::size_t seen = 0, total = 0;
+        for (char v : needed) total += (v != 0);
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            if (needed[i] == 0) continue;
+            const krithingi::RawMesh raw = krithingi::load_kmesh(root + "/kmesh/" + ids[i] + ".kmesh");
+            prep[i] = prepare(raw, 1000 + i);
+            c.dropped_total += prep[i].dropped;
+            c.merged_total += prep[i].merged;
+            if (prep[i].dropped > 0) ++c.models_with_dropped;
+            ++c.reject[static_cast<int>(prep[i].reject)];
+            if ((++seen) % 200 == 0) std::printf("  量子化 %zu / %zu\n", seen, total);
+        }
+    }
+    // **★ 対の一覧が主張する三角形数と、いま量子化した数を突き合わせます**（診断のみ）。
+    // **食い違えば、一覧と入力が対応していません。計算に入らず止めます。**
+    for (std::size_t k = 0; k < diag_pairs.size(); ++k) {
+        const std::size_t x = diag_pairs[k].first, y = diag_pairs[k].second;
+        const std::size_t nx = prep[x].mesh.triangles.size(), ny = prep[y].mesh.triangles.size();
+        if (nx != diag_tris[k].first || ny != diag_tris[k].second) {
+            std::printf("**対の一覧と量子化が一致しません**: `%sx%s` 一覧 %zu+%zu、実測 %zu+%zu\n",
+                        ids[x].c_str(), ids[y].c_str(), diag_tris[k].first, diag_tris[k].second, nx,
+                        ny);
+            return 2;
+        }
     }
     std::printf("\n## 量子化（b=%d）\n\n", KRISITE_COORD_BITS);
     std::printf("| 事象 | 件数 |\n|---|---:|\n");
@@ -1221,13 +1405,22 @@ int main(int argc, char** argv) {
     o.pool = &pool;
 
     std::vector<std::size_t> order;
-    for (std::size_t i = 0; i < ids.size(); ++i) {
-        if (prep[i].reject == Reject::None) order.push_back(i);
+    if (gmp_diag) {
+        // **診断は、読んだ対の一覧の順に並べます**（並べ替えません）
+        for (const auto& pr : diag_pairs) {
+            order.push_back(pr.first);
+            order.push_back(pr.second);
+        }
+    } else {
+        for (std::size_t i = 0; i < ids.size(); ++i) {
+            if (prep[i].reject == Reject::None) order.push_back(i);
+        }
+        std::sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) {
+            const std::size_t nx = prep[x].mesh.triangles.size(),
+                              ny = prep[y].mesh.triangles.size();
+            return (nx != ny) ? (nx < ny) : (ids[x] < ids[y]);
+        });
     }
-    std::sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) {
-        const std::size_t nx = prep[x].mesh.triangles.size(), ny = prep[y].mesh.triangles.size();
-        return (nx != ny) ? (nx < ny) : (ids[x] < ids[y]);
-    });
 
     // **結果は 1 対ごとに追記します。** 途中で止まっても、
     // どこまで通ったかが残り、再開できます（§3.3 の追跡に要る）
@@ -1239,7 +1432,7 @@ int main(int argc, char** argv) {
     // 並べ方は「量子化後の三角形数、同数なら ID の文字列順」で、
     // **量子化の種まで一致させないと再現できません**（実際にずれ、295 対のうち 90 対しか
     // 回らない実行をしました）。**駆動に書かせれば、食い違いようがありません。**
-    {
+    if (!gmp_diag) {  // **診断では書きません**（読むだけ。§22.23）
         std::ofstream pf(base + "_pairs.txt");
         for (std::size_t k = 0; k + 1 < order.size(); k += 2) {
             const std::size_t x = order[k], y = order[k + 1];
@@ -1259,32 +1452,97 @@ int main(int argc, char** argv) {
                  : (redo ? (base + "_struct_b" + std::to_string(KRISITE_COORD_BITS) + ".txt")
                          : (base + "_results.txt"));
     std::vector<std::string> already;
-    {
-        std::ifstream f(gmp_diag ? (base + "_gmp_results.txt") : (base + "_results.txt"));
+    // **★ 診断は meta を照合します**（§22.24 の P1-2）。
+    //
+    // **以前は行の先頭 4 項目だけを見ており、途中で切れた行や、
+    // 別の条件で作られた結果を「済み」として飛ばしていました。**
+    if (gmp_diag) {
+        // **入力の指紋**（FNV-1a 64。暗号用ではありません。**取り違えを見つけるためのもの**）
+        const auto finger = [](const std::string& path) -> std::string {
+            std::ifstream f(path, std::ios::binary);
+            unsigned long long h64 = 1469598103934665603ULL;
+            char ch = 0;
+            while (f.get(ch)) {
+                h64 ^= static_cast<unsigned char>(ch);
+                h64 *= 1099511628211ULL;
+            }
+            char b[32];
+            std::snprintf(b, sizeof b, "%016llx", h64);
+            return f.bad() ? std::string("read-error") : std::string(b);
+        };
+        std::string args;
+        for (int t = 2; t < argc; ++t) args += (t > 2 ? " " : "") + std::string(argv[t]);
+        char want[1024];
+        std::snprintf(want, sizeof want,
+                      "b=%d\ncols=%d\nargs=%s\nlist=%s\nlist_fp=%s\npairs_fp=%s\nonly_fp=%s\n",
+                      KRISITE_COORD_BITS, kDiagFixedCols, args.c_str(), list.c_str(),
+                      finger(list).c_str(), finger(base + "_pairs.txt").c_str(),
+                      finger(only_path).c_str());
+        const std::string meta_path = base + "_gmp.meta";
+        std::ifstream mf(meta_path);
+        if (mf) {
+            const std::string got((std::istreambuf_iterator<char>(mf)),
+                                  std::istreambuf_iterator<char>());
+            if (got != want) {
+                std::printf("**診断の meta が一致しません**: `%s`\n--- 保存されている ---\n%s"
+                            "--- 今回 ---\n%s",
+                            meta_path.c_str(), got.c_str(), want);
+                return 2;
+            }
+        } else {
+            std::ofstream of(meta_path);
+            of << want;
+            of.flush();
+            if (!of) {
+                std::printf("**診断の meta を書けません**: `%s`\n", meta_path.c_str());
+                return 2;
+            }
+        }
+        // **行の検査。** **途中で切れた行・未実施・不一致は「済み」にしません。**
+        // **黙って飛ばすと二重に書くので、【止めて報告】します。**
+        std::ifstream f(base + "_gmp_results.txt");
+        std::string line;
+        std::size_t ln = 0;
+        while (std::getline(f, line)) {
+            ++ln;
+            if (line.empty()) continue;
+            std::vector<std::string> tok;
+            {
+                std::istringstream is(line);
+                std::string t;
+                while (is >> t) tok.push_back(t);
+            }
+            const char* bad = nullptr;
+            if (tok.size() < static_cast<std::size_t>(kDiagFixedCols)) bad = "列が足りません";
+            else if (tok[1] != "ok") bad = "状態が ok ではありません";
+            else if (tok[2] != "1") bad = "実施されていません";
+            else if (tok[3] != "id1=ok") bad = "式 1 が一致していません";
+            if (bad != nullptr) {
+                std::printf("**既存の診断結果の %zu 行目が再開に使えません**（%s）: `%s`\n"
+                            "**この行を人が見てから、ファイルを退避してやり直してください。**\n",
+                            ln, bad, base.c_str());
+                return 2;
+            }
+            already.push_back(tok[0]);
+        }
+    } else {
+        std::ifstream f(base + "_results.txt");
         std::string line;
         while (std::getline(f, line)) {
-            if (line.empty()) continue;
-            if (!gmp_diag) {
-                already.push_back(line.substr(0, line.find(' ')));
-                continue;
-            }
-            // **診断で再利用してよいのは「実施済みで、判定が完了した行」だけです**（§22.21）。
-            //
-            //   <キー> <状態> <実施 0/1> <式1 ok/ng> ...
-            //
-            // **未実施・途中で切れた行・打ち切り・不一致を、完了成功として扱いません。**
-            std::istringstream is(line);
-            std::string key, state, done, id1;
-            if (!(is >> key >> state >> done >> id1)) continue;  // 途中で切れた行
-            if (state != "ok" || done != "1") continue;          // 未実施・打ち切り
-            if (id1 != "id1=ok") continue;                       // 判定が完了していない
-            already.push_back(key);
+            if (!line.empty()) already.push_back(line.substr(0, line.find(' ')));
         }
     }
     const auto seen = [&already](const std::string& k) {
         return std::find(already.begin(), already.end(), k) != already.end();
     };
     std::ofstream out(done_path, std::ios::app);
+    // **★ 開けなかったら、そこで止めます**（§22.24 の P1-2）。
+    // **開けないまま回すと、計算は走るのに何も残りません。**
+    if (!out) {
+        std::printf("**結果ファイルを開けません**: `%s`\n", done_path.c_str());
+        return 2;
+    }
+    std::size_t write_failed = 0;  ///< **追記や flush の失敗。終了値へ届けます**
 
     // **★ 回す前に「これから何対か」を出します**（`CLAUDE.md`「対象の数も設定の一部」）。
     // **終わってから数えるのでは遅い。** 絞り込みの一覧が残っていて 2 対で終わった事例が
@@ -1405,10 +1663,32 @@ int main(int argc, char** argv) {
 #else
         void* const diag_p = nullptr;
 #endif
-        const bool ok =
-            check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
-                      nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1), verify_delta, dump_nm, repair,
-                      diag_p);
+        bool ok = check_one(prep[i].mesh, prep[j].mesh, o, &pool, &why, &h, &ps,
+                            nsi_mode == 3 ? 2 : (nsi_mode == 0 ? 0 : 1), verify_delta, dump_nm,
+                            repair, diag_p);
+#if defined(KRISITE_TEST_GMP_DIAG)
+        // **★ 診断の結果を、行の状態・集計・終了値に接続します**（§22.24 の P1-1）。
+        //
+        // **以前は `id1_ok` と位相を保存するだけで、成功判定に届いていませんでした。**
+        // **式 1 が不一致でも「成功」になり、終了値 0 で終わり得ました。**
+        //
+        // **式 2 は前提が未確認なので、残差の不一致だけでは失敗にしません**（§22.16）。
+        if (gmp_diag) {
+            if (!diag.done) {
+                ok = false;
+                why = "GMP診断が未実施";
+            } else if (!diag.id1_ok) {
+                ok = false;
+                why = "式1が不一致(" + diag.id1_res + ")";
+            } else if (!diag.topo_all_ok()) {
+                ok = false;
+                char b[96];
+                std::snprintf(b, sizeof b, "4演算の位相が不良(%d,%d,%d,%d)", diag.topo[0],
+                              diag.topo[1], diag.topo[2], diag.topo[3]);
+                why = b;
+            }
+        }
+#endif
         if (ps.nsi_a >= 0) {
             (ps.nsi_a ? nsi_declared : nsi_rejected) += 1;
             (ps.nsi_b ? nsi_declared : nsi_rejected) += 1;
@@ -1465,6 +1745,7 @@ int main(int argc, char** argv) {
                 out << key << " FAIL " << prep[i].mesh.triangles.size() << ' '
                     << prep[j].mesh.triangles.size() << " 0 " << why << '\n';
                 out.flush();
+                if (!out) ++write_failed;
                 continue;
             }
             ++verified;
@@ -1479,14 +1760,18 @@ int main(int argc, char** argv) {
         }
 #if defined(KRISITE_TEST_GMP_DIAG)
         if (gmp_diag) {
-            // **診断の行**（§22.21）。**「対象の印」「実施」「判定」を別々の列にします。**
+            // **診断の行**（§22.21 / §22.24）。**固定部は kDiagFixedCols 列。**
+            // **「対象の印」「実施」「判定」を別々の列にします。**
             //
-            //   <キー> <状態> <実施 0/1> id1=<ok|ng> id2=<ok|ng> <三角形A> <三角形B>
-            //   <対の秒> <互換ハッシュ> <4 演算ハッシュ> <mpq ms> <B∖A ms> <B∖A 三角形>
-            //   <B∖A 位相> <式1 残差> <式2 残差> <∪> <∩> <A∖B> <B∖A> <A> <B>
-            //
-            // **互換ハッシュは旧 3 演算と同じ式**なので、CP2 / CP3 の既存結果と
-            // 対ごとに突き合わせられます（§22.19.1）。
+            //  1 キー  2 状態  3 実施  4 id1  5 id2  6 入力A  7 入力B  8 対の秒
+            //  9 互換ハッシュ  10 4演算ハッシュ  11 mpq ms  12 B∖A ms
+            // 13 vol_err  14 diff_err                      ← **対象の印の根拠**
+            // 15-18 三角形数（∪ ∩ A∖B B∖A）
+            // 19-22 位相（pack_topo: 辺|頂点|向き|退化なし。15 = すべて真）
+            // 23-26 unresolved（同順）
+            // 27 式1 残差  28 式2 残差
+            // 29-32 6 倍体積（同順）  33 入力A の 6 倍体積  34 入力B の
+            // 以降: why（自由文。空白を含み得る）
             std::array<char, 24> hb1{}, hb4{};
             std::snprintf(hb1.data(), hb1.size(), "%016llx", h);
             std::snprintf(hb4.data(), hb4.size(), "%016llx", diag.hash4);
@@ -1495,10 +1780,15 @@ int main(int argc, char** argv) {
                 << (diag.id2_ok ? "id2=ok" : "id2=ng") << ' ' << prep[i].mesh.triangles.size()
                 << ' ' << prep[j].mesh.triangles.size() << ' ' << dt << ' ' << hb1.data() << ' '
                 << hb4.data() << ' ' << (long long)diag.ms_gmp << ' ' << (long long)diag.ms_op4
-                << ' ' << diag.tri4 << ' ' << diag.topo4 << ' ' << diag.id1_res << ' '
-                << diag.id2_res << ' ' << diag.v6[0] << ' ' << diag.v6[1] << ' ' << diag.v6[2]
-                << ' ' << diag.v6[3] << ' ' << diag.va6 << ' ' << diag.vb6 << ' ' << why << '\n';
+                << ' ' << diag.vol_err << ' ' << diag.diff_err;
+            for (int k = 0; k < 4; ++k) out << ' ' << diag.tri[k];
+            for (int k = 0; k < 4; ++k) out << ' ' << diag.topo[k];
+            for (int k = 0; k < 4; ++k) out << ' ' << diag.unres[k];
+            out << ' ' << diag.id1_res << ' ' << diag.id2_res;
+            for (int k = 0; k < 4; ++k) out << ' ' << diag.v6[k];
+            out << ' ' << diag.va6 << ' ' << diag.vb6 << ' ' << why << '\n';
             out.flush();
+            if (!out) ++write_failed;
         } else
 #endif
         {
@@ -1510,6 +1800,7 @@ int main(int argc, char** argv) {
             ps.print(out);
             out << ' ' << why << '\n';
             out.flush();
+            if (!out) ++write_failed;
         }
         const double s =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
@@ -1530,5 +1821,8 @@ int main(int argc, char** argv) {
         std::printf("**NSI: 宣言 %zu / 却下 %zu（%zu 模型ぶん、%.1f%%）**\n", nsi_declared,
                     nsi_rejected, tot, tot ? 100.0 * double(nsi_declared) / double(tot) : 0.0);
     }
-    return c.failed == 0 ? 0 : 1;
+    if (write_failed != 0) {
+        std::printf("**結果の書き込みに %zu 回失敗しました**（結果は不完全です）\n", write_failed);
+    }
+    return (c.failed == 0 && write_failed == 0) ? 0 : 1;
 }
