@@ -111,8 +111,8 @@ int main(int argc, char** argv) {
     std::printf("量子化後 頂点 %zu / 面 %zu / 併合した頂点 %zu / 落とした退化面 %zu / 範囲外 %d\n",
                 q.mesh.vertices.size(), q.mesh.triangles.size(), q.merged_vertices,
                 q.dropped_degenerate, q.out_of_range ? 1 : 0);
-    std::printf("b = %zu / kCoordMin = %lld / kCoordMax = %lld / fill = 0.6\n",
-                krisite::kCoordBits, static_cast<long long>(krisite::kCoordMin),
+    std::printf("b = %zu / kCoordMin = %lld / kCoordMax = %lld / fill = 0.6\n", krisite::kCoordBits,
+                static_cast<long long>(krisite::kCoordMin),
                 static_cast<long long>(krisite::kCoordMax));
     return 0;
 }

@@ -86,11 +86,23 @@ struct Sha256 {
             const std::uint32_t S0 = ror(a, 2) ^ ror(a, 13) ^ ror(a, 22);
             const std::uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
             const std::uint32_t t2 = S0 + maj;
-            hh = g; g = f; f = e; e = d + t1;
-            d = c; c = b; b = a; a = t1 + t2;
+            hh = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
         }
-        h[0] += a; h[1] += b; h[2] += c; h[3] += d;
-        h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
+        h[0] += a;
+        h[1] += b;
+        h[2] += c;
+        h[3] += d;
+        h[4] += e;
+        h[5] += f;
+        h[6] += g;
+        h[7] += hh;
     }
 
     void update(const void* data, std::size_t len) {
@@ -99,8 +111,13 @@ struct Sha256 {
         while (len > 0) {
             const std::size_t take = (64 - n < len) ? (64 - n) : len;
             std::memcpy(buf + n, p, take);
-            n += take; p += take; len -= take;
-            if (n == 64) { block(buf); n = 0; }
+            n += take;
+            p += take;
+            len -= take;
+            if (n == 64) {
+                block(buf);
+                n = 0;
+            }
         }
     }
 
@@ -249,10 +266,11 @@ int main(int argc, char** argv) {
     std::printf("  入力 A %s（期待 sha256 %s）\n", pa.c_str(), sa.c_str());
     std::printf("  入力 B %s（期待 sha256 %s）\n", pb.c_str(), sb.c_str());
     std::printf("  出力の接頭辞 %s\n", prefix.c_str());
-    std::printf("  設定: depth=%u threads=%u nsi_mode=%d verify_delta=%d fine_k=%zu "
-                "fine_budget=%zu fine_mb=%zu skip_disjoint=%d skip_boxside=%d repair=%d\n",
-                depth, nthreads, nsi_mode, verify_delta ? 1 : 0, fine_k, fine_budget, fine_mb,
-                skip_disjoint, skip_boxside ? 1 : 0, repair ? 1 : 0);
+    std::printf(
+        "  設定: depth=%u threads=%u nsi_mode=%d verify_delta=%d fine_k=%zu "
+        "fine_budget=%zu fine_mb=%zu skip_disjoint=%d skip_boxside=%d repair=%d\n",
+        depth, nthreads, nsi_mode, verify_delta ? 1 : 0, fine_k, fine_budget, fine_mb,
+        skip_disjoint, skip_boxside ? 1 : 0, repair ? 1 : 0);
     std::printf("  b = %zu / kHomoXyz = %zu リム / kHomoW = %zu リム\n", kri::kCoordBits,
                 geom::limbs::kHomoXyz, geom::limbs::kHomoW);
     std::printf("  **再量子化しません。読んだ配列をそのまま渡します。**\n");
@@ -372,8 +390,9 @@ int main(int argc, char** argv) {
         std::fprintf(fp, "legacy_nonzero_inside_a=%d\nlegacy_nonzero_inside_b=%d\n",
                      A.indicator.legacy_nonzero_inside ? 1 : 0,
                      B.indicator.legacy_nonzero_inside ? 1 : 0);
-        std::fprintf(fp, "verify_split_delta=%d\nverify_split_manifold=%d\n"
-                         "verify_split_naive=%d\n",
+        std::fprintf(fp,
+                     "verify_split_delta=%d\nverify_split_manifold=%d\n"
+                     "verify_split_naive=%d\n",
                      tm.verify_split_delta ? 1 : 0, tm.verify_split_manifold ? 1 : 0,
                      tm.verify_split_naive ? 1 : 0);
         std::fprintf(fp, "from_mesh_verify_nsi=%d\n", fm.verify_nsi ? 1 : 0);
