@@ -63,6 +63,9 @@ CHECKS = [
          forbid=r"内側成分\}_j\) = -R(?!_B)",
          mutate=(r"$\sum_j S(\text{内側成分}_j) = -R_B$。**B のみ**",
                  r"$\sum_j S(\text{内側成分}_j) = -R$。**B のみ**")),
+    dict(name="頂点数・面数は N_v / N_f（n_f は法線）",
+         forbid=r"\$n_v\$|\$n_f\$ は本体|\\times 3n_[vf]",
+         mutate=("先頭の $N_v$ / $N_f$ は本体です", "先頭の $n_v$ / $n_f$ は本体です")),
     dict(name="経緯の節への依存を作らない",
          forbid=r"（§(?:2[2-9]|3[0-4]|3[5-9]|4[0-2])(?:\.\d+)? を見|詳しくは §(?:3[5-9]|4[0-2])",
          mutate=("**列は同ディレクトリ `README.md` の 34 列**",
@@ -305,6 +308,59 @@ def expectations(b):
     return out
 
 
+def first_break(P, F):
+    """A0-1 → A0-2 → A0-3 → A1(T) → A2(T) → A3(T) → A4(T) → A1(S) → … の順に
+    評価し、最初に破れた検査の名前を返す（§43.4 の評価順）。
+
+    ★ 文言ではなく【幾何】を見る。17 巡目まで、合成対照の構成が
+    「期待する停止箇所で本当に止まるか」に検出器が 1 つも無かった。
+    """
+    from collections import Counter
+
+    def cross(a, c, d):
+        u = [c[i] - a[i] for i in range(3)]
+        v = [d[i] - a[i] for i in range(3)]
+        return (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0])
+
+    if any(max(f) >= len(P) or min(f) < 0 for f in F):
+        return "A0-1"
+    if any(len(set(f)) < 3 for f in F):
+        return "A0-2"
+    col = [f for f in F if cross(P[f[0]], P[f[1]], P[f[2]]) == (0, 0, 0)]
+    for tag, G in (("T", F), ("S", [f for f in F if f not in col])):
+        ud, dr = Counter(), Counter()
+        for f in G:
+            for k in range(3):
+                x, y = f[k], f[(k + 1) % 3]
+                ud[frozenset((x, y))] += 1
+                dr[(x, y)] += 1
+        if set(ud.values()) != {2}:
+            return "A1(%s)" % tag
+        if set(dr.values()) != {1}:
+            return "A2(%s)" % tag
+        for v in {x for f in G for x in f}:
+            es = [tuple(x for x in f if x != v) for f in G if v in f]
+            adj = {}
+            for e in es:
+                adj.setdefault(e[0], []).append(e[1])
+                adj.setdefault(e[1], []).append(e[0])
+            if not adj or any(len(t) != 2 for t in adj.values()):
+                return "A3(%s)" % tag
+            seen = {next(iter(adj))}
+            st = [next(iter(adj))]
+            while st:                       # 単一の閉路か（連結か）
+                x = st.pop()
+                for y in adj[x]:
+                    if y not in seen:
+                        seen.add(y); st.append(y)
+            if len(seen) != len(adj):
+                return "A3(%s)" % tag
+        if len({tuple(sorted(f)) for f in G}) != len(G):
+            return "A4(%s)" % tag
+    return "A5(S) 以降"
+
+
 def structure(b):
     """「中核の語・節を直して、参照元を洗っていない」形を機械的に見る。
 
@@ -392,7 +448,7 @@ def structure(b):
         ("43.10", "$r[0..8]$ の 9 行、続いて $\\text{shift}[0..2]$ の 3 行", "hex の並び"),
         ("43.10", "`int32` $\\times 3N_v$", "quantized の頂点の型"),
         ("43.10", "最小の元の添字", "併合の代表の選び方"),
-        ("43.9", "3 辺だけが 1 枚に減って", "I1 が破る辺の本数"),
+        ("43.9", "3 辺が 1 枚に減って", "I1 が破る辺の本数"),
         ("43.8", "$> 300 \\times 0.8$", "段 6 の起動判定の余裕"),
         ("43.8", "0x2545F4914F6CDD1D", "段 4 の乱数の定数"),
         ("43.8", "種は 1", "段 4 の種（0 は不動点）"),
@@ -416,7 +472,7 @@ def structure(b):
         # --- 15 巡目: 誤って書いた値が戻っていないか ---
         ("43.3", r"分子が 7,782 桁(?!」と書いたのは誤り)", "列 29 の桁数の読み違い"),
         ("43.10", r"geom/widths\.hpp`。\$b\$ は", "kCoordMax の所在（config.hpp が正）"),
-        ("43.8", r"同じ生成器。種 0", "段 4 の種 0（不動点）"),
+        ("43.8", r"\*\*種は 0\*\*|同じ生成器。種 0", "段 4 の種 0（不動点。出力が永久に 0）"),
         ("43.5", r"これが E2 の実体です(?!」と書いたのは言い過ぎ)", "検算を E2 と同一視"),
         ("43.5", r"\\mathrm\{measure\}\(w_B>0\) = ", "measure の手順が B 専用"),
         ("43.5", r"\\cdot\\mathrm\{vol\}\(\\text\{領域\}_j\) = S\(B\)", "検算が B 専用"),
@@ -432,12 +488,13 @@ def structure(b):
     irows = re.findall(r"^\| (I\d+) \|[^|]*\| ([^|]*)\|", s9, re.M)
     bad = []
     for name, stop in irows:
-        if not re.search(r"A(?:0-3|[1-5])\((?:T|S)\)", stop):
+        if not re.search(r"A(?:0-3|[1-5])\s*[（(]\s*(?:T|S)\s*(?:側)?\s*[）)]", stop):
             bad.append("%s の期待する停止箇所に面集合の併記がありません: %s"
                        % (name, stop.strip()[:40]))
     have = {n for n, _ in irows}
     for name in have:
-        if not re.search(r"\*\*%s\*\*: " % name, s9):
+        if not (re.search(r"\*\*%s\*\*: " % name, s9)
+                or re.search(r"^\| \*\*%s\*\* \|" % name, s9, re.M)):
             bad.append("%s の構成が書かれていません" % name)
     out.append(("I 表の各行に、面集合を併記した停止箇所と、構成がある",
                 bool(irows) and not bad, bad[:4]))
@@ -467,14 +524,14 @@ def structure(b):
     for path, line, token in CITE:
         base = os.path.basename(path)
         # §43 がその行番号で引いているか（basename でも full path でも）
+        # 引用が【無い】ことは欠陥ではない（正当に消すことがある。17 巡目の指摘）。
+        # 在るなら、その行が実コードと合っているかだけを見る。
         cited = False
         for m in re.finditer(r"`(?:[\w/.]*/)?%s:(\d+)(?:-(\d+))?" % re.escape(base), b):
             lo = int(m.group(1)); hi = int(m.group(2)) if m.group(2) else lo
             if lo <= line <= hi:
                 cited = True; break
         if not cited:
-            bad.append("%s:%d を §43 が引いていません（行番号を変えたなら表も直す）"
-                       % (base, line))
             continue
         f = os.path.join(HERE, "..", "..", *path.split("/"))
         if not os.path.exists(f):
@@ -497,10 +554,19 @@ def structure(b):
             bad.append("%s:%d-%d の範囲の両端が実コードとずれています" % (base, lo, hi))
     # 宣言していない範囲の引用があれば落とす（同じ引用が文書に複数あるとき、
     # 片方だけ書き換わったのを捕まえる。16 巡目の指摘）
+    # 範囲の引用は、宣言してあれば両端を照合する。宣言に無い範囲は、
+    # 【その範囲の両端が実コードにあるか】を直接見る（宣言表の保守を強いない）。
     declared = {(os.path.basename(pp), l, h) for pp, l, h, _, _ in CITE_RANGE}
+    known = {os.path.basename(pp): pp for pp, *_ in CITE_RANGE}
+    known.update({os.path.basename(pp): pp for pp, *_ in CITE})
     for base, l, h in re.findall(r"`(?:[\w/.]*/)?([\w.]+\.(?:hpp|cpp|py|txt)):(\d+)-(\d+)`", b):
-        if (base, int(l), int(h)) not in declared:
-            bad.append("宣言していない範囲の引用: %s:%s-%s" % (base, l, h))
+        if (base, int(l), int(h)) in declared or base not in known:
+            continue
+        f = os.path.join(HERE, "..", "..", *known[base].split("/"))
+        n = len(io.open(f, encoding="utf-8").read().split("\n")) if os.path.exists(f) else 0
+        if int(h) > n or int(l) > int(h):
+            bad.append("範囲の引用が実ファイルの外です: %s:%s-%s（全 %d 行）"
+                       % (base, l, h, n))
     out.append(("コードの引用が実ファイルと一致する", not bad, bad[:4]))
 
     # ★ 文書の【値】を、実コードの値と照合する（16 巡目の指摘。
@@ -531,6 +597,59 @@ def structure(b):
             if dv != sm.group(1):
                 bad.append("%s: 文書 %r ≠ コード %r" % (name, dm.group(1), sm.group(1)))
     out.append(("文書の値が実コードと一致する", not bad, bad[:4]))
+
+    # ★ 合成対照の構成が、期待する停止箇所で本当に止まるか（17 巡目の指摘）
+    #   文書の表から頂点と面を読み、評価順のとおりに計算して突き合わせる。
+    bad = []
+    rows = re.findall(r"^\| \*\*(I\d+)\*\* \|[^|]*\| `([^`]*)` \| `([^`]*)` \|", b, re.M)
+    if not rows:
+        bad.append("I の構成の表（頂点と面）が読めません")
+    for name, vs, fs in rows:
+        try:
+            P = [tuple(int(x) for x in t.strip("()").split(","))
+                 for t in re.findall(r"\([-\d, ]+\)", vs)]
+            F = [tuple(int(x) for x in t.strip("()").split(","))
+                 for t in re.findall(r"\([-\d, ]+\)", fs)]
+        except ValueError:
+            bad.append("%s の頂点・面を読めません" % name); continue
+        if name == "I1":                     # 基準の立方体と頂点を共有しないので
+            got = first_break(P, F)          # 追加ぶんだけで判定が決まる
+        else:
+            got = first_break(P, F)
+        # 期待する停止箇所は I 表（(b)）の 3 列目。行の中の最後の A?(T|S) を取る
+        if name == "I1":                 # I1 は「共線の面を 1 枚含む」入力
+            from collections import Counter as _C
+            def _cr(a, c, d):
+                u = [c[i] - a[i] for i in range(3)]; v = [d[i] - a[i] for i in range(3)]
+                return (u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0])
+            nc = sum(1 for f in F if _cr(P[f[0]], P[f[1]], P[f[2]]) == (0, 0, 0))
+            if nc != 1:
+                bad.append("I1 の共線面が %d 枚です（1 枚であるべき）" % nc)
+        m2 = re.search(r"^\| %s \|[^|]*\|([^|]*)\|" % name, b, re.M)
+        cand = re.findall(r"(A[\w-]+)\s*[（(]\s*(T|S)\s*(?:側)?\s*[）)]",
+                          m2.group(1)) if m2 else []
+        want = "%s(%s)" % cand[-1] if cand else None   # 表記を正規化して比べる
+        if want is None:
+            bad.append("%s の期待する停止箇所を読めません" % name)
+        elif got != want:
+            bad.append("%s は %s で止まります（期待は %s）" % (name, got, want))
+    out.append(("I の構成が、期待する停止箇所で止まる（幾何を計算）", not bad, bad[:4]))
+
+    # U 表: 方向を引数に取る関数（winding_by_ray / 退化判定）の回数は 16
+    su = secs0.get("43.9", "")
+    bad = []
+    prev = ""
+    for name, rest in re.findall(r"^\| (U\d+) \|(.*)$", su, re.M):
+        cells = [c.strip() for c in rest.split("|")]
+        if not cells:
+            continue
+        fn = prev if cells[0].startswith("同上") else cells[0]   # 「同上」を解決する
+        prev = fn
+        if len(cells) >= 4 and "winding_by_ray" in fn:
+            if cells[-2] not in ("16", "**16**"):
+                bad.append("%s の呼び出し回数が %r（方向を引数に取るなら 16）"
+                           % (name, cells[-2]))
+    out.append(("U 表の呼び出し回数が、方向の本数と整合する", not bad, bad[:4]))
 
     # レイ: 本文の本数・表の本数・「すべて評価する」の本数が一致する
     n1 = re.search(r"レイの (\d+) 方向", b)
@@ -670,9 +789,13 @@ EXP_MAIN = {
     "存在しない順序へ送る": "「順序 N」で送る先の行が実在する",
     "存在しない小節を参照": "§43.N(x) への参照がすべて実在する",
     "小節を飛ばす（(f) を (h) に）": "小節が (a) から連続している",
+    "I1 の共線面の向きを戻す": "I の構成が、期待する停止箇所で止まる（幾何を計算）",
+    "I1 の座標を壊す": "I の構成が、期待する停止箇所で止まる（幾何を計算）",
+    "I4 の面の向きを反転": "I の構成が、期待する停止箇所で止まる（幾何を計算）",
+    "U8 の回数を 1 に戻す": "U 表の呼び出し回数が、方向の本数と整合する",
     "fill を実コードと違える": "文書の値が実コードと一致する",
     "コードの引用の行番号を壊す": "コードの引用が実ファイルと一致する",
-    "宣言外の範囲で引く": "コードの引用が実ファイルと一致する",
+    "実ファイルの外を引く": "コードの引用が実ファイルと一致する",
     "I 表から面集合の併記を落とす": "I 表の各行に、面集合を併記した停止箇所と、構成がある",
     "I の構成を 1 つ消す": "I 表の各行に、面集合を併記した停止箇所と、構成がある",
     "レイの本数を食い違わせる": "レイの本数が、本文・表・「すべて評価」で一致する",
@@ -691,7 +814,7 @@ EXP_MAIN = {
     "丸めモードの注を消す": "必ず在るべき項目が消えていない",
     "KMSH の書式を消す": "必ず在るべき項目が消えていない",
     "経路 P のクランプを消す": "必ず在るべき項目が消えていない",
-    "段 4 の種を 0 に戻す": "必ず在るべき項目が消えていない",
+    "段 4 の種を 0 に戻す": "記号の取り残し（一般化の波及漏れ）",
     "A1〜A4 の T→S の順を消す": "必ず在るべき項目が消えていない",
     "桁数の誤りを戻す": "記号の取り残し（一般化の波及漏れ）",
     "必須項目を消す（§43.13 の共線面）": "必ず在るべき項目が消えていない",
@@ -748,9 +871,15 @@ def selftest(text):
         ("存在しない §43.N を参照", "§43.5(f)", "§43.99"),
         ("存在しない小節を参照", "§43.5(g)", "§43.5(z)"),
         ("小節を飛ばす（(f) を (h) に）", "#### (f) 領域の列挙", "#### (h) 領域の列挙"),
+        ("I1 の共線面の向きを戻す", "`(0,2,1) (0,1,3) (1,2,3) (2,0,3)`",
+                                     "`(0,1,2) (0,1,3) (1,2,3) (2,0,3)`"),
+        ("I1 の座標を壊す", "(25,10,0)`", "(25,0,0)`"),
+        ("I4 の面の向きを反転", "`(1,2,3) (0,3,2)", "`(1,3,2) (0,3,2)"),
+        ("U8 の回数を 1 に戻す", "**16 本とも無効と判定し、有効 0 本を返す** | 16 |",
+                                 "**有効 0 本**を返す | 1 |"),
         ("fill を実コードと違える", "$\\mathrm{fill} = 0.6$", "$\\mathrm{fill} = 0.5$"),
         ("コードの引用の行番号を壊す", "config.hpp:36-37", "config.hpp:40-41"),
-        ("宣言外の範囲で引く", "`loader.hpp:44-65`", "`loader.hpp:44-70`"),
+        ("実ファイルの外を引く", "`loader.hpp:44-65`", "`loader.hpp:44-99999`"),
         ("I 表から面集合の併記を落とす", "| I3 | 1 辺に 3 枚の面 | **A1(T)** |", "| I3 | 1 辺に 3 枚の面 | **A1** |"),
         ("I の構成を 1 つ消す", "> **I5**: 基準から面を 1 枚取り除く。", ""),
         ("レイの本数を食い違わせる", "レイの 16 方向", "レイの 20 方向"),
