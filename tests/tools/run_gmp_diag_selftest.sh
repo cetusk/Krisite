@@ -49,6 +49,7 @@ M
 chmod +x "$T/mock"
 export T_CNT="$T/check_count"
 export T_HIST="$T/history"
+T_SPAWN="$T/spawn_log"
 printf 'a1xa2\nb1xb2\nc1xc2\n' > "$T/plan.txt"
 : > "$T/list.txt"
 TGT="$T/list.txt:$T/plan.txt"
@@ -270,22 +271,33 @@ echo "## 21. ★ 回収不能の後に、子を起動しない（仕様担当の
 # 監督の n 回目を「回収不能」にします。1=事前照合 / 2=本計算 / 3=事後照合
 for at in 1 2 3; do
   clean; rm -f "$T_CNT" "$T_HIST"
-  out=$(KRI_DIAG_TEST_UNREAPED_AT=$at MOCK=ok MOCK_CHECK=auto $R --bin "$T/mock" \
+  rm -f "$T_SPAWN"
+  out=$(KRI_DIAG_TEST_SPAWN_LOG="$T_SPAWN" KRI_DIAG_TEST_UNREAPED_AT=$at MOCK=ok \
+        MOCK_CHECK=auto $R --bin "$T/mock" \
         --target "$TGT" --args "0" --logdir "$T/log" --run-id "s21_$at" \
         --deadline 30 --grace 0.2 --per-pair 2 2>&1); rc=$?
-  n=$(wc -l < "$T_HIST" 2>/dev/null || echo 0)
+  n=$(wc -l < "$T_SPAWN" 2>/dev/null || echo 0)   # ★ 親が fork の前に書いた記録
   chk "回収不能 $at 回目 → 終了値" "$rc" 1
   chk "回収不能 $at 回目 → 済み 0" "$(echo "$out" | grep -c '済み 0')" 1
-  # **見たい性質は「回収不能より後に子を起動しないこと」**です。
-  # **強制の回収不能は即座に返るので、その子が履歴を書く前に親が進むことがあります**
-  # （$at 件ちょうどではなく、$at 件【以下】で判定します）。
-  chk "回収不能 $at 回目 → 起動した子は $at 件以下（実測 $n）" \
-      "$([ "$n" -le "$at" ] && echo はい || echo いいえ)" はい
+  # **親の同期記録なので、件数は【ちょうど】で判定できます**（§31）
+  chk "回収不能 $at 回目 → 親が起動を求めたのは $at 件ちょうど" "$n" "$at"
   m=$(echo "$out" | grep -c '回収できていません')
   chk "回収不能 $at 回目 → 回収できていないと言う（1 件以上）" \
       "$([ "$m" -ge 1 ] && echo はい || echo いいえ)" はい
   chk "回収不能 $at 回目 → 以降を起動しない" "$(echo "$out" | grep -c '停止条件に当たったので起動しません')" 2
 done
+
+echo
+# 合成検定の段（監督の 1 回目が合成検定になる指定）でも、以降が 0 件であること
+clean; rm -f "$T_CNT" "$T_SPAWN"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T/synth2"; chmod +x "$T/synth2"
+out=$(KRI_DIAG_TEST_SPAWN_LOG="$T_SPAWN" KRI_DIAG_TEST_UNREAPED_AT=1 MOCK=ok MOCK_CHECK=auto \
+      $R --bin "$T/mock" --target "$TGT" --args "0" --logdir "$T/log" --run-id s21_synth \
+      --synth-check "$T/synth2" --deadline 30 --grace 0.2 --per-pair 2 2>&1); rc=$?
+chk "合成検定が回収不能 → 終了値" "$rc" 1
+chk "合成検定が回収不能 → 起動を求めたのは 1 件（合成検定だけ）" \
+    "$(wc -l < "$T_SPAWN" 2>/dev/null || echo 0)" 1
+chk "合成検定が回収不能 → 対を起動しない" "$(echo "$out" | grep -c '対を起動しません')" 1
 
 echo
 echo "## 22. ★ 分からない RSS を「0 MiB」と出さない"
