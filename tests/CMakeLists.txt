@@ -721,3 +721,12 @@ endif()
 #   cmake --build build --target dump_quantized -j4
 add_executable(dump_quantized EXCLUDE_FROM_ALL thingi10k/dump_quantized.cpp)
 target_link_libraries(dump_quantized PRIVATE krisite krisite_test_util)
+
+# ---- 4 つのブール出力を厳密に書き出す道具（案 I。§44.8）----
+#
+# **`EXCLUDE_FROM_ALL` です** — 実データが要るので、既定のビルドにも `ctest` にも
+# 入れません。**GMP には依存しません**（§44.8）。
+#
+#   cmake --build build --target dump_boolean -j4
+add_executable(dump_boolean EXCLUDE_FROM_ALL thingi10k/dump_boolean.cpp)
+target_link_libraries(dump_boolean PRIVATE krisite krisite_test_util)
