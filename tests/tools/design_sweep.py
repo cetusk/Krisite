@@ -196,12 +196,22 @@ def expectations(b):
     # E3 の反例: 3 殻（外・中が外向き、内が内向き）から R_B と ΣS(内側) を再計算
     rb = num(b, r"\$R_B = (-?\d+)\$")
     si = num(b, r"\$\\sum_j S\(\\text\{内側成分\}_j\) = (\d+)\$")
-    v = [6 * 10 ** 3, 6 * 6 ** 3, 6 * 2 ** 3]          # [0,10]^3 / [2,8]^3 / [4,6]^3
+    # ★ 反例の構成を【文書から】読む（スクリプトに直書きしない。19 巡目の指摘）
+    mx = re.search(r"\$\[0,(\d+)\]\^3\$ 外向き ＋ \$\[(\d+),(\d+)\]\^3\$ 外向き"
+                   r" ＋ \$\[(\d+),(\d+)\]\^3\$ 【内向き】", b)
+    if mx:
+        a1_, b1_, b2_, c1_, c2_ = (int(x) for x in mx.groups())
+        v = [6 * a1_ ** 3, 6 * (b2_ - b1_) ** 3, 6 * (c2_ - c1_) ** 3]
+    else:
+        v = None
     sg = [1, 1, -1]
-    reg = [(sum(sg[: k + 1]), v[k] - (v[k + 1] if k + 1 < 3 else 0)) for k in range(3)]
-    RB = sum(x for w, x in reg if w > 0) - sum(w * x for w, x in reg)
-    out.append(("E3 の反例の R_B と ΣS(内側) が再計算と一致",
-                None not in (rb, si) and rb == RB and si == v[1]))
+    if v is None:
+        out.append(("E3 の反例の構成を文書から読めません", False))
+    else:
+        reg = [(sum(sg[: k + 1]), v[k] - (v[k + 1] if k + 1 < 3 else 0)) for k in range(3)]
+        RB = sum(x for w, x in reg if w > 0) - sum(w * x for w, x in reg)
+        out.append(("E3 の反例の R_B と ΣS(内側) が再計算と一致",
+                    None not in (rb, si) and rb == RB and si == v[1]))
 
     Dv = num(b, r"\*\*\$D = ([\d,]+)\$ 秒\*\*")
     worst = num(b, r"最悪の総時間 \$D\+30 = ([\d,]+)\$ 秒")
@@ -306,6 +316,44 @@ def expectations(b):
     out.append(("(1) は最終行にだけ現れる",
                 bool(rows2) and [v for _, v in rows2].count("1") == 1))
     return out
+
+
+def cube_from_rule(lo, hi, sign):
+    """§43.9(a) の三角形分割の規則から、立方体の頂点と面を作る。
+    ★ 文書の一覧と【独立に】作って突き合わせるためのもの（19 巡目の指摘）。
+    向きは法線の決め方に入っているので、`-` に追加の反転は要らない。"""
+    import math
+    V = [(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])]
+    idx = {v: i for i, v in enumerate(V)}
+    F = []
+    for ax in range(3):
+        for side, out in ((lo[ax], -1), (hi[ax], +1)):
+            nrm = out * sign
+            corners = [v for v in V if v[ax] == side]
+            a, c = [k for k in range(3) if k != ax]
+            u = [0, 0, 0]; w = [0, 0, 0]; u[a] = 1; w[c] = 1
+            cr = (u[1]*w[2]-u[2]*w[1], u[2]*w[0]-u[0]*w[2], u[0]*w[1]-u[1]*w[0])
+            if cr[ax] * nrm < 0:
+                u, w = w, u
+            c0 = min(corners)
+
+            def ang(v, c0=c0, u=u, w=w):
+                du = sum((v[k] - c0[k]) * u[k] for k in range(3))
+                dw = sum((v[k] - c0[k]) * w[k] for k in range(3))
+                return (math.atan2(dw, du) + 2 * math.pi) % (2 * math.pi)
+
+            q = [c0] + sorted([v for v in corners if v != c0], key=ang)
+            F += [(idx[q[0]], idx[q[1]], idx[q[2]]), (idx[q[0]], idx[q[2]], idx[q[3]])]
+    return V, F
+
+
+def signed6(P, F):
+    s = 0
+    for f in F:
+        a, b, c = P[f[0]], P[f[1]], P[f[2]]
+        s += (a[0]*(b[1]*c[2]-b[2]*c[1]) - a[1]*(b[0]*c[2]-b[2]*c[0])
+              + a[2]*(b[0]*c[1]-b[1]*c[0]))
+    return s
 
 
 def first_break(P, F):
@@ -444,11 +492,12 @@ def structure(b):
         ("43.10", "KMSH", "原本 .kmesh の書式"),
         ("43.10", "（最近接・偶数優先）", "nearbyint の丸めモード"),
         ("43.10", "リトルエンディアン固定", "バイト順"),
+        ("43.9", "座標が辞書順で最小のもの", "三角形分割の q_0 の決め方"),
+        ("43.4", "共面【でなく】", "A5 段 (vi) の共面の限定"),
         ("43.10", "Python では `round()`（偶数優先）を使います", "Python 側の丸め"),
         ("43.10", "$r[0..8]$ の 9 行、続いて $\\text{shift}[0..2]$ の 3 行", "hex の並び"),
         ("43.10", "`int32` $\\times 3N_v$", "quantized の頂点の型"),
         ("43.10", "最小の元の添字", "併合の代表の選び方"),
-        ("43.8", "$> 300 \\times 0.8$", "段 6 の起動判定の余裕"),
         ("43.8", "0x2545F4914F6CDD1D", "段 4 の乱数の定数"),
         ("43.8", "種は 1", "段 4 の種（0 は不動点）"),
         ("43.4", "A1(T)→A2(T)", "A1〜A4 を T→S の順に掛けること"),
@@ -473,6 +522,7 @@ def structure(b):
         ("43.10", r"geom/widths\.hpp`。\$b\$ は", "kCoordMax の所在（config.hpp が正）"),
         ("43.8", r"\*\*種は 0\*\*|同じ生成器。種 0", "段 4 の種 0（不動点。出力が永久に 0）"),
         ("43.9", r"外向き法線の【先端から", "三角形分割の「外向き」の矛盾"),
+        ("43.9", r"各面の 2 枚を反転します", "三角形分割の二重反転"),
         ("43.5", r"これが E2 の実体です(?!」と書いたのは言い過ぎ)", "検算を E2 と同一視"),
         ("43.5", r"\\mathrm\{measure\}\(w_B>0\) = ", "measure の手順が B 専用"),
         ("43.5", r"\\cdot\\mathrm\{vol\}\(\\text\{領域\}_j\) = S\(B\)", "検算が B 専用"),
@@ -507,21 +557,19 @@ def structure(b):
         ("tests/thingi10k/loader.hpp", 173, 178, "auto next", "};"),
         ("include/krisite/config.hpp", 36, 37, "kCoordMin", "kCoordMax"),
     ]
+    # (path, 行, コード側にあるべき語, 文書側の【同じ行】にあるべき語)
+    # 4 つ目は、宣言済みの行どうしを入れ替えたときに捕まえるためのもの（19 巡目の指摘）
     CITE = [
-        ("include/krisite/config.hpp", 36, "kCoordMin"),
-        ("include/krisite/config.hpp", 37, "kCoordMax"),
-        ("include/krisite/geom/widths.hpp", 70, "kHomoW"),
-        ("include/krisite/geom/widths.hpp", 79, "kHomoXyz"),
-        ("include/krisite/csg/polysoup.hpp", 116, "w[n.src] > 0"),
-        ("tests/thingi10k/loader.hpp", 44, "load_kmesh"),
-        ("tests/thingi10k/loader.hpp", 158, "a == b"),
-        ("tests/thingi10k/loader.hpp", 173, "auto next"),
-        ("tests/thingi10k/thingi_cp1.cpp", 1690, "prepare(raw, 1000 + i)"),
-        ("CMakeLists.txt", 10, "KRISITE_COORD_BITS"),
-
+        ("include/krisite/config.hpp", 36, "kCoordMin", "kCoordMin"),
+        ("include/krisite/geom/widths.hpp", 70, "kHomoW", "kHomoW = 6b+13"),
+        ("include/krisite/geom/widths.hpp", 79, "kHomoXyz", "kHomoXyz = 7b+15"),
+        ("include/krisite/csg/polysoup.hpp", 116, "w[n.src] > 0", "採用する領域"),
+        ("tests/thingi10k/loader.hpp", 158, "a == b", ("面積が零", "退化面")),
+        ("tests/thingi10k/thingi_cp1.cpp", 1690, "prepare(raw, 1000 + i)", "prep[i]"),
+        ("CMakeLists.txt", 10, "KRISITE_COORD_BITS", "既定"),
     ]
     bad = []
-    for path, line, token in CITE:
+    for path, line, token, ctx in CITE:
         base = os.path.basename(path)
         # §43 がその行番号で引いているか（basename でも full path でも）
         # 引用が【無い】ことは欠陥ではない（正当に消すことがある。17 巡目の指摘）。
@@ -540,6 +588,15 @@ def structure(b):
         if line > len(L2) or token not in L2[line - 1]:
             bad.append("%s:%d に %r がありません（実コードとずれています）"
                        % (base, line, token))
+            continue
+        # 文書側: その引用が付いている行の【少なくとも 1 本】に期待する語があるか
+        # （同じ引用を複数の文脈で使うことがあるので、全部には求めない）
+        cs = ctx if isinstance(ctx, tuple) else (ctx,)
+        for ln in b.split("\n"):
+            if re.search(r"`(?:[\w/.]*/)?%s:%d`" % (re.escape(base), line), ln) \
+                    and not any(c in ln for c in cs):
+                bad.append("%s:%d の引用が、%s のどれも含まない行に付いています（取り違え）"
+                           % (base, line, "/".join(cs)))
     for path, lo, hi, tlo, thi in CITE_RANGE:
         base = os.path.basename(path)
         found = [(int(x), int(y)) for x, y in
@@ -556,7 +613,7 @@ def structure(b):
     #   17 巡目に「引用が無いことは欠陥ではない」と直した結果、行番号を
     #   誤った行へ動かしても 1 件も落ちなくなっていた（実測で 6 件すべて素通り）。
     #   文書を起点にすれば、削除は許しつつ、ずれは捕まえられる。
-    declared_line = {(os.path.basename(pp), l): tk for pp, l, tk in CITE}
+    declared_line = {(os.path.basename(pp), l): tk for pp, l, tk, _ in CITE}
     known_files = {os.path.basename(pp) for pp, *_ in CITE} | \
                   {os.path.basename(pp) for pp, *_ in CITE_RANGE}
     for base, l in re.findall(r"`(?:[\w/.]*/)?([\w.]+\.(?:hpp|cpp|py|txt)):(\d+)`", b):
@@ -628,11 +685,28 @@ def structure(b):
             bad.append("基準の立方体が 8 頂点 12 面ではありません")
         elif first_break(BV, BF) != "A5(S) 以降":
             bad.append("基準の立方体が A0〜A4 を通りません: %s" % first_break(BV, BF))
+        else:
+            # ★ §43.9(a) の規則から独立に生成して、頂点・面・体積を突き合わせる
+            lo = [min(v[k] for v in BV) for k in range(3)]
+            hi = [max(v[k] for v in BV) for k in range(3)]
+            gV, gF = cube_from_rule(lo, hi, +1)
+            if gV != BV:
+                bad.append("基準の立方体の頂点が、規則から作ったものと違います")
+            elif gF != BF:
+                bad.append("基準の立方体の面が、規則から作ったものと違います")
+            want6 = num(b, r"符号つき 6 倍体積 \$\+([\d,]+)\$")
+            got6 = signed6(BV, BF)
+            if want6 is None or got6 != want6:
+                bad.append("基準の立方体の符号つき 6 倍体積が %d、本文は %s"
+                           % (got6, want6))
+            if [lo, hi] != [[0, 0, 0], [10, 10, 10]]:
+                bad.append("基準の立方体が [0,10]^3 ではありません")
 
     rows = re.findall(
         r"^\| \*\*(I\d+)\*\* \|([^|]*)\|([^|]*)\|([^|]*)\|([^|]*)\|", b, re.M)
-    if len(rows) != 7:
-        bad.append("I 表が 7 行ではありません（%d 行）" % len(rows))
+    nI_ = len(re.findall(r"^\| I\d+ \|", b, re.M))
+    if len(rows) != nI_:
+        bad.append("I の構成の表が %d 行、I 表が %d 行（一致しません）" % (len(rows), nI_))
     for name, how, vs, fs, drop in rows:
         add_v = [tuple(int(x) for x in t.strip("()").split(","))
                  for t in re.findall(r"\([-\d, ]+\)", vs)]
@@ -675,8 +749,9 @@ def structure(b):
     # ★ S 表の構成から、体積・残差・内側成分・A5 を計算して突き合わせる（18 巡目の指摘）
     bad = []
     srows = re.findall(r"^\| \*\*(S\d+)\*\* \| (.+) \|$", b, re.M)
-    if len(srows) != 7:
-        bad.append("S の構成の表が 7 行ではありません（%d 行）" % len(srows))
+    nS_ = len(re.findall(r"^\| S\d+ \|", b, re.M))
+    if len(srows) != nS_:
+        bad.append("S の構成の表が %d 行、S 表が %d 行（一致しません）" % (len(srows), nS_))
     for name, spec in srows:
         boxes = re.findall(r"`\[(-?\d+),(-?\d+)\]x\[(-?\d+),(-?\d+)\]x\[(-?\d+),(-?\d+)\]([+-])`",
                            spec)
@@ -686,6 +761,13 @@ def structure(b):
               1 if t[6] == "+" else -1) for t in boxes]
         vol = [6 * (hi[0]-lo[0]) * (hi[1]-lo[1]) * (hi[2]-lo[2]) for lo, hi, _ in B]
         SB = sum(v * sg for v, (_, _, sg) in zip(vol, B))
+        # ★ 規則から三角形を作り、符号つき体積が箱と符号から出る値と一致するか
+        for lo_, hi_, sg in B:
+            cV, cF = cube_from_rule(lo_, hi_, sg)
+            want = sg * 6 * (hi_[0]-lo_[0]) * (hi_[1]-lo_[1]) * (hi_[2]-lo_[2])
+            if signed6(cV, cF) != want:
+                bad.append("%s の成分 %s%s を規則で分割すると体積が %d（期待 %d）"
+                           % (name, lo_, hi_, signed6(cV, cF), want))
         inside = [[k for k in range(len(B)) if k != m
                    and all(B[k][0][a] <= B[m][0][a] and B[m][1][a] <= B[k][1][a]
                            for a in range(3))] for m in range(len(B))]
@@ -725,6 +807,14 @@ def structure(b):
                 if Sin != -R:
                     bad.append("%s で ΣS(内側) = %d、-R = %d（一致しません）"
                                % (name, Sin, -R))
+                # (iv) 列に書いた内訳（例: 1296+48=1344）が、箱から出る値と合うか
+                mm = re.search(r"\$([\d+]+)=(\d+)\$", cell)
+                if mm:
+                    parts = [int(x) for x in mm.group(1).split("+")]
+                    want = sorted(vol[m] * B[m][2] for m in range(len(B)) if w[m] >= 2)
+                    if sorted(parts) != want or sum(parts) != int(mm.group(2)) or Sin != int(mm.group(2)):
+                        bad.append("%s の (iv) 列の内訳 %s が、構成から出る %s と違います"
+                                   % (name, mm.group(0), want))
     # I6 / I7 は S4 / S5 と同じ構成であること（I 側は頂点を並べるので、突き合わせる）
     for iname, sname in (("I6", "S4"), ("I7", "S5")):
         mi = re.search(r"^\| \*\*%s\*\* \|[^|]*\|([^|]*)\|" % iname, b, re.M)
@@ -756,6 +846,12 @@ def structure(b):
                 bad.append("%s の呼び出し回数が %r（方向を引数に取るなら 16）"
                            % (name, cells[-2]))
     out.append(("U 表の呼び出し回数が、方向の本数と整合する", not bad, bad[:4]))
+
+    mg = re.search(r"\$> (\d+) \\times ([\d.]+)\$", b)
+    st6 = num(b, r"\| 6 \| \*\*A5\*\*[^|]*\| (\d+) 秒 \|")
+    out.append(("段 6 の起動判定が、段 6 の予算と同じ数を使う",
+                mg is not None and st6 is not None and int(mg.group(1)) == st6,
+                [mg and mg.group(0), st6]))
 
     # レイ: 本文の本数・表の本数・「すべて評価する」の本数が一致する
     n1 = re.search(r"レイの (\d+) 方向", b)
@@ -895,6 +991,15 @@ EXP_MAIN = {
     "存在しない順序へ送る": "「順序 N」で送る先の行が実在する",
     "存在しない小節を参照": "§43.N(x) への参照がすべて実在する",
     "小節を飛ばす（(f) を (h) に）": "小節が (a) から連続している",
+    "段 6 の起動判定の数を食い違わせる": "段 6 の起動判定が、段 6 の予算と同じ数を使う",
+    "基準立方体の面を全反転": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
+    "基準立方体の体積を違える": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
+    "q_0 を辞書順最大に": "必ず在るべき項目が消えていない",
+    "S7 の 3 枚目の箱を変える": "S の構成から、体積・内側成分・A5 が表と一致する",
+    "E3 反例の幾何を変える": "E3 の反例の R_B と ΣS(内側) が再計算と一致",
+    "三角形分割の二重反転を戻す": "記号の取り残し（一般化の波及漏れ）",
+    "引用の行を入れ替える": "コードの引用が実ファイルと一致する",
+    "段 (vi) の共面の限定を外す": "必ず在るべき項目が消えていない",
     "I1 の共線面の向きを戻す": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
     "I1 の座標を壊す": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
     "I4 の面の向きを反転": "I の構成が、期待する停止箇所で止まる（全 7 行の幾何を計算）",
@@ -983,6 +1088,17 @@ def selftest(text):
         ("存在しない §43.N を参照", "§43.5(f)", "§43.99"),
         ("存在しない小節を参照", "§43.5(g)", "§43.5(z)"),
         ("小節を飛ばす（(f) を (h) に）", "#### (f) 領域の列挙", "#### (h) 領域の列挙"),
+        ("段 6 の起動判定の数を食い違わせる", "$> 300 \\times 0.8$", "$> 200 \\times 0.8$"),
+        ("基準立方体の面を全反転", "(0,1,3) (0,3,2) (4,6,7)", "(0,3,1) (0,2,3) (4,7,6)"),
+        ("基準立方体の体積を違える", "符号つき 6 倍体積 $+6000$", "符号つき 6 倍体積 $+5000$"),
+        ("q_0 を辞書順最大に", "座標が辞書順で最小のもの", "座標が辞書順で最大のもの"),
+        ("S7 の 3 枚目の箱を変える", "`[4,6]x[4,6]x[4,6]+`", "`[3,7]x[3,7]x[3,7]+`"),
+        ("E3 反例の幾何を変える", "$[4,6]^3$ 【内向き】", "$[3,7]^3$ 【内向き】"),
+        ("三角形分割の二重反転を戻す", "`-` の成分に追加の反転は要りません",
+                                       "`-` の成分は各面の 2 枚を反転します"),
+        ("引用の行を入れ替える", "`widths.hpp:79` の `kHomoXyz = 7b+15`",
+                                 "`widths.hpp:70` の `kHomoXyz = 7b+15`"),
+        ("段 (vi) の共面の限定を外す", "**共面【でなく】、$X$ が両方の", "**$X$ が両方の"),
         ("I1 の共線面の向きを戻す", "`(8,10,9) (8,9,11)", "`(8,9,10) (8,9,11)"),
         ("I1 の座標を壊す", "(25,0,0) (25,10,0)`", "(25,0,0) (25,0,0)`"),
         ("I4 の面の向きを反転", "`(1,2,3) (0,3,2)", "`(1,3,2) (0,3,2)"),
