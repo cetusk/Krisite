@@ -57,8 +57,8 @@ CHECKS = [
          mutate=("**$R_A+R_B=R$ と【必要十分】で同値**", "**これは P3 そのものです**")),
     dict(name="E3 の右辺が全箇所で -R_B",
          forbid=r"内側成分\}_j\) = -R(?!_B)",
-         mutate=(r"（$B$ の成分がすべて外向きのとき $\sum_j S(\text{内側成分}_j) = -R_B$）",
-                 r"（$B$ の成分がすべて外向きのとき $\sum_j S(\text{内側成分}_j) = -R$）")),
+         mutate=(r"$\sum_j S(\text{内側成分}_j) = -R_B$。**B のみ**",
+                 r"$\sum_j S(\text{内側成分}_j) = -R$。**B のみ**")),
     dict(name="経緯の節への依存を作らない",
          forbid=r"（§(?:2[2-9]|3[0-4]|3[5-9]|4[0-2])(?:\.\d+)? を見|詳しくは §(?:3[5-9]|4[0-2])",
          mutate=("**列は同ディレクトリ `README.md` の 34 列**",
@@ -112,13 +112,41 @@ def expectations(b):
 
     by79 = num(b, r"真のビット詰め (\d+) バイト")
     by81 = num(b, r"バイト境界丸め (\d+) バイト")
+    if None in (tot_bits, by79, by81):
+        out.append(("バイト数の行が読めません（削除されたか、書式が変わった）", False))
     if None not in (tot_bits, by79, bits_xyz, bits_w, bb):
         x, w = bits_xyz * bb + 15, bits_w * bb + 13
         out.append(("79 = ceil(625/8)", by79 == -(-tot_bits // 8)))
         out.append(("81 = 3*ceil(162/8)+ceil(139/8)",
                     by81 == 3 * (-(-x // 8)) + (-(-w // 8))))
 
-    n261 = num(b, r"\*\*(\d+)\*\* \| \*\*実測\*\*（590 行を数えた）")
+    n261 = num(b, r"\*\*(\d+)\*\* \| \*\*実測\*\*（\d+ 行を数えた）")
+    nrows = num(b, r"。合計 ([\d,]+) 行）")
+    npair = num(b, r"相異なる【対】\*\* \| \*\*(\d+)\*\*")
+    nmark = num(b, r"の印がある行\*\* \| \*\*(\d+)\*\*")
+    res = [os.path.join(HERE, "..", "..", "data", "thingi10k", f)
+           for f in ("cp2b_results.txt", "cp3_results.txt")]
+    if all(os.path.exists(f) for f in res) and None not in (n261, nrows, npair, nmark):
+        hit, keys, mark = 0, set(), 0
+        tot = 0
+        for f in res:
+            for ln in io.open(f, encoding="utf-8"):
+                c = ln.split()
+                if len(c) < 31:
+                    continue
+                tot += 1
+                try:
+                    ve, de = float(c[29]), float(c[30])
+                except ValueError:
+                    continue
+                if ve > 1e-9 or de > 1e-9:
+                    hit += 1; keys.add(c[0])
+                    if "体積の篩" in ln:
+                        mark += 1
+        out.append(("§43.12 の 261 / 256 / 257 / 590 が実データと一致",
+                    (hit, len(keys), mark, tot) == (n261, npair, nmark, nrows)))
+    else:
+        out.append(("§43.12 の数を実データと照合できません", False))
     n3op = num(b, r"実測 ([\d,]+)\*\* —")
     n4op = num(b, r"\| ([\d,]+) \| \*\*22\.1 GB\*\*")
     out.append(("4 演算の面数 = 3 演算 * 4/3",
@@ -145,9 +173,15 @@ def expectations(b):
         row = [l.split() for l in io.open(ev, encoding="utf-8")
                if l.startswith("250394x45413")]
         if row:
-            c = row[0]                       # 1 起点 → 0 起点は -1
-            out.append(("保存値 S(A)/S(B)/R が cp3_gmp_results.txt と一致",
-                        (int(c[32]), int(c[33]), int(c[27])) == (SA, SB, R)))
+            c = row[0]
+            # 列番号も文書から読む（スクリプトに直書きしない。13 巡目の指摘）
+            cSA = num(b, r"\| \$S\(A\)\$ \| \*\*(\d+)\*\*")
+            cSB = num(b, r"\| \$S\(B\)\$ \| \*\*(\d+)\*\*")
+            cR = num(b, r"\| \$R\$ \| \*\*(\d+)\*\*")
+            ok = None not in (cSA, cSB, cR) and (
+                int(c[cSA - 1]), int(c[cSB - 1]), int(c[cR - 1])) == (SA, SB, R)
+            out.append(("保存値 S(A)/S(B)/R が cp3_gmp_results.txt と一致（列番号も文書から）",
+                        ok))
         else:
             out.append(("保存値の行が見つかりません", False))
     else:
@@ -168,9 +202,9 @@ def expectations(b):
         ("R の一次定義", r"(\lvert A\cup B\rvert+\lvert A\cap B\rvert) - (S(A)+S(B))"),
         ("P3′ の右辺", r"\lvert A\cup B\rvert + \lvert A\cap B\rvert \;=\; \mu(\mathcal A)+\mu(\mathcal B)"),
         ("E1", r"**E1** | **$R_A + R_B = R$**"),
-        ("E2 の符号と閾値", r"R_B = -\sum_{\text{領域}:\,w\ge2}(w-1)\,\mathrm{vol} \;+\; \sum_{\text{領域}:\,w\le-1}\lvert w\rvert\,\mathrm{vol}"),
+        ("E2 の符号と閾値", r"R_X = -\sum_{\text{領域}:\,w_X\ge2}(w_X-1)\,\mathrm{vol} \;+\; \sum_{\text{領域}:\,w_X\le-1}\lvert w_X\rvert\,\mathrm{vol}"),
         ("E3 の右辺は -R_B（定義の行）", r"**E3** | **$\sum_j S(\text{内側成分}_j) = -R_B$**"),
-        ("E4", r"**E4** | **$\sum_j S_j = S(B)$**"),
+        ("E4", r"**E4** | **$\sum_j S_j = S(X)$**"),
         ("領域の体積の式", r"\mathrm{vol}(\text{領域}_j) = \lvert S_j \rvert - \sum"),
         ("k_0 の式", r"k_0 = \lceil \log_2 \max_i \lvert (n_f)_i \rvert \rceil"),
         ("A5 の対の数", r"\binom{\lvert S_A\rvert}{2}+\binom{\lvert S_B\rvert}{2}"),
@@ -187,6 +221,65 @@ def expectations(b):
                 bool(rows2) and all(v in known for _, v in rows2)))
     out.append(("(1) は最終行にだけ現れる",
                 bool(rows2) and [v for _, v in rows2].count("1") == 1))
+    return out
+
+
+def structure(b):
+    """★ 12 巡で最も多い誤りの形 —「中核の語・節を直して、参照元を洗っていない」—
+    を機械的に見る（13 巡目の指摘）。数え上げではなく【参照の整合】を見る。"""
+    out = []
+    heads = dict(re.findall(r"^### (43\.\d+) (.+)$", b, re.M))
+    subs = {}                                   # "43.5" -> {"a": 見出し, ...}
+    cur = None
+    for ln in b.split("\n"):
+        m = re.match(r"^### (43\.\d+) ", ln)
+        if m:
+            cur = m.group(1); subs[cur] = {}
+        m = re.match(r"^#### \(([a-z])\) (.+)$", ln)
+        if m and cur:
+            subs[cur][m.group(1)] = m.group(2)
+
+    # (1) §43.N への参照がすべて実在する
+    refs = set(re.findall(r"§(43\.\d+)", b))
+    out.append(("§43.N への参照がすべて実在する",
+                all(r in heads for r in refs), sorted(r for r in refs if r not in heads)))
+
+    # (2) §43.N(x) への参照がすべて実在する
+    srefs = re.findall(r"§(43\.\d+)\(([a-z])\)", b)
+    bad = [f"§{n}({x})" for n, x in srefs if x not in subs.get(n, {})]
+    out.append(("§43.N(x) への参照がすべて実在する", not bad, bad))
+
+    # (3) 小節が (a) から連続している
+    gaps = [n for n, d in subs.items() if d and
+            sorted(d) != [chr(ord("a") + i) for i in range(len(d))]]
+    out.append(("小節が (a) から連続している", not gaps, gaps))
+
+    # (4) ★ 本文が「(x) は …」と小節の役割を述べるとき、見出しの語を含む
+    #     改番したのに本文の説明が古い、という形（13 巡目の誤り 1）を捕まえる
+    bad = []
+    for n, d in subs.items():
+        for x, title in d.items():
+            # 見出しから 2 文字の語をすべて作り、説明の近くに 1 つでもあるかを見る。
+            # 記号や飾りを剥がしてから作る。
+            core = re.sub(r"[*（(].*", "", title).strip()
+            grams = {core[i:i + 2] for i in range(max(0, len(core) - 1))}
+            if not grams:
+                continue
+            for m in re.finditer(r"\(%s\)\*\*[^。\n]{0,16}?は" % x, b):
+                # 文脈は【その行だけ】。次の行まで見ると、隣の説明を拾って空回りする
+                ls = b.rfind("\n", 0, m.start()) + 1
+                le = b.find("\n", m.start())
+                ctx = b[ls: le if le > 0 else len(b)]
+                if not any(g in ctx for g in grams):
+                    bad.append("%s(%s)「%s」の説明に見出しの語がありません"
+                               % (n, x, core[:16]))
+    out.append(("小節の役割の説明が、その小節の見出しと合っている", not bad, bad))
+
+    # (5) 決定表の各行に送る記述（「順序 N」）の行が実在する
+    rows = set(re.findall(r"^\| \*\*(\d+)\*\* \| \*\*", b, re.M))
+    sent = set(re.findall(r"順序 (\d+)", b))
+    miss = sorted(x for x in sent if x not in rows and "〜" not in x)
+    out.append(("「順序 N」で送る先の行が実在する", not miss, miss))
     return out
 
 
@@ -231,6 +324,15 @@ def run(text, quiet=False, collect=None):
                     print("  ★%s: %r" % (c["name"], b[h.start():h.start() + 60]))
         elif not quiet:
             print("  ok  %s" % c["name"])
+    for name, ok, detail in structure(b):
+        if not ok:
+            bad += 1
+            if collect is not None:
+                collect.append("構造:" + name)
+            if not quiet:
+                print("  ★構造: %s → %s" % (name, detail))
+        elif not quiet:
+            print("  ok  構造: %s" % name)
     for name, ok in expectations(b):
         if not ok:
             bad += 1
@@ -250,6 +352,53 @@ def mutate(text, a, m):
     if a not in text[k:]:
         return None
     return text[:k] + text[k:].replace(a, m, 1)
+
+
+# 期待値の変異ごとの【主検出器】。巻き添えを検査済みに数えないために宣言する。
+EXP_MAIN = {
+    "面数 1,496 → 1,500": "A5 の対の上限 = 2*C(F,2)",
+    "A5 の対の上限だけを変える": "A5 の対の上限 = 2*C(F,2)",
+    "代表点の数だけを変える": "代表点 = 2*(F+F)",
+    "段 6 の予算だけ増やす": "段の予算の合計 = 本文の合計 かつ <= D",
+    "構成数 22 → 21": "構成数 = S+I+U",
+    "14 構成 → 13 構成": "自己検査の構成数 = S+I",
+    "S1 の行を消す": "S/I/U の行数 = 7/7/8",
+    "162 ビット → 160 ビット": "ビット幅: 3*(7b+15)+(6b+13) = 文書の 625",
+    "79 バイト → 78 バイト": "79 = ceil(625/8)",
+    "81 バイト → 80 バイト": "81 = 3*ceil(162/8)+ceil(139/8)",
+    "バイト数の行を消す": "バイト数の行が読めません（削除されたか、書式が変わった）",
+    "保存値 S(A) の末尾を変える": "保存値 S(A)/S(B)/R が cp3_gmp_results.txt と一致（列番号も文書から）",
+    "保存値の列番号を 33 → 35": "保存値 S(A)/S(B)/R が cp3_gmp_results.txt と一致（列番号も文書から）",
+    # 列番号を壊すと「読めません」側が先に落ちるので、そちらを主検出器にする
+    "保存値の列番号を壊す": "保存値を読めません（式が変わったか、証拠が無い）",
+    "予言値 殻間の末尾を変える": "予言値: 殻間+2*内側 = S(B) かつ 内側 = -R",
+    "§43.12 の 261 を 262 に": "§43.12 の 261 / 256 / 257 / 590 が実データと一致",
+    "§43.12 の 257 を 258 に": "§43.12 の 261 / 256 / 257 / 590 が実データと一致",
+    "判定 (4b) の意味行を消す": "判定は (1)(2-a)(2-b)(3)(4a)(4b)(4c) の 7 種が【意味の表】にある",
+    "決定表の 1 行を消す": "決定表の順序が 1..N で連続し、最終行が (1)",
+    "決定表の最終行を (4c) に": "決定表の最終行が (1)",
+    "決定表に未定義の判定を入れる": "決定表の判定値がすべて定義済みの 7 種",
+    "(1) を途中の行にも置く": "(1) は最終行にだけ現れる",
+    "レイ方向を重複させる": "レイ 16 方向が相異なる",
+    "4 演算の面数を 4/3 でなくする": "4 演算の面数 = 3 演算 * 4/3",
+    "R の一次定義の符号を反転": "式が変わっていない: R の一次定義",
+    "P3′ の右辺を差に": "式が変わっていない: P3′ の右辺",
+    "E1 の式を変える": "式が変わっていない: E1",
+    "E2 の符号を + に": "式が変わっていない: E2 の符号と閾値",
+    "E2 の閾値を w>=1 に": "式が変わっていない: E2 の符号と閾値",
+    "E3 の右辺を -R に戻す": "式が変わっていない: E3 の右辺は -R_B（定義の行）",
+    "E4 の式を変える": "式が変わっていない: E4",
+    "領域の体積の式を和に": "式が変わっていない: 領域の体積の式",
+    "k_0 を log10 に": "式が変わっていない: k_0 の式",
+    "A5 の対の数を積に": "式が変わっていない: A5 の対の数",
+    "|S_A| の符号を反転": "式が変わっていない: |S_A| の式",
+    "存在しない §43.N を参照": "§43.N への参照がすべて実在する",
+    "存在しない小節を参照": "§43.N(x) への参照がすべて実在する",
+    "小節を飛ばす（(f) を (h) に）": "小節が (a) から連続している",
+    "改番の取り残しを作る（(g) の説明を別の役割にする）":
+        "小節の役割の説明が、その小節の見出しと合っている",
+    "存在しない順序へ送る": "「順序 N」で送る先の行が実在する",
+}
 
 
 def selftest(text):
@@ -290,6 +439,23 @@ def selftest(text):
         ("決定表の 1 行を消す", "| **8** | **$B$ に内側成分が 0 個**", "| **99** | **$B$ に内側成分が 0 個**"),
         ("レイ方向を重複させる", "$(1,1,2)$", "$(1,1,1)$"),
         ("4 演算の面数を 4/3 でなくする", "| 369,156,480 |", "| 369,156,481 |"),
+        ("A5 の対の上限だけを変える", "$2{,}236{,}520$ 対で、これが上限",
+                                        "$2{,}236{,}521$ 対で、これが上限"),
+        ("代表点の数だけを変える", "共線面が 0 枚なら 5,984 個", "共線面が 0 枚なら 5,985 個"),
+        # --- 13 巡目: 構造（改番・参照の取り残し）ぶん ---
+        ("存在しない §43.N を参照", "§43.5(f)", "§43.99"),
+        ("存在しない小節を参照", "§43.5(g)", "§43.5(z)"),
+        ("小節を飛ばす（(f) を (h) に）", "#### (f) 領域の列挙", "#### (h) 領域の列挙"),
+        ("改番の取り残しを作る（(g) の説明を別の役割にする）",
+         "> **(g)**（この節）**は「$w$ の大小で【内外】を決めてはいけない」と言います。**",
+         "> **(g)**（この節）**は「領域を列挙する手順」を与えます。**"),
+        ("存在しない順序へ送る", "（§43.7 の順序 6）", "（§43.7 の順序 99）"),
+        ("§43.12 の 261 を 262 に", "| **条件を満たす【行】** | **261** |",
+                                    "| **条件を満たす【行】** | **262** |"),
+        ("§43.12 の 257 を 258 に", "の印がある行** | **257** |", "の印がある行** | **258** |"),
+        ("保存値の列番号を壊す", "| $S(A)$ | **33** |", "| $S(A)$ | **35** |"),
+        ("バイト数の行を消す", "**頂点: リム表現 96 バイト / バイト境界丸め 81 バイト / 真のビット詰め 79 バイト**",
+                               "**頂点の大きさは省略します**"),
         # --- 12 巡目の指摘で足した検査ぶん ---
         ("14 構成 → 13 構成", "（14 構成）", "（13 構成）"),
         ("S1 の行を消す", "| S1 | **同方向の入れ子**", "| S0 | **同方向の入れ子**"),
@@ -299,10 +465,10 @@ def selftest(text):
         ("R の一次定義の符号を反転", r"- (S(A)+S(B))$$", r"+ (S(A)+S(B))$$"),
         ("P3′ の右辺を差に", r"\mu(\mathcal A)+\mu(\mathcal B)$ |", r"\mu(\mathcal A)-\mu(\mathcal B)$ |"),
         ("E1 の式を変える", "**E1** | **$R_A + R_B = R$**", "**E1** | **$R_A - R_B = R$**"),
-        ("E2 の符号を + に", r"R_B = -\sum_{\text{領域}:\,w\ge2}", r"R_B = +\sum_{\text{領域}:\,w\ge2}"),
-        ("E2 の閾値を w>=1 に", r"\text{領域}:\,w\ge2}(w-1)", r"\text{領域}:\,w\ge1}(w-1)"),
+        ("E2 の符号を + に", r"R_X = -\sum_{\text{領域}:\,w_X\ge2}", r"R_X = +\sum_{\text{領域}:\,w_X\ge2}"),
+        ("E2 の閾値を w>=1 に", r"\text{領域}:\,w_X\ge2}(w_X-1)", r"\text{領域}:\,w_X\ge1}(w_X-1)"),
         ("E3 の右辺を -R に戻す", r"**E3** | **$\sum_j S(\text{内側成分}_j) = -R_B$**", r"**E3** | **$\sum_j S(\text{内側成分}_j) = -R$**"),
-        ("E4 の式を変える", r"**E4** | **$\sum_j S_j = S(B)$**", r"**E4** | **$\sum_j S_j = S(A)$**"),
+        ("E4 の式を変える", r"**E4** | **$\sum_j S_j = S(X)$**", r"**E4** | **$\sum_j S_j = S(A)$**"),
         ("領域の体積の式を和に", r"\mathrm{vol}(\text{領域}_j) = \lvert S_j \rvert - \sum",
                                 r"\mathrm{vol}(\text{領域}_j) = \lvert S_j \rvert + \sum"),
         ("k_0 を log10 に", r"k_0 = \lceil \log_2 \max_i", r"k_0 = \lceil \log_{10} \max_i"),
@@ -324,8 +490,17 @@ def selftest(text):
         if run(mut, quiet=True, collect=got) == 0:
             print("★ 期待値の変異 %s: 落ちません（空回り）" % name); fail += 1
         else:
-            covered.update(got)
-            print("  ok  期待値の変異 %-28s — 検出（%s）" % (name, "／".join(got)))
+            # 主検出器を【宣言】し、それが発火したときだけ検査済みにする
+            # （13 巡目の指摘 H3。巻き添えを「検査済み」に数えない）
+            main = EXP_MAIN.get(name)
+            if main is None:
+                print("★ 期待値の変異 %s: 主検出器が宣言されていません" % name); fail += 1
+            elif not any(g.endswith(main) for g in got):
+                print("★ 期待値の変異 %s: 主検出器 %r が発火しません → %s"
+                      % (name, main, got)); fail += 1
+            else:
+                covered.update(g for g in got if g.endswith(main))
+                print("  ok  期待値の変異 %-28s — 主検出器が発火（%s）" % (name, main))
 
     # 表の検査も変異させる
     k = text.index("## 43. ")   # §43 の中の区切り行を消す
