@@ -204,44 +204,57 @@ consulted, quoted, or ported.**
 | **5** | **Thingi10K validation, performance targets** | **In progress** (breakdown below) |
 | 6+ | Point-cloud codec, GWN, meshing | Not started |
 
-### Phase 5 breakdown
+### Phase 5 breakdown (2026-09-15)
 
 **Correctness first, performance second** — the order matters.
+**The CP2/CP3 stratified runs and an additional five-pair GMP diagnostic are finished,
+and the saved numerical results have been checked for consistency.** Designing an independent
+check of the cause of identity 2's failures remains future work. This is neither full-population
+validation nor completion of Phase 5.
 
 | Stage | Scope | What it checks | Status |
 |---|---|---|---|
-| **CP1** | Solid, manifold, **non-self-intersecting** — 1,000 models → **500 pairs** | Correctness on real data; the common ground for comparison with EMBER and FARMA | **Complete** (499 succeeded, 1 failed). **The cause has since been resolved** (below) |
-| **CP1.5** | — | **Removing the superlinearity**, a precondition for CP2/CP3 being runnable at all | **Complete** ($P \to t$ from 1.31 to 1.23; the CP2 estimate from 350 to **100 hours**) |
-| **CP2** | Models that **do** self-intersect | Whether the operation itself resolves self-intersection into a clean output (self-union) | **84 pairs complete** (72 succeeded, 12 failed). **Same as above** |
-| **CP3** | No constraint on solidity, manifoldness or self-intersection | Whether the entry checks work on **non-PWN and degenerate models** | Not started |
+| **CP1** | Solid, manifold, **non-self-intersecting** — 1,000 models → **500 pairs** | Initial real-data baseline | Initial run: 499 succeeded, 1 failed (historical version) |
+| **CP1.5** | — | Performance work to make CP2/CP3 feasible | Improvements implemented; historical extrapolations are not current execution budgets |
+| **CP2** | Inputs including self-intersections, under CP2 conditions | Real-data booleans and output checks | **295 stratified pairs finished; all passed the driver checks** |
+| **CP3** | No constraint on solidity, manifoldness or self-intersection, under CP3 conditions | Entry validation and real-data output checks | **295 stratified pairs finished; all passed the driver checks** |
+| **GMP diagnostic** | 2 CP2 pairs + 3 CP3 pairs | Exact volume consistency across four outputs | **Identity 1 residual recorded as zero for all five pairs**; not an independent correctness proof |
 | **CP4 onwards** | — | **Setting and pursuing performance targets** | Not started (**no target has been set yet**) |
 
-### The 13 failures, and what happened next (2026-09-06)
+### Contact repair and sampled validation
 
-**The single CP1 failure and the twelve CP2 failures were all the same configuration.**
-**Two sheets of surface meet along one edge and are also joined elsewhere, so the four
-incident faces cannot be paired up two-and-two by connectivity alone.**
+Vertex-level contact repair is implemented alongside radial pairing for surfaces meeting
+along an edge. The CP2/CP3 stratified runs on September 14–15, 2026 covered
+**295 pairs each, or 590 executions**, with no driver failures or stops.
+Repair was exercised in **20 executions on 132 edges**, with zero `unresolved` afterward.
+These are observations on the sample, not guarantees for every input.
 
-**The Phase 2 spec had described this configuration and left it open,
-noting that it was unclear whether real data would ever reach it. It did.**
+### What the GMP diagnostic established
 
-**A general solution — ordering the incident faces radially about the edge —
-is now implemented.**
+For five additional pairs, a synthetically calibrated checker computed exact signed volumes
+for four outputs ($A\cup B$, $A\cap B$, $A\setminus B$, and $B\setminus A$).
+**Identity 1: $V_U = V_{A\setminus B} + V_{B\setminus A} + V_I$** had a recorded residual of zero.
+All four outputs passed the topology checks and had zero `unresolved`.
+The compatibility hashes for the original three operations matched the corresponding
+CP2/CP3 records in **5 out of 5 cases**.
+Residuals for both identities were independently recomputed from the saved rational values
+and matched the records. Complete results and checksums are in
+[`docs/evidence/gmp_diag_r1/`](docs/evidence/gmp_diag_r1/README.md).
 
-| | |
-|---|---|
-| Operations that produced non-manifold output | 26 |
-| **Fully resolved** | **25 / 26** |
-| Edges where no pairing could be formed | **0 out of 1,301** |
+**Identity 1 is not an independent oracle.** Common omissions and cancellation can escape it.
+The input-based identity 2 ($V_U+V_I=V_A+V_B$) failed for all five pairs, but the winding-number
+0/1 precondition for interpreting these as region volumes is unverified. The cause remains unresolved.
 
-**The one remaining case is a different problem, at the vertex level.**
-**Each edge is paired correctly on its own, but several such pairings transitively
-merge the fans around a vertex, so the vertex cannot be duplicated.**
-
-> **CP1 and CP2 have not been re-run with this fix in place.**
-> **Performance work comes first; then a single re-run.**
+**The 261 executions selected by the floating-point filters are diagnostic candidates,
+not completed exact checks.** Running the full candidate set is not approved.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for current status,
+[`docs/SPEC-phase5.md`](docs/SPEC-phase5.md) §5.10.14.74 for validation limits, and
+[`docs/DESIGN-phase5-vertex-level.md`](docs/DESIGN-phase5-vertex-level.md) §32 for the implementation report's corrections.
 
 ### Performance work (2026-09-07 to 09-08)
+
+The following records describe the configurations used at that time, not guaranteed
+runtime or execution budgets for the current version.
 
 **Every one of these is guarded by a check that the output does not change.**
 **Effects are measured in operation counts**, because wall-clock time moves by
@@ -268,7 +281,7 @@ for _every negative value_.**
 Measurements are in [`docs/BENCH.md`](docs/BENCH.md); the reasoning behind each
 decision is in [`docs/IMPL-phase5.md`](docs/IMPL-phase5.md) and
 [`docs/IMPL-v2.md`](docs/IMPL-v2.md).
-**A summary of where things stand is in [`docs/HANDOVER.md`](docs/HANDOVER.md).**
+**[`docs/ROADMAP.md`](docs/ROADMAP.md) is the authoritative source for current status.**
 
 ## References
 
