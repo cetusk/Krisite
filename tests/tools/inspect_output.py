@@ -334,7 +334,12 @@ def _q(x):
 
 
 def c1_sample(P, F, a, log, rows_out=None):
-    """非退化な直線 1 本で、$[w_X>0]$ と期待値、および $w_X$ の値を比べます。"""
+    """非退化な直線 1 本で、$[w_X>0]$ と期待値、および $w_X$ の値を比べます。
+
+    `a.force_line = (o, d)` があれば、**抽選の代わりにその直線を 1 本だけ使います**
+    （合成対照が固定直線を渡すため。§13.3「標本選択のみを固定線へ差し替え」）。
+    **`events` / `compare_line` / 行の作り方・順序は差し替えません。**
+    """
     import inspect_geom as ig
     import struct as _st
     ins = {}
@@ -359,9 +364,15 @@ def c1_sample(P, F, a, log, rows_out=None):
         st[0] = x & 0xFFFFFFFFFFFFFFFF
         return ((st[0] * 0x2545F4914F6CDD1D) & 0xFFFFFFFFFFFFFFFF) >> 11
 
+    forced = getattr(a, "force_line", None)
     for attempt in range(1, 33):
-        o = tuple(Fr(nxt() % 400001 - 200000) for _ in range(3))
-        d = tuple(nxt() % 199 - 99 for _ in range(3))
+        if forced is not None:
+            if attempt > 1:
+                break                      # 固定直線は 1 本だけ試します
+            o, d = tuple(Fr(x) for x in forced[0]), tuple(forced[1])
+        else:
+            o = tuple(Fr(nxt() % 400001 - 200000) for _ in range(3))
+            d = tuple(nxt() % 199 - 99 for _ in range(3))
         if d == (0, 0, 0):
             continue
         ev = events(P, F, o, d)
@@ -397,7 +408,8 @@ def c1_sample(P, F, a, log, rows_out=None):
             "**この直線が通らない食い違いは見えません。**" % len(ev))
         return "`C1-c` %d 個 / `C1-b` %d 個" % (bad_c, bad_b)
     log("[union] C1: 捨てた直線の内訳 %s" % (skipped if skipped else "無し"))
-    return "**未測定**（32 回引いても条件を満たす直線が得られませんでした）"
+    return ("**未測定**（固定直線 1 本が条件を満たしませんでした）" if forced is not None
+            else "**未測定**（32 回引いても条件を満たす直線が得られませんでした）")
 
 
 def events(P, F, o, d):
@@ -652,16 +664,23 @@ def stage_measure(a, log):
 
     # ---- C1: 非退化な直線 1 本（∪ について）----
     t0 = time.process_time()
-    c1_rows, c1_agg = [], None
+    c1_rows, c1_agg, c1_calls = [], None, 0
+    c1_state = "未評価"
     if not e1_ok["union"]:
         log("[union] C1: **未評価**（E1 が破れているので、階段関数を巻き数と読めません）")
         log("**分岐到達**: E1 違反 → C1 未評価 の分岐に 1 回到達しました")
     else:
         log("**分岐到達**: E1 通過 → C1 評価 の分岐に 1 回到達しました")
+        c1_calls += 1
         got = c1_sample(P, F, a, log, rows_out=c1_rows)
         c1_agg = (sum(1 for r in c1_rows if r[0] != "line" and r[-1] == "C1-c"),
                   sum(1 for r in c1_rows if r[0] != "line" and r[-1] == "C1-b"))
+        # ★ **区間が 1 個も無ければ【未測定】**です。**集計が (0,0) でも
+        #   「不一致なし」とは読みません**（§13.2: 未測定を件数 0 に置き換えない）。
+        got_line = any(r[0] == "line" for r in c1_rows)
+        c1_state = "評価済み" if (got_line and len(c1_rows) > 1) else "未測定"
         log("[union] C1: %s（CPU %.4f 秒）" % (got, time.process_time() - t0))
+    log("[union] C1 の状態: **%s**（標本関数の呼出し %d 回）" % (c1_state, c1_calls))
 
     # ---- 単価: 符号つき 6 倍体積（∪ の 1 演算だけ）----
     V, F = data["union"]
@@ -702,18 +721,48 @@ def stage_measure(a, log):
     log("[union] 読戻し: C1-c %d / C1-b %d（段の集計 %s）" % (back_c, back_b, c1_agg))
     log("[union]   ★ **件数の一致は恒等式**です。**取りこぼしを見ているのは、"
         "上の【行数と各行の内容】の比較のほうです。**")
-    read_ok = (c1_agg is not None and (back_c, back_b) == c1_agg and n_ok and body_ok)
+    # ★ **保存の成否（S）と、幾何の判定（C1）を分けます**（§13.2）。
+    #   **集計との一致は恒等式**なので、S の本体は行数と各行の比較です。
+    agg_ok = (c1_agg is None or (back_c, back_b) == c1_agg)
+    save_ok = n_ok and body_ok and agg_ok
     has_line = any(r[0] == "line" for r in c1_rows)
-    log("[union] G4: C1 の採用 %s / 区間の保存 %s / 読戻しの一致 %s"
+    log("[union] 保存(S): C1 の採用 %s / 区間の保存 %s / 読戻しの一致 %s"
         % ("あり" if has_line else "**無し**", "あり" if len(c1_rows) > 1 else "**無し**",
-           "一致" if read_ok else "★ 不一致"))
-    g4_ok = has_line and len(c1_rows) > 1 and read_ok
-    if not g4_ok:
-        log("[union] ★ **G4 未解消**（C1 が未評価 / 未測定、または書き出しの取りこぼし）")
+           "一致" if save_ok else "★ 不一致"))
+
+    # ---- 最終判定: rc = 0 ⟺ C_C1 ∧ S ∧ V ----
+    #   C_C1 = H ∧ (n_c = 0) ∧ (n_b = 0)、H = 「E1 を通り C1 が評価され、
+    #   直線と比較区間が得られた」。**未評価・未測定を件数 0 に置き換えません。**
+    H = (c1_state == "評価済み")
+    c1_ok = H and (c1_agg == (0, 0))
+    reasons = []
+    if not H:
+        reasons.append("C1 %s" % c1_state)
+        log("[union] ★ **G4 未解消**（理由=%s）" % c1_state)
+    elif not c1_ok:
+        n_c, n_b = c1_agg
+        if n_c:
+            reasons.append("C1-c")
+        if n_b:
+            reasons.append("C1-b")
+        log("[union] ★ **C1 不一致**（理由=%s。`C1-c` %d 個 / `C1-b` %d 個）。"
+            "**区間は保存済みで、これは書き出しの失敗ではありません。**"
+            % ("/".join(r for r in ("C1-c", "C1-b") if (r == "C1-c" and n_c) or (r == "C1-b" and n_b)),
+               n_c, n_b))
+    if not save_ok:
+        reasons.append("保存/読戻し")
+        log("[union] ★ **G4 未解消**（理由=書き出しの取りこぼし）")
     if not vol_ok:
+        reasons.append("体積回帰")
         log("[union] ★ **G1 の回帰が破れた**（$\\cup$ の体積が列 29 と一致しません）")
-    log("判定: %s" % ("G4 解消・体積の回帰も一致" if (g4_ok and vol_ok) else "★ 未解消あり"))
-    return 0 if (g4_ok and vol_ok) else 1
+    rc = 0 if (c1_ok and save_ok and vol_ok) else 1
+    s_txt = ("通過" if save_ok else "★ 不成立") + ("" if c1_rows else "（区間が無いので**対象なし**）")
+    log("[union] 最終判定の内訳: C1 %s / 保存 %s / 体積回帰 %s"
+        % ("通過" if c1_ok else "★ 不成立", s_txt, "通過" if vol_ok else "★ 不成立"))
+    log("判定: %s" % ("C1 不一致 0・保存成功・体積回帰一致（**限定標本と回帰の成功であって、"
+                     "契約全体の成立ではありません**）" if rc == 0
+                     else "★ 失敗（理由=%s）" % "/".join(reasons)))
+    return rc
 
 
 STAGES = {"identity": stage_identity, "anchor": stage_anchor, "measure": stage_measure}

@@ -171,6 +171,168 @@ def g2(log):
                     "**分岐到達**: E1 通過 → C1 評価" in txt, True, log)
 
 
+# ===== G5: 最終判定が C1 に接続されていること（§13.3 の 5 対照）=====
+def _case_g5(td, out_mesh, vol6):
+    r"""辺 10 の箱 2 つを入力、`out_mesh` を出力として一式を作る。
+
+    **`make_case` と別に置きます**（あちらは $10^5$ 規模で、抽選の直線に当てるため）。
+    **ここは固定直線を渡すので、G4 と同じ辺 10 の箱で足ります。**
+    保存物の列 29 には **`vol6`（解析値）** を書きます。
+    """
+    A = ig.box((0, 0, 0), (10, 10, 10), +1)
+    B = ig.box((20, 0, 0), (30, 10, 10), +1)
+    outs = {"union": out_mesh, "isect": A, "diff_ab": A, "diff_ba": B}
+    d = os.path.join(td, "run")
+    os.makedirs(d, exist_ok=True)
+    for op, m in outs.items():
+        write_soup_py(os.path.join(d, "b_out_%s.bin" % op), _h(m[0]), list(m[1]))
+    with open(os.path.join(d, "b_run_meta.txt"), "w") as f:
+        f.write("kHomoXyz=3\nkHomoW=3\n")
+    write_quant(os.path.join(td, "a.bin"), A[0], A[1])
+    write_quant(os.path.join(td, "b.bin"), B[0], B[1])
+    sv = os.path.join(td, "saved.txt")
+    with open(sv, "w") as f:
+        f.write(" ".join(["k"] + ["0"] * 27 + [str(vol6)] + ["0"] * 6) + "\n")
+    a = _Args()
+    a.out, a.read_from, a.sums = td, d, os.path.join(td, "none")
+    a.in_a, a.in_b, a.saved, a.key = os.path.join(td, "a.bin"), os.path.join(td, "b.bin"), sv, "k"
+    a.force_line = ((Fr(-100), Fr(11, 2), Fr(13, 3)), (1, 0, 0))
+    return a
+
+
+def _final(txt):
+    """最後の `判定: ` 行そのもの。**全文検索だと中間ログに当たります**（レビュー指摘）。"""
+    xs = [x for x in txt.split("\n") if x.startswith("判定: ")]
+    return xs[-1] if xs else "**判定行なし**"
+
+
+def _run_g5(a, log, patch_c1=None):
+    """`stage_measure` を呼び、**戻り値**と本文、C1 標本関数の呼出し回数を返す。"""
+    lines, calls = [], [0]
+    ov_v, ov_c = io_.verify_inputs, io_.c1_sample
+    io_.verify_inputs = lambda _a, _l: True     # G2 と同じ差し替え（入力照合の試験ではありません）
+    if patch_c1 is not None:
+        io_.c1_sample = patch_c1
+    else:
+        def counted(*args, **kw):
+            calls[0] += 1
+            return ov_c(*args, **kw)
+        io_.c1_sample = counted
+    try:
+        rc = io_.stage_measure(a, lines.append)
+    finally:
+        io_.verify_inputs, io_.c1_sample = ov_v, ov_c   # ★ 必ず戻します
+    for x in lines:
+        log("    | " + x)
+    return rc, "\n".join(lines), calls[0]
+
+
+def g5(log):
+    log("--- G5 最終判定と C1 の接続（**`stage_measure` の戻り値を検査します**）---")
+    A = ig.box((0, 0, 0), (10, 10, 10), +1)
+    B = ig.box((20, 0, 0), (30, 10, 10), +1)
+    SHELL = ig.box((2, 2, 2), (8, 8, 8), +1)            # A の内部に閉じた殻 → 巻き数 2
+    # 期待する符号つき 6 倍体積は**解析値**（辺 10 の箱 2 個 / 1 個 / 2 個＋辺 6 の殻）
+    CASES = (
+        ("正",   ig.join(A, B),        12000, 0, (0, 0)),
+        ("負c",  A,                     6000, 1, (1, 0)),
+        ("負b",  ig.join(A, B, SHELL), 13296, 1, (0, 1)),
+    )
+    for tag, mesh, vol6, want_rc, want_agg in CASES:
+        with tempfile.TemporaryDirectory() as td:
+            a = _case_g5(td, mesh, vol6)
+            rc, txt, calls = _run_g5(a, log)
+            chk("G5 %s: 解析体積が本体の計算と一致（回帰が通る）" % tag,
+                "[union] 保存値（列 29）との一致: 一致" in txt, True, log)
+            chk("G5 %s: C1 が評価済み（H 真）" % tag,
+                "C1 の状態: **評価済み**" in txt, True, log)
+            chk("G5 %s: 区間の保存・読戻しが通る" % tag,
+                "読戻しの一致 一致" in txt, True, log)
+            chk("G5 %s: 段の集計 c1_agg" % tag,
+                "（段の集計 %s）" % (want_agg,) in txt, True, log)
+            chk("G5 %s: stage_measure の戻り値" % tag, rc, want_rc, log)
+            if not want_rc:
+                chk("G5 %s: 最終判定行" % tag, _final(txt).startswith(
+                    "判定: C1 不一致 0・保存成功・体積回帰一致") and "理由=" not in _final(txt),
+                    True, log)
+        if want_rc:
+            kind = "C1-c" if want_agg[0] else "C1-b"
+            # ★ **最終判定行そのもの**を固定します。全文検索では中間ログに当たり、
+            #   `reasons` を消す変異・成功文言に理由語を混ぜる変異が素通りしました。
+            chk("G5 %s: 最終判定行" % tag, _final(txt), "判定: ★ 失敗（理由=%s）" % kind, log)
+            chk("G5 %s: 保存の失敗とは呼ばない" % tag,
+                "書き出しの取りこぼし" in txt, False, log)
+
+    # 未測定: 正の一式のまま、**標本取得だけが区間なしを返す**
+    with tempfile.TemporaryDirectory() as td:
+        a = _case_g5(td, ig.join(A, B), 12000)
+        rc, txt, _ = _run_g5(a, log, patch_c1=lambda *x, **k: "**未測定**（対照）")
+        chk("G5 未測定: C1 の状態", "C1 の状態: **未測定**" in txt, True, log)
+        chk("G5 未測定: 体積回帰は通る",
+            "[union] 保存値（列 29）との一致: 一致" in txt, True, log)
+        chk("G5 未測定: 最終判定行", _final(txt), "判定: ★ 失敗（理由=C1 未測定）", log)
+        chk("G5 未測定: 戻り値", rc, 1, log)
+
+    # ★ 穴 1（レビュー指摘）: **H の 2 条件のうち「区間が得られた」だけが偽**の状態。
+    #   これが無いと、`len(c1_rows) > 1` を落とす変異が 1 件も検出されませんでした。
+    def _line_only(P, F, a_, log_, rows_out=None):
+        if rows_out is not None:
+            rows_out.append(("line", "0", "0", "0", 1, 0, 0))   # 直線の行だけ。区間 0 個
+        return "**未測定**（対照: 直線はあるが区間 0）"
+
+    with tempfile.TemporaryDirectory() as td:
+        a = _case_g5(td, ig.join(A, B), 12000)
+        rc, txt, _ = _run_g5(a, log, patch_c1=_line_only)
+        chk("G5 区間なし: 直線はあるが区間 0 → **未測定**",
+            "C1 の状態: **未測定**" in txt, True, log)
+        chk("G5 区間なし: 最終判定行", _final(txt), "判定: ★ 失敗（理由=C1 未測定）", log)
+        chk("G5 区間なし: 戻り値", rc, 1, log)
+
+    # ★ 穴 2（レビュー指摘）: **rc が S・V との連言であること**を検査します。
+    #   これが無いと、rc から `vol_ok` / `save_ok` を外す変異が素通りしました。
+    with tempfile.TemporaryDirectory() as td:
+        a = _case_g5(td, ig.join(A, B), 12000 + 6)      # 列 29 を**わざと外す**
+        rc, txt, _ = _run_g5(a, log)
+        chk("G5 体積のみ不成立: C1 は通る", "C1 の状態: **評価済み**" in txt, True, log)
+        chk("G5 体積のみ不成立: 集計は (0, 0)", "（段の集計 (0, 0)）" in txt, True, log)
+        chk("G5 体積のみ不成立: 体積回帰が落ちる",
+            "保存値（列 29）との一致: ★ 不一致" in txt, True, log)
+        chk("G5 体積のみ不成立: 最終判定行", _final(txt), "判定: ★ 失敗（理由=体積回帰）", log)
+        chk("G5 体積のみ不成立: 戻り値", rc, 1, log)
+
+    with tempfile.TemporaryDirectory() as td:
+        a = _case_g5(td, ig.join(A, B), 12000)
+        ov_w = io_.write_intervals
+
+        def _drop_last(path, rows):                     # 書き出しで**最終行を落とす**
+            return ov_w(path, rows[:-1])
+
+        io_.write_intervals = _drop_last
+        try:
+            rc, txt, _ = _run_g5(a, log)
+        finally:
+            io_.write_intervals = ov_w                  # ★ 必ず戻します
+        chk("G5 保存のみ不成立: C1 は通る", "C1 の状態: **評価済み**" in txt, True, log)
+        chk("G5 保存のみ不成立: 体積回帰は通る",
+            "[union] 保存値（列 29）との一致: 一致" in txt, True, log)
+        chk("G5 保存のみ不成立: 読戻しが落ちる", "読戻しの一致 ★ 不一致" in txt, True, log)
+        chk("G5 保存のみ不成立: 最終判定行", _final(txt), "判定: ★ 失敗（理由=保存/読戻し）", log)
+        chk("G5 保存のみ不成立: 戻り値", rc, 1, log)
+
+    # 未評価: 既存 G2 負（E1 違反）を再利用。**C1 標本関数の呼出しが 0 回**
+    with tempfile.TemporaryDirectory() as td:
+        a = make_case(td, True)
+        rc, txt, calls = _run_g5(a, log)
+        chk("G5 未評価: C1 の状態", "C1 の状態: **未評価**" in txt, True, log)
+        chk("G5 未評価: C1 標本関数の呼出し 0 回", calls, 0, log)
+        # ★ この対照は E1 を破るために ∪ から面を 1 枚落とすので、**体積も変わります。**
+        #   **理由が 2 つ併発するのが正しい状態**です（§13.3 が「他の失敗も併発し得る」と
+        #   書いたとおり）。**未評価と未測定の区別は、先頭の理由で付きます。**
+        chk("G5 未評価: 最終判定行（未測定と区別）", _final(txt),
+            "判定: ★ 失敗（理由=C1 未評価/体積回帰）", log)
+        chk("G5 未評価: 戻り値", rc, 1, log)
+
+
 # ===== G4 =====
 def g4(log):
     log("--- G4 既定の 4 構成（**代表点も期待値に含めます**）と、読戻しの取りこぼし ---")
@@ -257,14 +419,19 @@ if __name__ == "__main__":
         g1(log)
         g2(log)
         g4(log)
+        g5(log)
         ng = RES.count(False)
         # **件数は式で持ちます**（実測した数を書かない。`CLAUDE.md`）。
         n_g1 = 6 + 2                    # 対照 6 + 変異 2
         n_g2 = (1 + 3) + (1 + 4)        # 正: E0 + 3 件 / 負: E0 + 4 件
         n_g4 = (3 + 2 + 3 + 3) + 4     # 正 3 / C1-c 2 / C1-b 3 / 未評価 3 / 往復と欠落 4
-        want_n = n_g1 + n_g2 + n_g4
-        log("対照の件数 %d（期待 %d = G1 %d + G2 %d + G4 %d）"
-            % (len(RES), want_n, n_g1, n_g2, n_g4))
+        # G5: 正・負c・負b が各 5 件、うち負の 2 件は理由の検査を 2 件ずつ追加。
+        #     未測定 4 件 / 未評価 4 件。
+        # 正 6 / 負 2 件は各 7 / 区間なし 3 / 体積のみ 5 / 保存のみ 5 / 未測定 4 / 未評価 4
+        n_g5 = 6 + 2 * 7 + 3 + 5 + 5 + 4 + 4
+        want_n = n_g1 + n_g2 + n_g4 + n_g5
+        log("対照の件数 %d（期待 %d = G1 %d + G2 %d + G4 %d + G5 %d）"
+            % (len(RES), want_n, n_g1, n_g2, n_g4, n_g5))
         if len(RES) != want_n:
             RES.append(False)
             ng += 1
