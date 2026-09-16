@@ -88,6 +88,7 @@ def main(argv=None):
              a.grace, a.reap, as_bytes))
     inj = {k: os.environ[k] for k in os.environ if k.startswith("KRI_DIAG_TEST_")}
     print("  試験専用の注入: %s" % (inj if inj else "無し"))
+    print("  保護対象（重なれば起動しません）: %s" % PROTECTED)
     print("  書き先 %s（新規に作りました）" % out)
     print("  **G3・J-1・ビルド・被検体の再実行・案 II・対象拡大は対象外です。**")
     sys.stdout.flush()
@@ -97,6 +98,7 @@ def main(argv=None):
         "J-2": [sys.executable, os.path.join(here, "inspect_output.py"),
                 "--stage", "measure", "--out", out, "--read-from", a.read_from,
                 "--sums", a.sums, "--in-a", a.in_a, "--in-b", a.in_b,
+                "--saved-sums", os.path.join(os.path.dirname(a.saved), "SHA256SUMS"),
                 "--saved", a.saved, "--key", a.key],
     }
     state = {n: "未起動" for n, _ in STAGES}

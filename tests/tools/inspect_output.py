@@ -24,6 +24,11 @@ from fractions import Fraction as Fr
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# 保存行（列 29 の照合の基準）の sha256。**基準の側も照合します。**
+EXPECT_ROW = {
+    "250394x45413":
+        "0bc986ec3709acd924d8a8d21dea70fae2681dfaa328330fac10d5bdebc781cd",
+}
 EXPECT_IN = {
     "A": "d99d6d3b45132ee22c6ae83e391c47c8e8b2f0215b2c851edbab044921f5cf6b",
     "B": "fd9a03316f3c49e9d5b13a77fcc41ad6879dbdac0c6f0c8cbf69b50a97610596",
@@ -478,15 +483,26 @@ def verify_inputs(a, log):
         with open(q, "rb") as f:
             h = hashlib.sha256(f.read()).hexdigest()
         want = expect.get(fn)
-        good = (want is None) or (h == want)
-        log("照合 %s: %s / %s" % (fn, h, "一致" if good else ("★ 不一致" if want else "期待値なし")))
         if want is None:
+            log("照合 %s: %s / **期待値が無いので照合できていません**" % (fn, h))
             ok = False
-            log("  ★ 期待値が無いので、照合できていません。")
+            continue
+        good = (h == want)
+        log("照合 %s: %s / %s" % (fn, h, "一致" if good else "★ 不一致"))
         ok = ok and good
+    # ★ 保存物と保存行は、**計算して書くだけでは照合になりません**。期待値と比べます。
+    #   列 29 は G1 の回帰（∪ の体積の一致）の【唯一の基準】なので、
+    #   基準の側が無検証だと「一致」に意味がありません。
     with open(a.saved, "rb") as f:
         body = f.read()
-    log("照合 保存物: %s" % hashlib.sha256(body).hexdigest())
+    hs = hashlib.sha256(body).hexdigest()
+    want_file = load_sums(getattr(a, "saved_sums", "")
+                          or os.path.join(os.path.dirname(a.saved), "SHA256SUMS")
+                          ).get(os.path.basename(a.saved))
+    good = (want_file is not None) and (hs == want_file)
+    log("照合 保存物: %s / 期待 %s / %s"
+        % (hs, want_file or "**無し**", "一致" if good else "★ 照合できません"))
+    ok = ok and good
     row = None
     for line in body.decode("utf-8", "replace").split("\n"):
         if line.split() and line.split()[0] == a.key:
@@ -495,8 +511,12 @@ def verify_inputs(a, log):
     if row is None:
         log("★ 保存物に %s がありません。" % a.key)
         return False
-    log("照合 保存行: %s" % hashlib.sha256(row.encode()).hexdigest())
-    return ok
+    hr = hashlib.sha256(row.encode()).hexdigest()
+    want_row = getattr(a, "expect_row", "") or EXPECT_ROW.get(a.key)
+    good = (want_row is not None) and (hr == want_row)
+    log("照合 保存行: %s / 期待 %s / %s"
+        % (hr, want_row or "**無し**", "一致" if good else "★ 照合できません"))
+    return ok and good
 
 
 def stage_measure(a, log):
@@ -678,6 +698,7 @@ def main(argv=None):
     p.add_argument("--out", required=True)
     p.add_argument("--read-from", default="", help="保存束を【読むだけ】の場所。--out とは分けます")
     p.add_argument("--sums", default="", help="読み先の SHA256SUMS（既定は読み先の親）")
+    p.add_argument("--saved-sums", default="", help="保存物の SHA256SUMS（既定は保存物と同じ場所）")
     p.add_argument("--in-a", default="data/logs/inspect/20260915-205108/C_A_quantized.bin")
     p.add_argument("--in-b", default="data/logs/inspect/20260915-205108/C_B_quantized.bin")
     p.add_argument("--saved", default="docs/evidence/gmp_diag_r1/cp3_gmp_results.txt")

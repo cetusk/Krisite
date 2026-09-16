@@ -152,10 +152,16 @@ def g2(log):
                 io_.verify_inputs = ov
             txt = "\n".join(lines)
             chk("G2 %s: E0 が通る" % tag, "★ E0 が破れました" not in txt, True, log)
+            if tag == "正":
+                log("    ★ 合成の保存物の列 29 は `volume6_rational` の出力をそのまま"
+                    "書いたものです。**ここでの「列 29 と一致」は恒等式**で、"
+                    "**G1 の回帰の根拠は J-2（実データ）です。**")
             if brk:
                 chk("G2 %s: C1 が未評価" % tag, "C1: **未評価**" in txt, True, log)
-                chk("G2 %s: C1-c / C1-b が立たない" % tag,
-                    ("`C1-c`" in txt and "個 /" in txt) is False or "採用" not in txt, True, log)
+                chk("G2 %s: C1 の集計が無い（段の集計 None）" % tag,
+                    "段の集計 None" in txt, True, log)
+                chk("G2 %s: G4 未解消として記録される" % tag,
+                    "**G4 未解消**" in txt, True, log)
                 chk("G2 %s: 分岐到達を記録" % tag,
                     "**分岐到達**: E1 違反 → C1 未評価" in txt, True, log)
             else:
@@ -201,6 +207,17 @@ if __name__ == "__main__":
         g2(log)
         g4(log)
         ng = RES.count(False)
+        # **件数は式で持ちます**（実測した数を書かない。`CLAUDE.md`）。
+        n_g1 = 6 + 2                    # 対照 6 + 変異 2
+        n_g2 = (1 + 3) + (1 + 4)        # 正: E0 + 3 件 / 負: E0 + 4 件
+        n_g4 = 3
+        want_n = n_g1 + n_g2 + n_g4
+        log("対照の件数 %d（期待 %d = G1 %d + G2 %d + G4 %d）"
+            % (len(RES), want_n, n_g1, n_g2, n_g4))
+        if len(RES) != want_n:
+            RES.append(False)
+            ng += 1
+            log("  ★NG 件数が合いません。**呼ばれなかった対照があります。**")
         log("通過 %d / 失敗 %d" % (RES.count(True), ng))
         log("判定: %s" % ("合成対照は全件通過" if ng == 0 else "★ 失敗あり。後続を起動しません"))
     finally:
