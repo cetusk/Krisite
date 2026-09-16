@@ -261,6 +261,34 @@ def c2_sample(P, f, a):
     return "未判定（支持平面は一致しますが、単一の入力三角形に収まりません）"
 
 
+INTERVAL_HEAD = [
+    "# line <o の x> <o の y> <o の z> <d の x> <d の y> <d の z>",
+    "# <下端> <上端> <代表点> <wX> <wA> <wB> <期待> <判定>",
+    "#   端点と代表点は有理数（分子/分母、分母 1 なら整数）。±無限は -inf / +inf",
+]
+
+
+def write_intervals(path, rows):
+    """区間の一覧を書きます。**未評価・未測定でも見出しは必ず書きます。**"""
+    with open(path, "w") as f:
+        for h in INTERVAL_HEAD:
+            f.write(h + "\n")
+        for r in rows:
+            f.write(" ".join(str(x) for x in r) + "\n")
+
+
+def read_intervals(path):
+    """書いた一覧を読み戻します。戻り値: `[(文字列, …), …]`（見出しは除く）。"""
+    out = []
+    for line in open(path):
+        if line.startswith("#"):
+            continue
+        t = line.rstrip("\n").split()
+        if t:
+            out.append(tuple(t))
+    return out
+
+
 def compare_line(ex, ea, eb, op="union"):
     """直線上の階段関数を比べます。戻り値 `(C1-c の区間数, C1-b の区間数, 区間数)`。
 
@@ -653,29 +681,28 @@ def stage_measure(a, log):
 
     # ---- G4: 区間の一覧を書き、**ファイルを読み直して**数え直す ----
     ipath = os.path.join(a.out, "stage_measure_c1_intervals.txt")
-    with open(ipath, "w") as f:
-        # ★ 必ず見出しを書きます（未評価・未測定でも空にしません）
-        f.write("# line <o の x> <o の y> <o の z> <d の x> <d の y> <d の z>\n")
-        f.write("# <下端> <上端> <代表点> <wX> <wA> <wB> <期待> <判定>\n")
-        f.write("#   端点と代表点は有理数（分子/分母、分母 1 なら整数）。"
-                "±無限は -inf / +inf\n")
-        for r in c1_rows:
-            f.write(" ".join(str(x) for x in r) + "\n")
-    back_c = back_b = 0
-    for line in open(ipath):
-        t = line.split()
-        if len(t) == 8 and t[0] not in ("line",):
-            pass
-        if len(t) >= 8 and t[-1] == "C1-c":
-            back_c += 1
-        elif len(t) >= 8 and t[-1] == "C1-b":
-            back_b += 1
+    write_intervals(ipath, c1_rows)
+    back = read_intervals(ipath)
+    want_rows = [tuple(str(x) for x in r) for r in c1_rows]
     log("[union] C1 の区間を %d 行書きました（見出しを除く）: %s" % (len(c1_rows), ipath))
-    log("[union] ファイルを読み直して数え直し: C1-c %d / C1-b %d（段の集計 %s）"
-        % (back_c, back_b, c1_agg))
-    log("[union]   ★ これは**恒等式**です（同じ一覧から数えるため）。"
-        "**独立な確認ではありません。確かめているのは書き出しの取りこぼしが無いことだけです。**")
-    read_ok = (c1_agg is not None and (back_c, back_b) == c1_agg)
+    # ★ **行数と各行の内容**を比べます。**件数だけだと、全区間が正常なとき
+    #   正常行が落ちても 0 対 0 で一致します**（§5.10.14.112 の指摘）。
+    n_ok = (len(back) == len(want_rows))
+    body_ok = (back == want_rows)
+    log("[union] 読戻し: 行数 %d / 書いた行数 %d / %s"
+        % (len(back), len(want_rows), "一致" if n_ok else "★ 不一致"))
+    log("[union] 読戻し: 各行の内容 %s" % ("一致" if body_ok else "★ 不一致"))
+    if not body_ok:
+        for i, (x, y) in enumerate(zip(back, want_rows)):
+            if x != y:
+                log("[union]   最初の食い違い 行 %d: 読 %s / 書 %s" % (i, x, y))
+                break
+    back_c = sum(1 for t in back if t and t[-1] == "C1-c")
+    back_b = sum(1 for t in back if t and t[-1] == "C1-b")
+    log("[union] 読戻し: C1-c %d / C1-b %d（段の集計 %s）" % (back_c, back_b, c1_agg))
+    log("[union]   ★ **件数の一致は恒等式**です。**取りこぼしを見ているのは、"
+        "上の【行数と各行の内容】の比較のほうです。**")
+    read_ok = (c1_agg is not None and (back_c, back_b) == c1_agg and n_ok and body_ok)
     has_line = any(r[0] == "line" for r in c1_rows)
     log("[union] G4: C1 の採用 %s / 区間の保存 %s / 読戻しの一致 %s"
         % ("あり" if has_line else "**無し**", "あり" if len(c1_rows) > 1 else "**無し**",

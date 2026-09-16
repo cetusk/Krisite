@@ -173,22 +173,73 @@ def g2(log):
 
 # ===== G4 =====
 def g4(log):
-    log("--- G4 区間の端点・巻き数まで固定（**離れた 2 箱、手で選んだ直線**）---")
+    log("--- G4 既定の 4 構成（**代表点も期待値に含めます**）と、読戻しの取りこぼし ---")
     A = ig.box((0, 0, 0), (10, 10, 10), +1)
     B = ig.box((20, 0, 0), (30, 10, 10), +1)
     o, d = (Fr(-100), Fr(11, 2), Fr(13, 3)), (1, 0, 0)
     ea, eb = io_.events(A[0], A[1], o, d), io_.events(B[0], B[1], o, d)
-    ex = io_.events(*ig.join(A, B), o, d)
-    r = io_.compare_line(ex, ea, eb, "union")
-    chk("G4 正しい ∪ の (C1-c, C1-b)", (r[0], r[1]), (0, 0), log)
-    chk("G4 区間数", r[2], 5, log)
-    got = [(x[0], x[1], x[3], x[4], x[5], x[6], x[7]) for x in r[3]]
-    want = [("-inf", "100", 0, 0, 0, 0, "ok"),
-            ("100", "110", 1, 1, 0, 1, "ok"),
-            ("110", "120", 0, 0, 0, 0, "ok"),
-            ("120", "130", 1, 0, 1, 1, "ok"),
-            ("130", "+inf", 0, 0, 0, 0, "ok")]
-    chk("G4 区間の端点と巻き数まで一致", got, want, log)
+
+    def rows_of(mesh):
+        ex = io_.events(mesh[0], mesh[1], o, d)
+        r = io_.compare_line(ex, ea, eb, "union")
+        return r
+
+    # --- 構成 1: 正 ---
+    r = rows_of(ig.join(A, B))
+    chk("G4-1 正: (C1-c, C1-b)", (r[0], r[1]), (0, 0), log)
+    chk("G4-1 正: 区間数", r[2], 5, log)
+    chk("G4-1 正: 全 8 列（**代表点を含む**）",
+        r[3],
+        [("-inf", "100", "99", 0, 0, 0, 0, "ok"),
+         ("100", "110", "105", 1, 1, 0, 1, "ok"),
+         ("110", "120", "115", 0, 0, 0, 0, "ok"),
+         ("120", "130", "125", 1, 0, 1, 1, "ok"),
+         ("130", "+inf", "131", 0, 0, 0, 0, "ok")], log)
+
+    # --- 構成 2: C1-c（B の領域を丸ごと欠く。**E1 は満たしたまま**）---
+    r = rows_of(A)
+    chk("G4-2 C1-c: (C1-c, C1-b)", (r[0], r[1]), (1, 0), log)
+    chk("G4-2 C1-c: 全 8 列",
+        r[3],
+        [("-inf", "100", "99", 0, 0, 0, 0, "ok"),
+         ("100", "110", "105", 1, 1, 0, 1, "ok"),
+         ("110", "120", "115", 0, 0, 0, 0, "ok"),
+         ("120", "130", "125", 0, 0, 1, 1, "C1-c"),
+         ("130", "+inf", "131", 0, 0, 0, 0, "ok")], log)
+
+    # --- 構成 3: C1-b（A の内部に余分な閉殻。[w>0] は同じで w=2）---
+    r = rows_of(ig.join(ig.join(A, B), ig.box((2, 2, 2), (8, 8, 8), +1)))
+    chk("G4-3 C1-b: (C1-c, C1-b)", (r[0], r[1]), (0, 1), log)
+    chk("G4-3 C1-b: 区間数", r[2], 7, log)
+    chk("G4-3 C1-b: C1-b の行（代表点と巻き数）",
+        [x for x in r[3] if x[7] == "C1-b"],
+        [("102", "108", "105", 2, 1, 0, 1, "C1-b")], log)
+
+    # --- 構成 4: 未評価（E1 が破れる。一覧は見出しだけ）---
+    broken = (ig.join(A, B)[0], ig.join(A, B)[1][:-1])
+    chk("G4-4 未評価: E1 が破れる", len(io_.e1_violations(broken[1])) > 0, True, log)
+    with tempfile.TemporaryDirectory() as td:
+        q = os.path.join(td, "iv.txt")
+        io_.write_intervals(q, [])                       # 未評価のときの書き出し
+        chk("G4-4 未評価: 一覧は見出しだけ（読戻しは 0 行）", io_.read_intervals(q), [], log)
+        chk("G4-4 未評価: ファイルは空でない",
+            os.path.getsize(q) > 0, True, log)
+
+    # --- 読戻しが【正常行の欠落】を検出すること ---
+    rows = rows_of(ig.join(A, B))[3]
+    with tempfile.TemporaryDirectory() as td:
+        q = os.path.join(td, "iv.txt")
+        io_.write_intervals(q, rows)
+        back = io_.read_intervals(q)
+        want = [tuple(str(x) for x in r) for r in rows]
+        chk("G4-5 往復: 行数と各行が一致", (len(back) == len(want), back == want), (True, True), log)
+        # **正常行を 1 行落とす**。件数（C1-c / C1-b）は 0 対 0 のままです。
+        io_.write_intervals(q, rows[:2] + rows[3:])
+        back2 = io_.read_intervals(q)
+        c2 = (sum(1 for t in back2 if t[-1] == "C1-c"), sum(1 for t in back2 if t[-1] == "C1-b"))
+        chk("G4-5 欠落: 件数の比較では検出できない（0 対 0 のまま）", c2, (0, 0), log)
+        chk("G4-5 欠落: **行数の比較で検出できる**", len(back2) == len(want), False, log)
+        chk("G4-5 欠落: **各行の比較でも検出できる**", back2 == want, False, log)
 
 
 if __name__ == "__main__":
@@ -210,7 +261,7 @@ if __name__ == "__main__":
         # **件数は式で持ちます**（実測した数を書かない。`CLAUDE.md`）。
         n_g1 = 6 + 2                    # 対照 6 + 変異 2
         n_g2 = (1 + 3) + (1 + 4)        # 正: E0 + 3 件 / 負: E0 + 4 件
-        n_g4 = 3
+        n_g4 = (3 + 2 + 3 + 3) + 4     # 正 3 / C1-c 2 / C1-b 3 / 未評価 3 / 往復と欠落 4
         want_n = n_g1 + n_g2 + n_g4
         log("対照の件数 %d（期待 %d = G1 %d + G2 %d + G4 %d）"
             % (len(RES), want_n, n_g1, n_g2, n_g4))
