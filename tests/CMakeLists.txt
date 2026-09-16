@@ -711,3 +711,22 @@ if(KRISITE_GMP_FOUND)
                                PRIVATE KRISITE_TEST_GMP_DIAG=1 KRISITE_DIAG_MUTATE=1)
 endif()
 
+
+# ---- 量子化済みの入力を書き出す道具（経路 C。§43.10）----
+#
+# **`EXCLUDE_FROM_ALL` です** — 実データ（`data/thingi10k/`）が要るので、
+# 既定のビルドにも `ctest` にも入れません。**明示的に作るときだけ作ります。**
+# **GMP には依存しません。** ブール演算も分類器も呼びません。
+#
+#   cmake --build build --target dump_quantized -j4
+add_executable(dump_quantized EXCLUDE_FROM_ALL thingi10k/dump_quantized.cpp)
+target_link_libraries(dump_quantized PRIVATE krisite krisite_test_util)
+
+# ---- 4 つのブール出力を厳密に書き出す道具（案 I。§44.8）----
+#
+# **`EXCLUDE_FROM_ALL` です** — 実データが要るので、既定のビルドにも `ctest` にも
+# 入れません。**GMP には依存しません**（§44.8）。
+#
+#   cmake --build build --target dump_boolean -j4
+add_executable(dump_boolean EXCLUDE_FROM_ALL thingi10k/dump_boolean.cpp)
+target_link_libraries(dump_boolean PRIVATE krisite krisite_test_util)
