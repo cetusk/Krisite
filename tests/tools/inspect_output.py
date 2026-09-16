@@ -112,6 +112,14 @@ def pt(v):
     return (Fr(v[0], v[3]), Fr(v[1], v[3]), Fr(v[2], v[3]))
 
 
+def volume6_rational(V, F):
+    """符号つき 6 倍体積（同次座標から。**本体と合成対照が、この同じ関数を呼びます**）。"""
+    s = Fr(0)
+    for f in F:
+        s += det3(pt(V[f[0]]), pt(V[f[1]]), pt(V[f[2]]))
+    return s
+
+
 def det3(a, b, c):
     return (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
             + a[2] * (b[0] * c[1] - b[1] * c[0]))
@@ -257,7 +265,10 @@ def compare_line(ex, ea, eb, op="union"):
     if not ts:
         return None
     c = b = 0
+    rows = []
     for k in range(len(ts) + 1):
+        lo = "-inf" if k == 0 else _q(ts[k - 1])
+        hi = "+inf" if k == len(ts) else _q(ts[k])
         m = (ts[0] - 1 if k == 0 else
              (ts[-1] + 1 if k == len(ts) else (ts[k - 1] + ts[k]) / 2))
         wx = sum(sg for t, sg in ex if t < m)
@@ -273,12 +284,23 @@ def compare_line(ex, ea, eb, op="union"):
             want = 1 if (wb > 0 and not wa > 0) else 0
         if (1 if wx > 0 else 0) != want:
             c += 1
+            kind = "C1-c"
         elif wx != want:
             b += 1
-    return c, b, len(ts) + 1
+            kind = "C1-b"
+        else:
+            kind = "ok"
+        rows.append((lo, hi, _q(m), wx, wa, wb, want, kind))
+    return c, b, len(ts) + 1, rows
 
 
-def c1_sample(P, F, a, log):
+def _q(x):
+    """有理数を `分子/分母` で（分母 1 なら整数）。"""
+    x = Fr(x)
+    return str(x.numerator) if x.denominator == 1 else "%d/%d" % (x.numerator, x.denominator)
+
+
+def c1_sample(P, F, a, log, rows_out=None):
     """非退化な直線 1 本で、$[w_X>0]$ と期待値、および $w_X$ の値を比べます。"""
     import inspect_geom as ig
     import struct as _st
@@ -294,6 +316,7 @@ def c1_sample(P, F, a, log):
 
     st = [1]
     skipped = {}
+    c1_rows = []
 
     def nxt():
         x = st[0]
@@ -327,10 +350,14 @@ def c1_sample(P, F, a, log):
         if r is None:
             skipped["交点なし"] = skipped.get("交点なし", 0) + 1
             continue
-        bad_c, bad_b, nseg = r
+        bad_c, bad_b, nseg, rows = r
+        c1_rows.extend(rows)
         log("[union] C1: 試行 %d 本目で採用（交点 X %d / A %d / B %d）"
             % (attempt, len(ev), len(ea), len(eb)))
         log("[union] C1: 採った直線 o=%s d=%s" % (tuple(str(x) for x in o), d))
+        if rows_out is not None:
+            rows_out.append(("line", _q(o[0]), _q(o[1]), _q(o[2]), d[0], d[1], d[2]))
+            rows_out.extend(c1_rows)
         log("[union] C1: 区間 %d 個 / `C1-c` %d 個 / `C1-b` %d 個" % (nseg, bad_c, bad_b))
         log("[union] C1: 捨てた直線の内訳 %s" % (skipped if skipped else "無し"))
         log("[union]   **通った分岐**: 非退化の直線 1 本、交点 %d 個。"
@@ -422,8 +449,63 @@ def saved_row(path, key):
     raise KeyError("保存物に %s がありません" % key)
 
 
+def load_sums(path):
+    """`SHA256SUMS` を `{ファイル名: ハッシュ}` に。**無ければ空**（照合できないので偽になります）。"""
+    out = {}
+    try:
+        for line in open(path):
+            t = line.split()
+            if len(t) == 2:
+                out[os.path.basename(t[1])] = t[0]
+    except OSError:
+        pass
+    return out
+
+
+def verify_inputs(a, log):
+    """**幾何処理より前に、読むもの【全部】を照合します。** 1 つでも外れたら偽。"""
+    ok = True
+    for name, path in (("A", a.in_a), ("B", a.in_b)):
+        with open(path, "rb") as f:
+            h = hashlib.sha256(f.read()).hexdigest()
+        good = (h == EXPECT_IN[name])
+        log("照合 入力 %s: %s / %s" % (name, h, "一致" if good else "★ 不一致"))
+        ok = ok and good
+    src = getattr(a, "read_from", "") or a.out
+    expect = load_sums(getattr(a, "sums", "") or os.path.join(src, os.pardir, "SHA256SUMS"))
+    for fn in ["b_run_meta.txt"] + ["b_out_%s.bin" % o for o in OPS]:
+        q = os.path.join(src, fn)
+        with open(q, "rb") as f:
+            h = hashlib.sha256(f.read()).hexdigest()
+        want = expect.get(fn)
+        good = (want is None) or (h == want)
+        log("照合 %s: %s / %s" % (fn, h, "一致" if good else ("★ 不一致" if want else "期待値なし")))
+        if want is None:
+            ok = False
+            log("  ★ 期待値が無いので、照合できていません。")
+        ok = ok and good
+    with open(a.saved, "rb") as f:
+        body = f.read()
+    log("照合 保存物: %s" % hashlib.sha256(body).hexdigest())
+    row = None
+    for line in body.decode("utf-8", "replace").split("\n"):
+        if line.split() and line.split()[0] == a.key:
+            row = line
+            break
+    if row is None:
+        log("★ 保存物に %s がありません。" % a.key)
+        return False
+    log("照合 保存行: %s" % hashlib.sha256(row.encode()).hexdigest())
+    return ok
+
+
 def stage_measure(a, log):
-    meta = read_meta(os.path.join(a.out, "b_run_meta.txt"))
+    src = getattr(a, "read_from", "") or a.out
+    log("読み先 %s / 書き先 %s" % (src, a.out))
+    if not verify_inputs(a, log):
+        log("★ 入力の照合が通りませんでした。幾何処理へ進みません。")
+        return 1
+    meta = read_meta(os.path.join(src, "b_run_meta.txt"))
     nx, nw = int(meta["kHomoXyz"]), int(meta["kHomoW"])
     log("リム数: kHomoXyz %d / kHomoW %d" % (nx, nw))
     data = {}
@@ -431,7 +513,7 @@ def stage_measure(a, log):
     # ---- E0（全数。停止対象）----
     stop = False
     for op in OPS:
-        V, F, sha = read_soup(os.path.join(a.out, "b_out_%s.bin" % op), nx, nw)
+        V, F, sha = read_soup(os.path.join(src, "b_out_%s.bin" % op), nx, nw)
         data[op] = (V, F)
         total_tri += len(F)
         oor, dup, w0 = e0_violations(V, F)
@@ -522,29 +604,69 @@ def stage_measure(a, log):
 
     # ---- C1: 非退化な直線 1 本（∪ について）----
     t0 = time.process_time()
+    c1_rows, c1_agg = [], None
     if not e1_ok["union"]:
         log("[union] C1: **未評価**（E1 が破れているので、階段関数を巻き数と読めません）")
+        log("**分岐到達**: E1 違反 → C1 未評価 の分岐に 1 回到達しました")
     else:
-        got = c1_sample(P, F, a, log)
+        log("**分岐到達**: E1 通過 → C1 評価 の分岐に 1 回到達しました")
+        got = c1_sample(P, F, a, log, rows_out=c1_rows)
+        c1_agg = (sum(1 for r in c1_rows if r[0] != "line" and r[-1] == "C1-c"),
+                  sum(1 for r in c1_rows if r[0] != "line" and r[-1] == "C1-b"))
         log("[union] C1: %s（CPU %.4f 秒）" % (got, time.process_time() - t0))
 
     # ---- 単価: 符号つき 6 倍体積（∪ の 1 演算だけ）----
     V, F = data["union"]
     t0 = time.process_time()
-    s = Fr(0)
-    for f in F:
-        s += det3(pt(V[f[0]]), pt(V[f[1]]), pt(V[f[2]]))
+    s = volume6_rational(V, F)
     dt = time.process_time() - t0
     saved = saved_row(a.saved, a.key)
     got = "%d/%d" % (s.numerator, s.denominator) if s.denominator != 1 else str(s.numerator)
     log("[union] 符号つき 6 倍体積: 分子 %d 桁 / 分母 %d 桁"
         % (len(str(abs(s.numerator))), len(str(s.denominator))))
-    log("[union] 保存値（列 29）との一致: %s" % ("一致" if got == saved["vol_union"] else "★ 不一致"))
+    vol_ok = (got == saved["vol_union"])
+    log("[union] 保存値（列 29）との一致: %s" % ("一致" if vol_ok else "★ 不一致"))
     log("[union] 体積の計算: 面 %d 枚で CPU %.3f 秒（1 枚あたり %.3g 秒）"
         % (len(F), dt, dt / max(len(F), 1)))
     log("**この単価は、この出力とこの演算についての観測値です。**"
         "**有理数の幅・約分・通る分岐に依存するので、他の演算や他の対の保証にしません。**")
-    return 0
+
+    # ---- G4: 区間の一覧を書き、**ファイルを読み直して**数え直す ----
+    ipath = os.path.join(a.out, "stage_measure_c1_intervals.txt")
+    with open(ipath, "w") as f:
+        # ★ 必ず見出しを書きます（未評価・未測定でも空にしません）
+        f.write("# line <o の x> <o の y> <o の z> <d の x> <d の y> <d の z>\n")
+        f.write("# <下端> <上端> <代表点> <wX> <wA> <wB> <期待> <判定>\n")
+        f.write("#   端点と代表点は有理数（分子/分母、分母 1 なら整数）。"
+                "±無限は -inf / +inf\n")
+        for r in c1_rows:
+            f.write(" ".join(str(x) for x in r) + "\n")
+    back_c = back_b = 0
+    for line in open(ipath):
+        t = line.split()
+        if len(t) == 8 and t[0] not in ("line",):
+            pass
+        if len(t) >= 8 and t[-1] == "C1-c":
+            back_c += 1
+        elif len(t) >= 8 and t[-1] == "C1-b":
+            back_b += 1
+    log("[union] C1 の区間を %d 行書きました（見出しを除く）: %s" % (len(c1_rows), ipath))
+    log("[union] ファイルを読み直して数え直し: C1-c %d / C1-b %d（段の集計 %s）"
+        % (back_c, back_b, c1_agg))
+    log("[union]   ★ これは**恒等式**です（同じ一覧から数えるため）。"
+        "**独立な確認ではありません。確かめているのは書き出しの取りこぼしが無いことだけです。**")
+    read_ok = (c1_agg is not None and (back_c, back_b) == c1_agg)
+    has_line = any(r[0] == "line" for r in c1_rows)
+    log("[union] G4: C1 の採用 %s / 区間の保存 %s / 読戻しの一致 %s"
+        % ("あり" if has_line else "**無し**", "あり" if len(c1_rows) > 1 else "**無し**",
+           "一致" if read_ok else "★ 不一致"))
+    g4_ok = has_line and len(c1_rows) > 1 and read_ok
+    if not g4_ok:
+        log("[union] ★ **G4 未解消**（C1 が未評価 / 未測定、または書き出しの取りこぼし）")
+    if not vol_ok:
+        log("[union] ★ **G1 の回帰が破れた**（$\\cup$ の体積が列 29 と一致しません）")
+    log("判定: %s" % ("G4 解消・体積の回帰も一致" if (g4_ok and vol_ok) else "★ 未解消あり"))
+    return 0 if (g4_ok and vol_ok) else 1
 
 
 STAGES = {"identity": stage_identity, "anchor": stage_anchor, "measure": stage_measure}
@@ -554,6 +676,8 @@ def main(argv=None):
     p = argparse.ArgumentParser()
     p.add_argument("--stage", required=True, choices=sorted(STAGES))
     p.add_argument("--out", required=True)
+    p.add_argument("--read-from", default="", help="保存束を【読むだけ】の場所。--out とは分けます")
+    p.add_argument("--sums", default="", help="読み先の SHA256SUMS（既定は読み先の親）")
     p.add_argument("--in-a", default="data/logs/inspect/20260915-205108/C_A_quantized.bin")
     p.add_argument("--in-b", default="data/logs/inspect/20260915-205108/C_B_quantized.bin")
     p.add_argument("--saved", default="docs/evidence/gmp_diag_r1/cp3_gmp_results.txt")
